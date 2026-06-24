@@ -28,6 +28,7 @@ _previous_load_settings = base.load_settings
 _previous_save_settings = base.save_settings
 _original_build_live_tab = base.MainWindow._build_live_tab
 _original_sync_settings = base.MainWindow.sync_settings
+_original_close_event = base.MainWindow.closeEvent
 
 
 def _live_setting(settings: base.AppSettings, name: str, default: int) -> int:
@@ -235,6 +236,14 @@ def sync_settings(self: base.MainWindow) -> None:
     base.save_settings(self.settings)
 
 
+def closeEvent(self: base.MainWindow, event: Any) -> None:
+    try:
+        self.sync_settings()
+    except Exception as exc:
+        self.log(f"settings save on close failed: {exc}")
+    _original_close_event(self, event)
+
+
 def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
     client = base.ApiClient(settings)
     logs: list[str] = ["checking Colab API before starting live"]
@@ -427,6 +436,7 @@ def install() -> None:
     base.save_settings = save_settings
     base.MainWindow._build_live_tab = _build_live_tab
     base.MainWindow.sync_settings = sync_settings
+    base.MainWindow.closeEvent = closeEvent
     base.MainWindow.start_live = start_live
     base.MainWindow.update_live_preview = update_live_preview
 
