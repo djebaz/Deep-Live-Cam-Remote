@@ -40,7 +40,8 @@
 - Whether to rename `windows_app/` and launchers to neutral `remote_app/` names before the first public release.
 
 ## Validation
-- [ ] Build on Windows: USER
+- [x] Build on Windows: USER confirmed onedir build worked; Codex ran onefile build command successfully
 - [ ] Launch packaged app: USER
 - [ ] Connect to Colab API from packaged app: USER
 - [ ] Verify icon/QSS/media playback assets: USER
+
