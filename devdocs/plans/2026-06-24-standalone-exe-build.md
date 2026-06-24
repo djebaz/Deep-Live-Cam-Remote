@@ -25,6 +25,7 @@
 - [x] Add `requirements-build.txt` with desktop-controller-only runtime requirements plus PyInstaller.
 - [x] Add `.venv_build/` ignore rule.
 - [x] Add `scripts/build_remote_app.ps1` for repeatable PyInstaller builds, including `-RecreateVenv` for failed/stale build environments.
+- [x] Add `-Lite` build mode to exclude live webcam dependencies (`cv2`, `numpy`, `pyvirtualcam`) and emit `Deep-Live-Cam-Remote-Lite`.
 - [x] Include desktop app assets (`windows_app/icon.ico`, `windows_app/dark_theme.qss`) in the build command.
 - [x] Document build usage in README.
 - [x] Update unreleased notes.
@@ -33,15 +34,20 @@
 - Use `.venv_build/` instead of `.venv` so PyInstaller bundles from a clean build environment; keep it desktop-client-only instead of installing Colab/server/model packages.
 - Start with `--onedir` as the default because it is easier to inspect and debug than `--onefile`.
 - Provide `-OneFile` as an opt-in build script switch for later release experiments.
+- Provide `-Lite` as a smaller controller build that omits Live webcam dependencies; photo/video remote jobs and API control remain the focus.
 - Keep output under `dist/` and PyInstaller scratch files under `build/`; both are ignored.
 
 ## Open questions
-- Whether the eventual release artifact should be onedir zip, onefile exe, or installer.
+- Whether the eventual release artifact should be onedir zip, onefile exe, lite onefile exe, or installer.
 - Whether to rename `windows_app/` and launchers to neutral `remote_app/` names before the first public release.
 
+## Build outputs observed
+- Full onefile: `dist/Deep-Live-Cam-Remote.exe` - 107,627,357 bytes.
+- Lite onefile: `dist/Deep-Live-Cam-Remote-Lite.exe` - 56,643,485 bytes.
+- Lite saved 50,983,872 bytes (47.4%) by excluding `cv2`, `numpy`, and `pyvirtualcam`.
+
 ## Validation
-- [x] Build on Windows: USER confirmed onedir build worked; Codex ran onefile build command successfully
+- [x] Build on Windows: USER confirmed onedir build worked; Codex ran full and Lite onefile build commands successfully
 - [ ] Launch packaged app: USER
 - [ ] Connect to Colab API from packaged app: USER
 - [ ] Verify icon/QSS/media playback assets: USER
-

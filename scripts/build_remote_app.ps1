@@ -2,7 +2,8 @@ param(
     [switch] $OneFile,
     [switch] $Clean,
     [switch] $SkipInstall,
-    [switch] $RecreateVenv
+    [switch] $RecreateVenv,
+    [switch] $Lite
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +27,7 @@ if ($RecreateVenv -and (Test-Path -LiteralPath $BuildVenv)) {
 }
 $Python = Join-Path $BuildVenv "Scripts\python.exe"
 $AppEntry = Join-Path $RepoRoot "run_windows_remote_app.py"
+$AppName = if ($Lite) { "Deep-Live-Cam-Remote-Lite" } else { "Deep-Live-Cam-Remote" }
 $IconPath = Join-Path $RepoRoot "windows_app\icon.ico"
 $ThemePath = Join-Path $RepoRoot "windows_app\dark_theme.qss"
 
@@ -52,7 +54,7 @@ $args = @(
     "--noconfirm",
     $modeArg,
     "--windowed",
-    "--name", "Deep-Live-Cam-Remote",
+    "--name", $AppName,
     "--distpath", (Join-Path $RepoRoot "dist"),
     "--workpath", (Join-Path $RepoRoot "build"),
     "--specpath", (Join-Path $RepoRoot "build"),
@@ -60,11 +62,22 @@ $args = @(
     "--add-data", "$IconPath${separator}windows_app",
     "--hidden-import", "PySide6.QtMultimedia",
     "--hidden-import", "PySide6.QtMultimediaWidgets",
-    "--hidden-import", "websockets",
-    "--hidden-import", "cv2",
-    "--hidden-import", "numpy",
-    "--hidden-import", "pyvirtualcam"
+    "--hidden-import", "websockets"
 )
+
+if ($Lite) {
+    $args += @(
+        "--exclude-module", "cv2",
+        "--exclude-module", "numpy",
+        "--exclude-module", "pyvirtualcam"
+    )
+} else {
+    $args += @(
+        "--hidden-import", "cv2",
+        "--hidden-import", "numpy",
+        "--hidden-import", "pyvirtualcam"
+    )
+}
 
 if (Test-Path -LiteralPath $IconPath) {
     $args += @("--icon", $IconPath)
@@ -73,7 +86,8 @@ if (Test-Path -LiteralPath $IconPath) {
 $args += $cleanArgs
 $args += $AppEntry
 
-Write-Host "Running PyInstaller ($modeArg)"
+if ($Lite) { Write-Host "Lite build: live webcam dependencies are excluded (cv2, numpy, pyvirtualcam)." }
+Write-Host "Running PyInstaller ($modeArg) for $AppName"
 & $Python @args
 if ($LASTEXITCODE -ne 0) { throw "ABORT(A13): PyInstaller failed ($LASTEXITCODE)" }
 

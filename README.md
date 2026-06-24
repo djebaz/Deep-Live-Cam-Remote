@@ -136,6 +136,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -Cl
 # Try a single-file executable
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -OneFile
 
+# Build a smaller controller without Live webcam dependencies
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -OneFile -Lite
+
 # Recreate a failed or stale build environment
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -RecreateVenv
 
@@ -143,7 +146,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -Re
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -SkipInstall
 ```
 
-Build outputs and `.venv_build/` are intentionally ignored by git.
+Build outputs and `.venv_build/` are intentionally ignored by git. Lite builds exclude `cv2`, `numpy`, and `pyvirtualcam`, so the Live webcam workflow is not bundled.
+
 ## Notebook round-trip workflow
 
 The Colab notebook is generated from the markerized Python source.
@@ -218,6 +222,3 @@ python -m pytest .\tests -q
 ```
 
 Do not commit virtual environments, caches, downloaded models, local state, or generated temporary notebooks.
-
-
-

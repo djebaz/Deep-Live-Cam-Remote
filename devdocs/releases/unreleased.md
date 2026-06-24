@@ -2,6 +2,7 @@
 
 ## Added
 - Add an isolated standalone desktop app build workflow with `.venv_build/`, `requirements-build.txt`, and `scripts/build_remote_app.ps1` for PyInstaller packaging.
+- Add a Lite PyInstaller build mode that excludes Live webcam dependencies (`cv2`, `numpy`, `pyvirtualcam`) for a smaller desktop controller executable.
 - **Windows Remote App**: PySide6 desktop app for controlling Colab batch processing over Tailscale
   - Dark title bar and custom app icon on Windows 10/11
   - Photos and Videos tabs with full processing options (recursive, overwrite, skip processed, many faces, enhancer, opacity, sharpness, mouth mask, interpolation, poisson blend, color correction)
