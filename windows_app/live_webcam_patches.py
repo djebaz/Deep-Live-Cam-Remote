@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from windows_app import processing_options_patches as _processing_options_patches
 from windows_app import app as base
 from windows_app import async_outputs as async_base
 from windows_app import ui_patches as ui_base
