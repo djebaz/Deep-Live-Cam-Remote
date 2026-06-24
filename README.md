@@ -125,11 +125,14 @@ py -3.11 -m venv .venv_build
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1
 ```
 
-The default build is `--onedir` and writes output under `dist/Deep-Live-Cam-Remote/`.
+The default build is `--onedir` and writes versioned output under `dist/<version>/`. Artifact names include the resolved version and Python version, for example `Deep-Live-Cam-Remote-0.1.0-py3.11.exe`.
 
 Optional switches:
 
 ```powershell
+# Build with an explicit release version
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -Version 0.1.0
+
 # Reinstall requirements and clean PyInstaller cache/build output
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -Clean
 
@@ -146,7 +149,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -Re
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -SkipInstall
 ```
 
-Build outputs and `.venv_build/` are intentionally ignored by git. Lite builds exclude `cv2`, `numpy`, and `pyvirtualcam`, so the Live webcam workflow is not bundled.
+Build outputs and `.venv_build/` are intentionally ignored by git. If `-Version` is omitted, the script tries `pyproject.toml` and then `git describe --tags --always`. Lite builds exclude `cv2`, `numpy`, and `pyvirtualcam`, so the Live webcam workflow is not bundled.
+
+### GitHub Actions packaging
+
+Two manual workflows are available under the repository **Actions** tab:
+
+- **Build Desktop App EXE** (`.github/workflows/build-desktop-app.yml`) builds Full, Lite, or both flavors and uploads the versioned `dist/<version>/` output as a short-retention Actions artifact.
+- **Build and Release Desktop App** (`.github/workflows/build-and-release.yml`) builds from an existing release tag and uploads the generated `.exe` assets to that GitHub Release. For `onedir` builds, the workflow zips each bundle before uploading.
+
+Both workflows use Python 3.11, call `scripts/build_remote_app.ps1`, keep UPX disabled, and expose the same Full/Lite plus `onefile`/`onedir` choices as the local build script.
 
 ## Notebook round-trip workflow
 

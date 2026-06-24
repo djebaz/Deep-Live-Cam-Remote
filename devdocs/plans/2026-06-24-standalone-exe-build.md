@@ -26,6 +26,11 @@
 - [x] Add `.venv_build/` ignore rule.
 - [x] Add `scripts/build_remote_app.ps1` for repeatable PyInstaller builds, including `-RecreateVenv` for failed/stale build environments.
 - [x] Add `-Lite` build mode to exclude live webcam dependencies (`cv2`, `numpy`, `pyvirtualcam`) and emit `Deep-Live-Cam-Remote-Lite`.
+- [x] Add versioned artifact names and versioned `dist/<version>/` output folders.
+- [x] Add `-Version` parameter with fallback to `pyproject.toml` then `git describe --tags --always`.
+- [x] Add Python-version suffixes, final artifact existence checks, and build summary output.
+- [x] Add a manual GitHub Actions build workflow for versioned desktop app artifacts.
+- [x] Add a manual GitHub Actions release-upload workflow for existing GitHub Releases.
 - [x] Include desktop app assets (`windows_app/icon.ico`, `windows_app/dark_theme.qss`) in the build command.
 - [x] Document build usage in README.
 - [x] Update unreleased notes.
@@ -35,10 +40,13 @@
 - Start with `--onedir` as the default because it is easier to inspect and debug than `--onefile`.
 - Provide `-OneFile` as an opt-in build script switch for later release experiments.
 - Provide `-Lite` as a smaller controller build that omits Live webcam dependencies; photo/video remote jobs and API control remain the focus.
-- Keep output under `dist/` and PyInstaller scratch files under `build/`; both are ignored.
+- Keep versioned release output under `dist/<version>/` and PyInstaller scratch/spec files under `build/`; both are ignored.
+- Keep GitHub Actions packaging manual-only so release artifacts are produced deliberately.
+- Use Python 3.11 for Actions packaging because the desktop app/build dependencies are already known around the current local build baseline.
+- Do not add UPX support for now; the expected size reduction is not worth the added complexity and potential AV false-positive risk.
 
 ## Open questions
-- Whether the eventual release artifact should be onedir zip, onefile exe, lite onefile exe, or installer.
+- Whether the eventual default release artifact should be onedir zip, onefile exe, lite onefile exe, or installer. Versioned names/folders and Actions workflows now support the current options.
 - Whether to rename `windows_app/` and launchers to neutral `remote_app/` names before the first public release.
 
 ## Build outputs observed
@@ -50,4 +58,6 @@
 - [x] Build on Windows: USER confirmed onedir build worked; Codex ran full and Lite onefile build commands successfully
 - [ ] Launch packaged app: USER
 - [ ] Connect to Colab API from packaged app: USER
+- [ ] Run GitHub Actions build workflow: USER
+- [ ] Run GitHub Actions release workflow against a real release tag: USER
 - [ ] Verify icon/QSS/media playback assets: USER
