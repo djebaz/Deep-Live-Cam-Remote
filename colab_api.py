@@ -288,6 +288,18 @@ def start_job(kind: str, argv: list[str]) -> JobState:
     return job
 
 
+def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple[int, int]:
+    height, width = frame.shape[:2]
+    configured = config.get("max_width")
+    try:
+        max_width = int(configured) if configured else width
+    except (TypeError, ValueError):
+        max_width = width
+    max_width = max(2, min(width, max_width))
+    process_width, process_height, _fps = colab_batch.processing_geometry(width, height, 30.0, max_width, 30.0)
+    return process_width, process_height
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     paths = ensure_drive_layout()
@@ -461,11 +473,18 @@ async def live_socket(websocket: WebSocket) -> None:
         source_face=Path(config.get("source_face") or SOURCE_DIR / "source.png"),
         map_config=None,
         many_faces=bool(config.get("many_faces", False)),
+        opacity=float(config.get("opacity", 1.0)),
+        sharpness=float(config.get("sharpness", 0.0)),
+        mouth_mask_size=float(config.get("mouth_mask_size", 0.0)),
+        poisson_blend=bool(config.get("poisson_blend", False)),
+        color_correction=bool(config.get("color_correction", False)),
+        interpolation_weight=float(config.get("interpolation_weight", 0.0)),
         enhancer=config.get("enhancer", "none"),
     )
     with ENGINE_LOCK:
         engine = colab_batch.ModernEngine(process_config)
     await websocket.send_json({"status": "ready"})
+    geometry_logged = False
     try:
         while True:
             payload = await websocket.receive_bytes()
@@ -474,8 +493,26 @@ async def live_socket(websocket: WebSocket) -> None:
             if frame is None:
                 await websocket.send_json({"error": "invalid frame"})
                 continue
+            frame_height, frame_width = frame.shape[:2]
+            process_width, process_height = live_processing_geometry(frame, config)
+            if (process_width, process_height) == (frame_width, frame_height):
+                process_frame = frame
+            else:
+                interpolation = cv2.INTER_AREA if process_width < frame_width or process_height < frame_height else cv2.INTER_LINEAR
+                process_frame = cv2.resize(frame, (process_width, process_height), interpolation=interpolation)
+            if not geometry_logged:
+                await websocket.send_json({
+                    "status": "live_geometry",
+                    "input": f"{frame_width}x{frame_height}",
+                    "processing": f"{process_width}x{process_height}",
+                })
+                geometry_logged = True
             with ENGINE_LOCK:
-                output = engine.process(frame.copy(), "live")
+                output = engine.process(process_frame.copy(), "live")
+            if output is None:
+                output = process_frame
+            if output.shape[:2] != (process_height, process_width):
+                output = cv2.resize(output, (process_width, process_height), interpolation=cv2.INTER_LINEAR)
             ok, encoded = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), int(config.get("jpeg_quality", 80))])
             if ok:
                 await websocket.send_bytes(encoded.tobytes())
