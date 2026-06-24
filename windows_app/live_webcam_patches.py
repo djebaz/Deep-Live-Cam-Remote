@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,78 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
         logs.append(f"live source uploaded to: {live_settings.source_face}")
 
     return {"settings": live_settings, "logs": logs}
+
+
+class LiveWorker(base.LiveWorker):
+    async def _run_live(self) -> None:
+        import cv2
+        import websockets
+
+        uri = self.settings.base_url.replace("http://", "ws://") + "/ws/live"
+        self.message.emit(f"connecting live websocket: {uri}")
+        cap = cv2.VideoCapture(self.settings.camera_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"could not open camera index {self.settings.camera_index}")
+        virtual_cam = None
+        try:
+            async with websockets.connect(uri, max_size=8 * 1024 * 1024) as websocket:
+                await websocket.send(
+                    base.json.dumps(
+                        {
+                            "source_face": self.settings.source_face,
+                            "many_faces": self.settings.many_faces,
+                            "enhancer": self.settings.enhancer,
+                            "opacity": self.settings.opacity,
+                            "sharpness": self.settings.sharpness,
+                            "mouth_mask_size": self.settings.mouth_mask_size,
+                            "interpolation_weight": self.settings.interpolation_weight,
+                            "poisson_blend": self.settings.poisson_blend,
+                            "color_correction": self.settings.color_correction,
+                            "max_width": self.settings.max_width,
+                            "jpeg_quality": 80,
+                        }
+                    )
+                )
+                ready = await websocket.recv()
+                self.message.emit(f"live backend: {ready}")
+                while not self._stop:
+                    ok, frame = cap.read()
+                    if not ok:
+                        await asyncio.sleep(0.03)
+                        continue
+                    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    if not ok:
+                        continue
+                    await websocket.send(encoded.tobytes())
+                    reply = await websocket.recv()
+                    if isinstance(reply, str):
+                        self.message.emit(reply)
+                        continue
+                    self.frame.emit(reply)
+                    if virtual_cam is None:
+                        try:
+                            import numpy as np
+                            import pyvirtualcam
+
+                            decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            h, w = decoded.shape[:2]
+                            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=20, device=self.settings.virtual_camera or None)
+                            self.message.emit(f"virtual camera opened: {virtual_cam.device}")
+                        except Exception as exc:
+                            self.message.emit(f"virtual camera unavailable: {exc}")
+                            virtual_cam = False
+                    if virtual_cam:
+                        import numpy as np
+
+                        decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+                        virtual_cam.send(rgb)
+                        virtual_cam.sleep_until_next_frame()
+        finally:
+            cap.release()
+            if virtual_cam and hasattr(virtual_cam, "close"):
+                virtual_cam.close()
+            self.message.emit("live worker stopped")
 
 
 def start_live(self: base.MainWindow) -> None:
@@ -64,7 +137,7 @@ def start_live(self: base.MainWindow) -> None:
             self.log(text)
             ui_base._set_process_status(self, "live", text)
             return
-        self.live_worker = base.LiveWorker(live_settings)
+        self.live_worker = LiveWorker(live_settings)
         self.live_worker.message.connect(lambda text: ui_base._poll_message(self, "live", text))
         self.live_worker.frame.connect(self.update_live_preview)
         self.live_worker.start()
