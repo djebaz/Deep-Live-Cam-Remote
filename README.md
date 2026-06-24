@@ -115,6 +115,35 @@ The app currently provides:
 - Local source/input upload to the Colab API.
 - Settings sync between photo and video workflows.
 
+## Standalone desktop app build
+
+Use an isolated build virtual environment so PyInstaller only bundles dependencies intended for the desktop remote controller. `requirements-build.txt` intentionally does not install Colab/server/model packages such as InsightFace, TensorFlow, ONNX Runtime GPU, or OpenNSFW.
+
+```powershell
+py -3.11 -m venv .venv_build
+.\.venv_build\Scripts\python.exe -m pip install -r requirements-build.txt
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1
+```
+
+The default build is `--onedir` and writes output under `dist/Deep-Live-Cam-Remote/`.
+
+Optional switches:
+
+```powershell
+# Reinstall requirements and clean PyInstaller cache/build output
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -Clean
+
+# Try a single-file executable
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -OneFile
+
+# Recreate a failed or stale build environment
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -RecreateVenv
+
+# Reuse an already prepared .venv_build environment
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_remote_app.ps1 -SkipInstall
+```
+
+Build outputs and `.venv_build/` are intentionally ignored by git.
 ## Notebook round-trip workflow
 
 The Colab notebook is generated from the markerized Python source.
@@ -189,3 +218,6 @@ python -m pytest .\tests -q
 ```
 
 Do not commit virtual environments, caches, downloaded models, local state, or generated temporary notebooks.
+
+
+
