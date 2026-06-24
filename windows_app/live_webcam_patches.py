@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,93 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
         logs.append(f"live source uploaded to: {live_settings.source_face}")
 
     return {"settings": live_settings, "logs": logs}
+
+
+class RatioPreservingLiveWorker(base.LiveWorker):
+    async def _run_live(self) -> None:
+        import cv2
+        import numpy as np
+        import websockets
+
+        uri = self.settings.base_url.replace("http://", "ws://") + "/ws/live"
+        cap = cv2.VideoCapture(self.settings.camera_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"could not open camera index {self.settings.camera_index}")
+
+        virtual_cam = None
+        logged_resize = False
+        try:
+            self.message.emit(f"connecting live websocket: {uri}")
+            async with websockets.connect(uri, max_size=8 * 1024 * 1024) as websocket:
+                await websocket.send(
+                    base.json.dumps(
+                        {
+                            "source_face": self.settings.source_face,
+                            "enhancer": self.settings.enhancer,
+                            "many_faces": self.settings.many_faces,
+                            "jpeg_quality": 80,
+                        }
+                    )
+                )
+                ready = await websocket.recv()
+                self.message.emit(f"live backend: {ready}")
+                while not self._stop:
+                    ok, frame = cap.read()
+                    if not ok:
+                        await asyncio.sleep(0.03)
+                        continue
+
+                    frame_h, frame_w = frame.shape[:2]
+                    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    if not ok:
+                        continue
+                    await websocket.send(encoded.tobytes())
+                    reply = await websocket.recv()
+                    if isinstance(reply, str):
+                        self.message.emit(reply)
+                        continue
+
+                    decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if decoded is None:
+                        self.message.emit("live backend returned an invalid frame")
+                        continue
+                    out_h, out_w = decoded.shape[:2]
+                    if (out_w, out_h) != (frame_w, frame_h):
+                        interpolation = cv2.INTER_AREA if out_w > frame_w or out_h > frame_h else cv2.INTER_LINEAR
+                        decoded = cv2.resize(decoded, (frame_w, frame_h), interpolation=interpolation)
+                        if not logged_resize:
+                            self.message.emit(f"live output resized from {out_w}x{out_h} to webcam frame {frame_w}x{frame_h}")
+                            logged_resize = True
+
+                    ok, normalized_reply = cv2.imencode(".jpg", decoded, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    if not ok:
+                        continue
+                    normalized_bytes = normalized_reply.tobytes()
+                    self.frame.emit(normalized_bytes)
+
+                    if virtual_cam is None:
+                        try:
+                            import pyvirtualcam
+
+                            virtual_cam = pyvirtualcam.Camera(
+                                width=frame_w,
+                                height=frame_h,
+                                fps=20,
+                                device=self.settings.virtual_camera or None,
+                            )
+                            self.message.emit(f"virtual camera opened: {virtual_cam.device}")
+                        except Exception as exc:
+                            self.message.emit(f"virtual camera unavailable: {exc}")
+                            virtual_cam = False
+                    if virtual_cam:
+                        rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+                        virtual_cam.send(rgb)
+                        virtual_cam.sleep_until_next_frame()
+        finally:
+            cap.release()
+            if virtual_cam and hasattr(virtual_cam, "close"):
+                virtual_cam.close()
+            self.message.emit("live worker stopped")
 
 
 def start_live(self: base.MainWindow) -> None:
@@ -64,7 +152,7 @@ def start_live(self: base.MainWindow) -> None:
             self.log(text)
             ui_base._set_process_status(self, "live", text)
             return
-        self.live_worker = base.LiveWorker(live_settings)
+        self.live_worker = RatioPreservingLiveWorker(live_settings)
         self.live_worker.message.connect(lambda text: ui_base._poll_message(self, "live", text))
         self.live_worker.frame.connect(self.update_live_preview)
         self.live_worker.start()
