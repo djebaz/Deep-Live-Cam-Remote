@@ -465,24 +465,30 @@ async def job_socket(websocket: WebSocket, job_id: str) -> None:
 @app.websocket("/ws/live")
 async def live_socket(websocket: WebSocket) -> None:
     await websocket.accept()
-    config_payload = await websocket.receive_text()
-    config = json.loads(config_payload)
-    process_config = colab_batch.ProcessConfig(
-        input_dir=PHOTOS_DIR,
-        output_dir=OUTPUT_PHOTOS_DIR,
-        source_face=Path(config.get("source_face") or SOURCE_DIR / "source.png"),
-        map_config=None,
-        many_faces=bool(config.get("many_faces", False)),
-        opacity=float(config.get("opacity", 1.0)),
-        sharpness=float(config.get("sharpness", 0.0)),
-        mouth_mask_size=float(config.get("mouth_mask_size", 0.0)),
-        poisson_blend=bool(config.get("poisson_blend", False)),
-        color_correction=bool(config.get("color_correction", False)),
-        interpolation_weight=float(config.get("interpolation_weight", 0.0)),
-        enhancer=config.get("enhancer", "none"),
-    )
-    with ENGINE_LOCK:
-        engine = colab_batch.ModernEngine(process_config)
+    try:
+        config_payload = await websocket.receive_text()
+        config = json.loads(config_payload)
+        process_config = colab_batch.ProcessConfig(
+            input_dir=PHOTOS_DIR,
+            output_dir=OUTPUT_PHOTOS_DIR,
+            source_face=Path(config.get("source_face") or SOURCE_DIR / "source.png"),
+            map_config=None,
+            many_faces=bool(config.get("many_faces", False)),
+            opacity=float(config.get("opacity", 1.0)),
+            sharpness=float(config.get("sharpness", 0.0)),
+            mouth_mask_size=float(config.get("mouth_mask_size", 0.0)),
+            poisson_blend=bool(config.get("poisson_blend", False)),
+            color_correction=bool(config.get("color_correction", False)),
+            interpolation_weight=float(config.get("interpolation_weight", 0.0)),
+            enhancer=config.get("enhancer", "none"),
+        )
+        with ENGINE_LOCK:
+            engine = colab_batch.ModernEngine(process_config)
+    except Exception as exc:
+        await websocket.send_json({"error": f"live init failed: {exc}"})
+        await websocket.close(code=1011)
+        return
+
     await websocket.send_json({"status": "ready"})
     geometry_logged = False
     try:
@@ -507,8 +513,12 @@ async def live_socket(websocket: WebSocket) -> None:
                     "processing": f"{process_width}x{process_height}",
                 })
                 geometry_logged = True
-            with ENGINE_LOCK:
-                output = engine.process(process_frame.copy(), "live")
+            try:
+                with ENGINE_LOCK:
+                    output = engine.process(process_frame.copy(), "live")
+            except Exception as exc:
+                await websocket.send_json({"error": f"live frame failed: {exc}"})
+                continue
             if output is None:
                 output = process_frame
             if output.shape[:2] != (process_height, process_width):
