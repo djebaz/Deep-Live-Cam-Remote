@@ -222,8 +222,6 @@ def sync_settings(self: base.MainWindow) -> None:
     else:
         self.settings.live_height = _live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT)
     self.settings.live_options = _read_live_options(self)
-    if self.tabs.tabText(self.tabs.currentIndex()) == "Live":
-        _apply_live_options_to_settings(self.settings)
     base.save_settings(self.settings)
 
 
@@ -343,7 +341,6 @@ def start_live(self: base.MainWindow) -> None:
 
     async_base._ensure_output_worker_state(self)
     self.settings.live_options = _read_live_options(self)
-    _apply_live_options_to_settings(self.settings)
     base.save_settings(self.settings)
     settings = async_base._copy_settings(self.settings)
     settings.live_width = _live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH)
