@@ -38,6 +38,16 @@ def _live_setting(settings: base.AppSettings, name: str, default: int) -> int:
     return max(1, value)
 
 
+def _json_payload(text: object) -> dict[str, Any]:
+    if not isinstance(text, str):
+        return {}
+    try:
+        payload = base.json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _default_live_options() -> dict[str, Any]:
     defaults = base.AppSettings()
     return {
@@ -292,6 +302,9 @@ class LiveWorker(base.LiveWorker):
                 )
                 ready = await websocket.recv()
                 self.message.emit(f"live backend: {ready}")
+                ready_payload = _json_payload(ready)
+                if "error" in ready_payload:
+                    raise RuntimeError(str(ready_payload["error"]))
                 while not self._stop:
                     ok, frame = cap.read()
                     if not ok:
@@ -304,6 +317,9 @@ class LiveWorker(base.LiveWorker):
                     reply = await websocket.recv()
                     if isinstance(reply, str):
                         self.message.emit(reply)
+                        payload = _json_payload(reply)
+                        if "error" in payload:
+                            raise RuntimeError(str(payload["error"]))
                         continue
                     self.frame.emit(reply)
                     if virtual_cam is None:
