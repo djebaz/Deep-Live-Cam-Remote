@@ -188,7 +188,11 @@ def refresh_outputs(self: base.MainWindow) -> None:
     self.outputs_list.clear()
     self.outputs_list.setEnabled(False)
     self.output_files = []
+    self.output_current_loaded = False
     self.stop_output_video()
+    if hasattr(self, "outputs_progress"):
+        self.outputs_progress.setVisible(True)
+        self.outputs_progress.setValue(0)
 
     def fetch() -> dict[str, Any]:
         return self.client.request_json("GET", f"/outputs/{kind}", timeout=5.0)
@@ -198,9 +202,16 @@ def refresh_outputs(self: base.MainWindow) -> None:
             return
         self.outputs_list.setEnabled(True)
         self.output_files = list((payload if isinstance(payload, dict) else {}).get("files") or [])
-        for item in self.output_files:
+        total = len(self.output_files)
+        for idx, item in enumerate(self.output_files):
             label = f"[{item.get('source')}] {item.get('relative_path')} ({base.format_size(item.get('size'))})"
             self.outputs_list.addItem(QListWidgetItem(label))
+            if hasattr(self, "outputs_progress"):
+                progress = int((idx + 1) / total * 100) if total > 0 else 0
+                self.outputs_progress.setValue(progress)
+            base.QApplication.processEvents()
+        if hasattr(self, "outputs_progress"):
+            self.outputs_progress.setVisible(False)
         self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
         if self.output_files:
             self.outputs_list.setCurrentRow(0)
@@ -212,6 +223,8 @@ def refresh_outputs(self: base.MainWindow) -> None:
         if task_id != self.output_refresh_task_id:
             return
         self.outputs_list.setEnabled(True)
+        if hasattr(self, "outputs_progress"):
+            self.outputs_progress.setVisible(False)
         self.output_status.setText(f"refresh failed: {error}")
         self.log(f"outputs refresh failed: {error}")
 
@@ -221,12 +234,14 @@ def refresh_outputs(self: base.MainWindow) -> None:
 def show_output_at(self: base.MainWindow, index: int) -> None:
     if index < 0 or index >= len(self.output_files):
         return
+    self.output_current_loaded = False
     _ensure_output_worker_state(self)
     item = dict(self.output_files[index])
     kind = self.outputs_kind.currentText()
     path = str(item.get("download_path") or "")
     if not path:
         self.output_status.setText("selected output has no download path")
+        self.output_current_loaded = True
         return
     self.stop_output_video()
     if kind == "photos":
@@ -245,16 +260,19 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
             image = QImage.fromData(data if isinstance(data, bytes) else bytes(data))
             if image.isNull():
                 self.output_status.setText("preview failed: downloaded image could not be decoded")
+                self.output_current_loaded = True
                 return
             pixmap = QPixmap.fromImage(image).scaled(self.output_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.output_preview.setPixmap(pixmap)
             self.output_status.setText(f"Showing {item.get('relative_path')} from {item.get('source')}")
+            self.output_current_loaded = True
 
         def photo_failed(task_id: str, error: str) -> None:
             if task_id != self.output_preview_task_id:
                 return
             self.output_status.setText(f"preview failed: {error}")
             self.log(f"output preview failed: {error}")
+            self.output_current_loaded = True
 
         self.output_preview_task_id = _start_output_task(self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed)
         return
@@ -289,18 +307,21 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
                 f"Video ready to download:\n{ready_relative}\n\nInstall PySide6 multimedia support for inline playback."
             )
             self.output_status.setText(f"Selected video {ready_relative}")
+            self.output_current_loaded = True
             return
         self.output_preview.hide()
         self.output_video.show()
         self.output_player.setSource(QUrl.fromLocalFile(str(ready_path)))
         self.output_player.play()
         self.output_status.setText(f"Playing {ready_relative}")
+        self.output_current_loaded = True
 
     def video_failed(task_id: str, error: str) -> None:
         if task_id != self.output_preview_task_id:
             return
         self.output_status.setText(f"preview failed: {error}")
         self.log(f"output preview failed: {error}")
+        self.output_current_loaded = True
 
     self.output_preview_task_id = _start_output_task(self, f"Loading video preview: {relative}", fetch_video, video_ready, video_failed)
 
