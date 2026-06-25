@@ -180,6 +180,32 @@ def _build_photos_tab(self: MainWindow) -> None:
     form.addRow("Photos output path", self.photos_output)
     layout.addLayout(form)
 
+    advanced_box = QGroupBox("Photo processing limits")
+    advanced_form = QFormLayout(advanced_box)
+    self.photos_max_width = QSpinBox()
+    self.photos_max_width.setRange(0, 8192)
+    self.photos_max_width.setSpecialValueText("Original")
+    self.photos_max_width.setValue(int(getattr(self.settings, "photo_max_width", 0)))
+    self.photos_quality = QSpinBox()
+    self.photos_quality.setRange(1, 100)
+    self.photos_quality.setValue(int(getattr(self.settings, "photo_quality", 95)))
+    self.photos_detector_size = QSpinBox()
+    self.photos_detector_size.setRange(160, 1280)
+    self.photos_detector_size.setSingleStep(32)
+    self.photos_detector_size.setValue(int(getattr(self.settings, "photo_detector_size", 640)))
+    self.photos_face_model_pack = QComboBox()
+    self.photos_face_model_pack.addItems(["buffalo_l", "buffalo_m", "buffalo_s"])
+    self.photos_face_model_pack.setCurrentText(str(getattr(self.settings, "photo_face_model_pack", "buffalo_l")))
+    self.photos_swapper_precision = QComboBox()
+    self.photos_swapper_precision.addItems(["fp32", "fp16"])
+    self.photos_swapper_precision.setCurrentText(str(getattr(self.settings, "photo_swapper_precision", "fp32")))
+    advanced_form.addRow("Max width", self.photos_max_width)
+    advanced_form.addRow("Image quality", self.photos_quality)
+    advanced_form.addRow("Detector size", self.photos_detector_size)
+    advanced_form.addRow("Face model pack", self.photos_face_model_pack)
+    advanced_form.addRow("Swapper precision", self.photos_swapper_precision)
+    layout.addWidget(advanced_box)
+
     self.photos_start_btn = QPushButton("Start photo batch")
     self.photos_start_btn.setObjectName("primaryButton")
     self.photos_start_btn.clicked.connect(lambda: _toggle_photos_batch(self))
@@ -426,5 +452,3 @@ def _build_live_tab(self: MainWindow) -> None:
 def _poll_message(window: MainWindow, kind: str, text: str) -> None:
     window.log(text)
     _set_process_status(window, kind, text)
-
-
