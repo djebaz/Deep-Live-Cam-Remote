@@ -20,12 +20,16 @@ from windows_app.live_options import (
 from windows_app.window_core import WindowCore as MainWindow
 
 
+def create_live_preview_buffer() -> deque:
+    return deque()
+
+
 def start_live_preview_timer(self: MainWindow, settings: AppSettings) -> None:
     timer = getattr(self, "_live_preview_timer", None)
     if timer is None:
         return
     self._live_latest_jpeg = None
-    self._live_preview_buffer = deque()
+    self._live_preview_buffer = create_live_preview_buffer()
     self._live_preview_buffer_seconds = float(_live_options(settings)["preview_buffer_seconds"])
     self._live_preview_started = self._live_preview_buffer_seconds <= 0
     self._live_preview_frames = 0
@@ -53,7 +57,7 @@ def enqueue_live_preview_frame(self: MainWindow, frame_bytes: bytes) -> None:
     # queued frame per timer tick. Drop only if the backlog exceeds a safety cap.
     buffer = getattr(self, "_live_preview_buffer", None)
     if buffer is None:
-        buffer = deque()
+        buffer = create_live_preview_buffer()
         self._live_preview_buffer = buffer
     now = time.monotonic()
     buffer.append((now, bytes(frame_bytes)))
@@ -114,7 +118,6 @@ def _preview_target_size(self: MainWindow, image: QImage) -> tuple[int, int]:
     return max(1, int(round(panel_height * image_ratio))), panel_height
 
 
-
 def update_live_preview_from_last_frame(self: MainWindow) -> None:
     frame = getattr(self, "_live_preview_last_frame", None)
     if frame:
@@ -158,4 +161,3 @@ def update_live_preview(self: MainWindow, frame_bytes: bytes, remember: bool = T
                 f"rendered {self._live_preview_frames})"
             ),
         )
-
