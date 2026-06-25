@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QFileDialog, QListWidgetItem
 
 from windows_app import app as base
 
-DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64KB for smooth progress updates
 
 
 class OutputTaskWorker(QThread):
