@@ -46,6 +46,15 @@ LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 
 
+def bool_config(config: dict[str, Any], name: str, default: bool) -> bool:
+    value = config.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
 class JobRequest(BaseModel):
     source_face: str = Field(default=str(SOURCE_DIR / "source.png"))
     input_dir: str | None = None
@@ -403,6 +412,8 @@ def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, conf
         return frame, timings
 
     swap_started = time.monotonic()
+    if not getattr(engine, "cache_source_face", True):
+        engine.refresh_default_source()
     bboxes = []
     if many_faces:
         faces = detected or []
@@ -618,6 +629,7 @@ async def live_socket(websocket: WebSocket) -> None:
             enhancer=config.get("enhancer", "none"),
             face_model_pack=live_face_model_pack(config),
             swapper_precision=live_swapper_precision(config),
+            cache_source_face=bool_config(config, "cache_source_face", True),
         )
         with ENGINE_LOCK:
             engine = colab_batch.ModernEngine(process_config)
@@ -637,7 +649,8 @@ async def live_socket(websocket: WebSocket) -> None:
         "swapper_precision": live_swapper_precision(config),
         "swapper_loaded_precision": swapper_diagnostics.get("loaded_precision", ""),
         "swapper_model_path": swapper_diagnostics.get("model_path", ""),
-        "source_embedding_cached": engine.default_source is not None,
+        "source_embedding_cached": engine.default_source is not None and engine.cache_source_face,
+        "cache_source_face": engine.cache_source_face,
     })
     geometry_logged = False
     live_state: dict[str, Any] = {}
@@ -687,6 +700,7 @@ async def live_socket(websocket: WebSocket) -> None:
                     "face_model_pack": live_face_model_pack(config),
                     "swapper_precision": live_swapper_precision(config),
                     "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
+                    "cache_source_face": getattr(engine, "cache_source_face", True),
                 })
                 geometry_logged = True
             try:
@@ -741,6 +755,8 @@ async def live_socket(websocket: WebSocket) -> None:
                         "face_model_pack": live_face_model_pack(config),
                         "swapper_precision": live_swapper_precision(config),
                         "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
+                        "cache_source_face": getattr(engine, "cache_source_face", True),
+                    "cache_source_face": getattr(engine, "cache_source_face", True),
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
                         "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),

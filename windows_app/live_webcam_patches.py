@@ -37,6 +37,7 @@ LIVE_OPTION_KEYS = (
     "detect_every_n",
     "face_model_pack",
     "swapper_precision",
+    "cache_source_face",
 )
 
 _previous_load_settings = base.load_settings
@@ -87,6 +88,7 @@ def _default_live_options() -> dict[str, Any]:
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
         "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
         "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
+        "cache_source_face": True,
     }
 
 
@@ -112,6 +114,7 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["face_model_pack"] = str(options["face_model_pack"])
     if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
         options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
+    options["cache_source_face"] = bool(options["cache_source_face"])
     options["swapper_precision"] = str(options["swapper_precision"]).lower()
     if options["swapper_precision"] not in LIVE_SWAPPER_PRECISIONS:
         options["swapper_precision"] = DEFAULT_LIVE_SWAPPER_PRECISION
@@ -180,6 +183,7 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "detect_every_n": int(window.live_detect_every_n.value()),
             "face_model_pack": window.live_face_model_pack.currentText(),
             "swapper_precision": window.live_swapper_precision.currentText(),
+            "cache_source_face": window.live_cache_source_face.isChecked(),
         }
     )
 
@@ -202,6 +206,7 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_detect_every_n.setValue(int(options["detect_every_n"]))
     window.live_face_model_pack.setCurrentText(str(options["face_model_pack"]))
     window.live_swapper_precision.setCurrentText(str(options["swapper_precision"]))
+    window.live_cache_source_face.setChecked(bool(options["cache_source_face"]))
 
 
 def load_settings() -> base.AppSettings:
@@ -316,6 +321,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_swapper_precision = base.QComboBox()
     self.live_swapper_precision.addItems(list(LIVE_SWAPPER_PRECISIONS))
     self.live_swapper_precision.setToolTip("Use fp32 as baseline; choose fp16 to test T4/RTX swap_ms.")
+    self.live_cache_source_face = base.QCheckBox()
+    self.live_cache_source_face.setToolTip("Keep on for speed. Turn off to re-read/re-analyze the source face each frame if a source swap looks stale.")
 
     options_form.addRow("Many faces", self.live_many_faces)
     options_form.addRow("Enhancer", self.live_enhancer)
@@ -331,6 +338,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("Detect every N frames", self.live_detect_every_n)
     options_form.addRow("InsightFace pack", self.live_face_model_pack)
     options_form.addRow("Swapper precision", self.live_swapper_precision)
+    options_form.addRow("Cache source face", self.live_cache_source_face)
     _apply_live_options_to_widgets(self)
     controls_layout.addWidget(options_box)
 
@@ -567,6 +575,7 @@ class LiveWorker(base.LiveWorker):
                             "detect_every_n": getattr(self.settings, "detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
                             "face_model_pack": getattr(self.settings, "face_model_pack", DEFAULT_LIVE_FACE_MODEL_PACK),
                             "swapper_precision": getattr(self.settings, "swapper_precision", DEFAULT_LIVE_SWAPPER_PRECISION),
+                            "cache_source_face": getattr(self.settings, "cache_source_face", True),
                         }
                     )
                 )
