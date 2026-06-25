@@ -98,6 +98,36 @@ def _apply_live_options_to_settings(settings: base.AppSettings) -> None:
     settings.live_jpeg_quality = options["jpeg_quality"]
 
 
+def _source_fields(window: base.MainWindow) -> list[Any]:
+    fields = []
+    for name in ("source_face", "video_source_face", "live_source_face"):
+        field = getattr(window, name, None)
+        if field is not None:
+            fields.append(field)
+    return fields
+
+
+def _link_live_source_fields(window: base.MainWindow) -> None:
+    if getattr(window, "_live_source_fields_linked", False):
+        return
+    fields = _source_fields(window)
+    if len(fields) < 2:
+        return
+
+    def mirror(origin: Any, text: str) -> None:
+        window.settings.source_face = text.strip()
+        for target in _source_fields(window):
+            if target is origin or target.text() == text:
+                continue
+            target.blockSignals(True)
+            target.setText(text)
+            target.blockSignals(False)
+
+    for field in fields:
+        field.textChanged.connect(lambda text, origin=field: mirror(origin, text))
+    window._live_source_fields_linked = True
+
+
 def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
     if not hasattr(window, "live_max_width"):
         return _live_options(window.settings)
@@ -172,6 +202,14 @@ def _build_live_tab(self: base.MainWindow) -> None:
     if form is None:
         return
 
+    self.live_source_face = base.QLineEdit(self.settings.source_face)
+    live_source_row = self._path_row(
+        self.live_source_face,
+        lambda: self._browse_file(self.live_source_face, "Select source face image"),
+    )
+    form.addRow("Source face path", live_source_row)
+    _link_live_source_fields(self)
+
     self.live_width = base.QSpinBox()
     self.live_width.setRange(160, 4096)
     self.live_width.setValue(_live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH))
@@ -225,6 +263,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
 
 def sync_settings(self: base.MainWindow) -> None:
     _original_sync_settings(self)
+    if hasattr(self, "live_source_face"):
+        self.settings.source_face = self.live_source_face.text().strip()
     if hasattr(self, "live_width"):
         self.settings.live_width = int(self.live_width.value())
     else:
@@ -256,6 +296,7 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
     live_settings.live_options = _live_options(settings)
     _apply_live_options_to_settings(live_settings)
     source_face = live_settings.source_face
+    logs.append(f"live source face path: {source_face or '(empty)'}")
     if base.is_local_path(source_face):
         source_path = Path(source_face)
         if not source_path.is_file():
@@ -267,6 +308,8 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
         response = client.upload_file("/upload/file?kind=source", upload_path, timeout=30.0)
         live_settings.source_face = str(response.get("path") or source_face)
         logs.append(f"live source uploaded to: {live_settings.source_face}")
+    else:
+        logs.append(f"using remote source face for live: {source_face}")
 
     return {"settings": live_settings, "logs": logs}
 
