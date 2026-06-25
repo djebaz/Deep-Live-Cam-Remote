@@ -23,6 +23,9 @@ from windows_app.settings import AppSettings, PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 from windows_app.window_core import WindowCore as MainWindow
 from windows_app.workers import PollWorker
 
+MAX_UPLOAD_FILES = 1000
+OUTPUT_SUFFIX = "_face_swapped"
+
 
 def _copy_settings(settings: AppSettings) -> AppSettings:
     return AppSettings(**asdict(settings))
@@ -42,6 +45,60 @@ def _source_upload_path(path: Path) -> tuple[Path, str | None]:
     if image.save(str(output), "PNG"):
         return output, f"normalized source image orientation for upload: {output}"
     return path, None
+
+
+def _expected_output_names(path: Path) -> set[str]:
+    suffix = path.suffix
+    names = {f"{path.stem}{OUTPUT_SUFFIX}{suffix}"}
+    if suffix.lower() != suffix:
+        names.add(f"{path.stem}{OUTPUT_SUFFIX}{suffix.lower()}")
+    return {name.lower() for name in names}
+
+
+def _remote_output_names(payload: object) -> set[str]:
+    names: set[str] = set()
+    files = (payload if isinstance(payload, dict) else {}).get("files") or []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "relative_path", "download_path"):
+            value = item.get(key)
+            if not value:
+                continue
+            text = str(value).replace("\\", "/")
+            names.add(text.lower())
+            names.add(text.rsplit("/", 1)[-1].lower())
+    return names
+
+
+def _filter_processed_local_files(client: ApiClient, kind: str, files: list[Path], logs: list[str]) -> list[Path]:
+    payload = client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
+    output_names = _remote_output_names(payload)
+    if not output_names:
+        logs.append(f"skip_processed preflight: no existing remote {kind} outputs found")
+        return files
+
+    pending: list[Path] = []
+    skipped: list[Path] = []
+    for file_path in files:
+        expected_names = _expected_output_names(file_path)
+        if expected_names & output_names:
+            skipped.append(file_path)
+        else:
+            pending.append(file_path)
+
+    if skipped:
+        logs.append(
+            f"skip_processed preflight: {len(skipped)} local {kind} file(s) already have matching remote outputs; "
+            f"{len(pending)} remain"
+        )
+        sample = ", ".join(path.name for path in skipped[:5])
+        if sample:
+            suffix = "..." if len(skipped) > 5 else ""
+            logs.append(f"skip_processed sample: {sample}{suffix}")
+    else:
+        logs.append(f"skip_processed preflight: no matching remote outputs for {len(files)} local {kind} file(s)")
+    return pending
 
 
 def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]:
@@ -71,6 +128,26 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
         files = local_files(input_path, extensions, settings.recursive)
         if not files:
             raise FileNotFoundError(f"No supported {kind} files found in local path: {input_path}")
+        original_count = len(files)
+        if settings.skip_processed:
+            files = _filter_processed_local_files(client, kind, files, logs)
+            if not files:
+                logs.append(f"skip_processed preflight: all {original_count} local {kind} file(s) already have matching outputs; no job started")
+                return {
+                    "endpoint": None,
+                    "response": {
+                        "status": "skipped",
+                        "skipped": True,
+                        "skipped_count": original_count,
+                        "remaining_count": 0,
+                    },
+                    "logs": logs,
+                }
+        if len(files) > MAX_UPLOAD_FILES:
+            raise ValueError(
+                f"Too many {kind} files for one upload after skip_processed preflight: {len(files)}. "
+                f"Backend maximum is {MAX_UPLOAD_FILES}; select a smaller folder/subset."
+            )
         logs.append(f"uploading {len(files)} local {kind} file(s)")
         response = client.upload_files(f"/upload/{kind}", files, timeout=600.0)
         input_dir = str(response.get("input_dir") or input_path)
@@ -103,6 +180,9 @@ def _start_batch(self: MainWindow, kind: str) -> None:
         for line in payload.get("logs") or []:
             self.log(str(line))
         response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+        if response.get("skipped"):
+            self.output_status.setText(f"{kind} batch skipped: already processed")
+            return
         self.active_job_id = response.get("job_id")
         if self.active_job_id:
             if self.poller:
