@@ -11,6 +11,10 @@ from windows_app.window_core import WindowCore
 # Re-export common application symbols for lightweight compatibility with callers.
 QApplication = QtApplication
 
+# Keep preview buffer construction owned by live_preview while live_webcam still
+# owns Live tab construction during the responsibility split.
+live_webcam.deque = live_preview.create_live_preview_buffer
+
 
 class MainWindow(WindowCore):
     """Canonical Windows remote controller window with explicit feature delegates."""
