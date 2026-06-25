@@ -1,24 +1,53 @@
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QListWidget, QSplitter
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QSplitter,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
-from windows_app import app_base as base
-from windows_app import output_tasks as async_base
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+except Exception:
+    QAudioOutput = None
+    QMediaPlayer = None
+    QVideoWidget = None
+
+from windows_app import output_tasks as output_tasks_base
+from windows_app.api_client import format_size
+from windows_app.settings import save_settings
+from windows_app.window_core import WindowCore as MainWindow
+from windows_app.workers import LiveWorker, PollWorker
 
 
-def _link_source_fields(window: base.MainWindow) -> None:
+def _link_source_fields(window: MainWindow) -> None:
     if getattr(window, "_source_fields_linked", False):
         return
     if not hasattr(window, "source_face") or not hasattr(window, "video_source_face"):
         return
 
-    def mirror(target: base.QLineEdit, text: str) -> None:
+    def mirror(target: QLineEdit, text: str) -> None:
         if target.text() == text:
             return
         target.blockSignals(True)
@@ -30,14 +59,14 @@ def _link_source_fields(window: base.MainWindow) -> None:
     window._source_fields_linked = True
 
 
-def _status_label(text: str = "") -> base.QLabel:
-    label = base.QLabel(text)
+def _status_label(text: str = "") -> QLabel:
+    label = QLabel(text)
     label.setObjectName("statusLabel")
     label.setWordWrap(True)
     return label
 
 
-def _set_process_status(window: base.MainWindow, kind: str, text: str) -> None:
+def _set_process_status(window: MainWindow, kind: str, text: str) -> None:
     names = {
         "setup": "setup_status",
         "photos": "photos_status",
@@ -53,7 +82,7 @@ def _set_process_status(window: base.MainWindow, kind: str, text: str) -> None:
         window.output_status.setText(text)
 
 
-def _set_batch_button_running(window: base.MainWindow, kind: str) -> None:
+def _set_batch_button_running(window: MainWindow, kind: str) -> None:
     """Set the batch button to 'Stop' state (danger style)."""
     btn = getattr(window, f"{kind}_start_btn", None)
     if btn is None:
@@ -63,7 +92,7 @@ def _set_batch_button_running(window: base.MainWindow, kind: str) -> None:
     btn.setStyle(btn.style())  # Force style refresh
 
 
-def _set_batch_button_idle(window: base.MainWindow, kind: str) -> None:
+def _set_batch_button_idle(window: MainWindow, kind: str) -> None:
     """Set the batch button to 'Start' state (primary style)."""
     btn = getattr(window, f"{kind}_start_btn", None)
     if btn is None:
@@ -73,12 +102,12 @@ def _set_batch_button_idle(window: base.MainWindow, kind: str) -> None:
     btn.setStyle(btn.style())  # Force style refresh
 
 
-def _is_batch_running(window: base.MainWindow) -> bool:
+def _is_batch_running(window: MainWindow) -> bool:
     """Check if a batch job is currently active."""
     return bool(window.active_job_id)
 
 
-def _toggle_photos_batch(window: base.MainWindow) -> None:
+def _toggle_photos_batch(window: MainWindow) -> None:
     """Toggle between starting and stopping photo batch."""
     if _is_batch_running(window):
         cancel_job(window)
@@ -86,7 +115,7 @@ def _toggle_photos_batch(window: base.MainWindow) -> None:
         start_photos(window)
 
 
-def _toggle_videos_batch(window: base.MainWindow) -> None:
+def _toggle_videos_batch(window: MainWindow) -> None:
     """Toggle between starting and stopping video batch."""
     if _is_batch_running(window):
         cancel_job(window)
@@ -94,27 +123,27 @@ def _toggle_videos_batch(window: base.MainWindow) -> None:
         start_videos(window)
 
 
-def _save_settings_from_setup(window: base.MainWindow) -> None:
+def _save_settings_from_setup(window: MainWindow) -> None:
     window.sync_settings()
     window.log("settings saved")
     _set_process_status(window, "setup", "Settings saved")
 
 
-def _build_setup_tab(self: base.MainWindow) -> None:
-    tab = base.QWidget()
-    layout = base.QVBoxLayout(tab)
-    form = base.QFormLayout()
-    self.host = base.QLineEdit(self.settings.host)
-    self.port = base.QSpinBox()
+def _build_setup_tab(self: MainWindow) -> None:
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
+    form = QFormLayout()
+    self.host = QLineEdit(self.settings.host)
+    self.port = QSpinBox()
     self.port.setRange(1, 65535)
     self.port.setValue(self.settings.port)
-    self.drive_root = base.QLineEdit(self.settings.drive_root)
+    self.drive_root = QLineEdit(self.settings.drive_root)
     form.addRow("Tailscale host/IP", self.host)
     form.addRow("API port", self.port)
     form.addRow("Drive root", self.drive_root)
     layout.addLayout(form)
 
-    self.setup_help = base.QTextEdit(readOnly=True)
+    self.setup_help = QTextEdit(readOnly=True)
     self.setup_help.setObjectName("helpText")
     self.setup_help.setPlainText(
         "Colab setup checklist:\n"
@@ -126,11 +155,11 @@ def _build_setup_tab(self: base.MainWindow) -> None:
     )
     layout.addWidget(self.setup_help)
 
-    row = base.QHBoxLayout()
-    btn = base.QPushButton("Check connection")
+    row = QHBoxLayout()
+    btn = QPushButton("Check connection")
     btn.setObjectName("primaryButton")
     btn.clicked.connect(self.check_connection)
-    save = base.QPushButton("Save settings")
+    save = QPushButton("Save settings")
     save.setObjectName("successButton")
     save.clicked.connect(lambda: _save_settings_from_setup(self))
     row.addWidget(btn)
@@ -143,14 +172,14 @@ def _build_setup_tab(self: base.MainWindow) -> None:
     self.tabs.addTab(tab, "Setup")
 
 
-def _build_photos_tab(self: base.MainWindow) -> None:
-    tab = base.QWidget()
-    layout = base.QVBoxLayout(tab)
+def _build_photos_tab(self: MainWindow) -> None:
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
     layout.addWidget(self._common_group())
 
-    form = base.QFormLayout()
-    self.photos_input = base.QLineEdit(self.settings.photos_input)
-    self.photos_output = base.QLineEdit(self.settings.photos_output)
+    form = QFormLayout()
+    self.photos_input = QLineEdit(self.settings.photos_input)
+    self.photos_output = QLineEdit(self.settings.photos_output)
     photos_input_row = self._path_row(
         self.photos_input,
         lambda: self._browse_folder(self.photos_input, "Select photos input folder"),
@@ -159,7 +188,7 @@ def _build_photos_tab(self: base.MainWindow) -> None:
     form.addRow("Photos output path", self.photos_output)
     layout.addLayout(form)
 
-    self.photos_start_btn = base.QPushButton("Start photo batch")
+    self.photos_start_btn = QPushButton("Start photo batch")
     self.photos_start_btn.setObjectName("primaryButton")
     self.photos_start_btn.clicked.connect(lambda: _toggle_photos_batch(self))
     layout.addWidget(self.photos_start_btn)
@@ -169,44 +198,44 @@ def _build_photos_tab(self: base.MainWindow) -> None:
     self.tabs.addTab(tab, "Photos")
 
 
-def _build_videos_tab(self: base.MainWindow) -> None:
-    tab = base.QWidget()
-    layout = base.QVBoxLayout(tab)
-    form = base.QFormLayout()
+def _build_videos_tab(self: MainWindow) -> None:
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
+    form = QFormLayout()
 
-    self.video_source_face = base.QLineEdit(self.settings.source_face)
+    self.video_source_face = QLineEdit(self.settings.source_face)
     source_row = self._path_row(
         self.video_source_face,
         lambda: self._browse_file(self.video_source_face, "Select source face image"),
     )
     _link_source_fields(self)
 
-    self.videos_input = base.QLineEdit(self.settings.videos_input)
-    self.videos_output = base.QLineEdit(self.settings.videos_output)
-    self.max_fps = base.QDoubleSpinBox()
+    self.videos_input = QLineEdit(self.settings.videos_input)
+    self.videos_output = QLineEdit(self.settings.videos_output)
+    self.max_fps = QDoubleSpinBox()
     self.max_fps.setRange(1, 120)
     self.max_fps.setValue(self.settings.max_fps)
-    self.max_width = base.QSpinBox()
+    self.max_width = QSpinBox()
     self.max_width.setRange(64, 4096)
     self.max_width.setValue(self.settings.max_width)
-    self.quality = base.QSpinBox()
+    self.quality = QSpinBox()
     self.quality.setRange(0, 51)
     self.quality.setValue(self.settings.quality)
 
     # Video segment range (percentage)
-    self.start_pct = base.QDoubleSpinBox()
+    self.start_pct = QDoubleSpinBox()
     self.start_pct.setRange(0, 99)
     self.start_pct.setValue(self.settings.start_pct)
     self.start_pct.setSuffix("%")
     self.start_pct.setDecimals(1)
-    self.end_pct = base.QDoubleSpinBox()
+    self.end_pct = QDoubleSpinBox()
     self.end_pct.setRange(1, 100)
     self.end_pct.setValue(self.settings.end_pct)
     self.end_pct.setSuffix("%")
     self.end_pct.setDecimals(1)
-    range_row = base.QHBoxLayout()
+    range_row = QHBoxLayout()
     range_row.addWidget(self.start_pct)
-    range_row.addWidget(base.QLabel("to"))
+    range_row.addWidget(QLabel("to"))
     range_row.addWidget(self.end_pct)
     range_row.addStretch(1)
 
@@ -225,40 +254,40 @@ def _build_videos_tab(self: base.MainWindow) -> None:
     layout.addLayout(form)
 
     # Common processing options (shared with Photos via linked widgets)
-    options_box = base.QGroupBox("Processing options")
-    options_form = base.QFormLayout(options_box)
+    options_box = QGroupBox("Processing options")
+    options_form = QFormLayout(options_box)
 
     # Link to Photos tab widgets - changes sync automatically via sync_settings
-    self.v_recursive = base.QCheckBox()
+    self.v_recursive = QCheckBox()
     self.v_recursive.setChecked(self.settings.recursive)
-    self.v_overwrite = base.QCheckBox()
+    self.v_overwrite = QCheckBox()
     self.v_overwrite.setChecked(self.settings.overwrite)
-    self.v_skip_processed = base.QCheckBox()
+    self.v_skip_processed = QCheckBox()
     self.v_skip_processed.setChecked(self.settings.skip_processed)
-    self.v_many_faces = base.QCheckBox()
+    self.v_many_faces = QCheckBox()
     self.v_many_faces.setChecked(self.settings.many_faces)
-    self.v_enhancer = base.QComboBox()
+    self.v_enhancer = QComboBox()
     self.v_enhancer.addItems(["none", "gfpgan", "gpen256", "gpen512"])
     self.v_enhancer.setCurrentText(self.settings.enhancer)
-    self.v_opacity = base.QDoubleSpinBox()
+    self.v_opacity = QDoubleSpinBox()
     self.v_opacity.setRange(0.0, 1.0)
     self.v_opacity.setSingleStep(0.1)
     self.v_opacity.setValue(self.settings.opacity)
-    self.v_sharpness = base.QDoubleSpinBox()
+    self.v_sharpness = QDoubleSpinBox()
     self.v_sharpness.setRange(0.0, 1.0)
     self.v_sharpness.setSingleStep(0.1)
     self.v_sharpness.setValue(self.settings.sharpness)
-    self.v_mouth_mask_size = base.QDoubleSpinBox()
+    self.v_mouth_mask_size = QDoubleSpinBox()
     self.v_mouth_mask_size.setRange(0.0, 10.0)
     self.v_mouth_mask_size.setSingleStep(0.5)
     self.v_mouth_mask_size.setValue(self.settings.mouth_mask_size)
-    self.v_interpolation_weight = base.QDoubleSpinBox()
+    self.v_interpolation_weight = QDoubleSpinBox()
     self.v_interpolation_weight.setRange(0.0, 1.0)
     self.v_interpolation_weight.setSingleStep(0.1)
     self.v_interpolation_weight.setValue(self.settings.interpolation_weight)
-    self.v_poisson_blend = base.QCheckBox()
+    self.v_poisson_blend = QCheckBox()
     self.v_poisson_blend.setChecked(self.settings.poisson_blend)
-    self.v_color_correction = base.QCheckBox()
+    self.v_color_correction = QCheckBox()
     self.v_color_correction.setChecked(self.settings.color_correction)
 
     options_form.addRow("Recursive", self.v_recursive)
@@ -274,7 +303,7 @@ def _build_videos_tab(self: base.MainWindow) -> None:
     options_form.addRow("Color correction", self.v_color_correction)
     layout.addWidget(options_box)
 
-    self.videos_start_btn = base.QPushButton("Start video batch")
+    self.videos_start_btn = QPushButton("Start video batch")
     self.videos_start_btn.setObjectName("primaryButton")
     self.videos_start_btn.clicked.connect(lambda: _toggle_videos_batch(self))
     layout.addWidget(self.videos_start_btn)
@@ -284,19 +313,19 @@ def _build_videos_tab(self: base.MainWindow) -> None:
     self.tabs.addTab(tab, "Videos")
 
 
-def _build_outputs_tab(self: base.MainWindow) -> None:
-    tab = base.QWidget()
-    layout = base.QVBoxLayout(tab)
+def _build_outputs_tab(self: MainWindow) -> None:
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
 
-    controls = base.QHBoxLayout()
-    self.outputs_kind = base.QComboBox()
+    controls = QHBoxLayout()
+    self.outputs_kind = QComboBox()
     self.outputs_kind.addItems(["photos", "videos"])
-    refresh = base.QPushButton("Refresh")
-    previous = base.QPushButton("Previous")
-    next_button = base.QPushButton("Next")
-    self.outputs_autoplay = base.QCheckBox("Auto-play")
-    download_current = base.QPushButton("Download current")
-    download_all = base.QPushButton("Download all")
+    refresh = QPushButton("Refresh")
+    previous = QPushButton("Previous")
+    next_button = QPushButton("Next")
+    self.outputs_autoplay = QCheckBox("Auto-play")
+    download_current = QPushButton("Download current")
+    download_all = QPushButton("Download all")
     refresh.clicked.connect(self.refresh_outputs)
     previous.clicked.connect(self.previous_output)
     next_button.clicked.connect(self.next_output)
@@ -304,7 +333,7 @@ def _build_outputs_tab(self: base.MainWindow) -> None:
     self.outputs_kind.currentTextChanged.connect(lambda _text: self.refresh_outputs())
     download_current.clicked.connect(self.download_current_output)
     download_all.clicked.connect(self.download_all_outputs)
-    controls.addWidget(base.QLabel("Kind"))
+    controls.addWidget(QLabel("Kind"))
     controls.addWidget(self.outputs_kind)
     controls.addWidget(refresh)
     controls.addWidget(previous)
@@ -315,7 +344,7 @@ def _build_outputs_tab(self: base.MainWindow) -> None:
     controls.addStretch(1)
     layout.addLayout(controls)
 
-    self.outputs_progress = base.QProgressBar()
+    self.outputs_progress = QProgressBar()
     self.outputs_progress.setMaximum(100)
     self.outputs_progress.setFixedHeight(20)
     self.outputs_progress.setTextVisible(True)
@@ -328,9 +357,9 @@ def _build_outputs_tab(self: base.MainWindow) -> None:
     self.outputs_list.currentRowChanged.connect(self.show_output_at)
     splitter.addWidget(self.outputs_list)
 
-    preview_panel = base.QWidget()
-    preview_layout = base.QVBoxLayout(preview_panel)
-    self.output_preview = base.QLabel("Refresh outputs to preview remote media")
+    preview_panel = QWidget()
+    preview_layout = QVBoxLayout(preview_panel)
+    self.output_preview = QLabel("Refresh outputs to preview remote media")
     self.output_preview.setAlignment(Qt.AlignCenter)
     self.output_preview.setMinimumHeight(340)
     self.output_preview.setWordWrap(True)
@@ -339,17 +368,17 @@ def _build_outputs_tab(self: base.MainWindow) -> None:
     self.output_video = None
     self.output_audio = None
     self.output_player = None
-    if base.QMediaPlayer is not None and base.QVideoWidget is not None and base.QAudioOutput is not None:
-        self.output_video = base.QVideoWidget()
+    if QMediaPlayer is not None and QVideoWidget is not None and QAudioOutput is not None:
+        self.output_video = QVideoWidget()
         self.output_video.setMinimumHeight(340)
-        self.output_audio = base.QAudioOutput(self)
-        self.output_player = base.QMediaPlayer(self)
+        self.output_audio = QAudioOutput(self)
+        self.output_player = QMediaPlayer(self)
         self.output_player.setAudioOutput(self.output_audio)
         self.output_player.setVideoOutput(self.output_video)
         preview_layout.addWidget(self.output_video, 1)
         self.output_video.hide()
 
-    self.output_status = base.QLabel("")
+    self.output_status = QLabel("")
     self.output_status.setObjectName("statusLabel")
     self.output_status.setWordWrap(True)
     preview_layout.addWidget(self.output_status)
@@ -362,14 +391,14 @@ def _build_outputs_tab(self: base.MainWindow) -> None:
     self.tabs.addTab(tab, "Outputs")
 
 
-def _build_live_tab(self: base.MainWindow) -> None:
-    tab = base.QWidget()
-    layout = base.QVBoxLayout(tab)
-    form = base.QFormLayout()
-    self.camera_index = base.QSpinBox()
+def _build_live_tab(self: MainWindow) -> None:
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
+    form = QFormLayout()
+    self.camera_index = QSpinBox()
     self.camera_index.setRange(0, 20)
     self.camera_index.setValue(self.settings.camera_index)
-    self.virtual_camera = base.QLineEdit(self.settings.virtual_camera)
+    self.virtual_camera = QLineEdit(self.settings.virtual_camera)
     form.addRow("Camera index", self.camera_index)
     form.addRow("Virtual camera", self.virtual_camera)
     layout.addLayout(form)
@@ -379,15 +408,15 @@ def _build_live_tab(self: base.MainWindow) -> None:
         "and opens the configured virtual camera when pyvirtualcam can find it."
     )
     layout.addWidget(self.live_note)
-    self.live_preview = base.QLabel("Live preview")
+    self.live_preview = QLabel("Live preview")
     self.live_preview.setAlignment(Qt.AlignCenter)
     self.live_preview.setMinimumHeight(360)
     layout.addWidget(self.live_preview)
 
-    row = base.QHBoxLayout()
-    start = base.QPushButton("Start live")
+    row = QHBoxLayout()
+    start = QPushButton("Start live")
     start.setObjectName("successButton")
-    stop = base.QPushButton("Stop live")
+    stop = QPushButton("Stop live")
     stop.setObjectName("dangerButton")
     start.clicked.connect(self.start_live)
     stop.clicked.connect(self.stop_live)
@@ -402,8 +431,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.tabs.addTab(tab, "Live")
 
 
-def _ensure_prefetch_state(window: base.MainWindow) -> None:
-    async_base._ensure_output_worker_state(window)
+def _ensure_prefetch_state(window: MainWindow) -> None:
+    output_tasks_base._ensure_output_worker_state(window)
     if not hasattr(window, "output_prefetch_cache"):
         window.output_prefetch_cache = {}
     if not hasattr(window, "output_prefetching"):
@@ -414,13 +443,13 @@ def _cache_key(item: dict[str, Any]) -> str:
     return str(item.get("download_path") or "")
 
 
-def _video_cache_path(window: base.MainWindow, item: dict[str, Any]) -> Path:
+def _video_cache_path(window: MainWindow, item: dict[str, Any]) -> Path:
     relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
     safe_relative = relative.replace("/", "_").replace("\\", "_")
     return window.output_temp_dir / f"{item.get('source', 'output')}_{safe_relative}"
 
 
-def _display_photo(window: base.MainWindow, item: dict[str, Any], data: bytes) -> None:
+def _display_photo(window: MainWindow, item: dict[str, Any], data: bytes) -> None:
     if window.output_video is not None:
         window.output_video.hide()
     window.output_preview.show()
@@ -433,7 +462,7 @@ def _display_photo(window: base.MainWindow, item: dict[str, Any], data: bytes) -
     window.output_status.setText(f"Showing {item.get('relative_path')} from {item.get('source')}")
 
 
-def _display_video(window: base.MainWindow, item: dict[str, Any], local_path: Path) -> None:
+def _display_video(window: MainWindow, item: dict[str, Any], local_path: Path) -> None:
     relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
     if window.output_player is None or window.output_video is None:
         window.output_preview.show()
@@ -449,7 +478,7 @@ def _display_video(window: base.MainWindow, item: dict[str, Any], local_path: Pa
     window.output_status.setText(f"Playing {relative}")
 
 
-def _prefetch_output(window: base.MainWindow, index: int) -> None:
+def _prefetch_output(window: MainWindow, index: int) -> None:
     _ensure_prefetch_state(window)
     if index < 0 or index >= len(window.output_files):
         return
@@ -466,7 +495,7 @@ def _prefetch_output(window: base.MainWindow, index: int) -> None:
             return window.client.download_bytes(key, timeout=30.0)
         local_path = _video_cache_path(window, item)
         if not local_path.exists() or local_path.stat().st_size != int(item.get("size") or -1):
-            async_base._download_file_fast(window.client, key, local_path, timeout=900.0)
+            output_tasks_base._download_file_fast(window.client, key, local_path, timeout=900.0)
         return str(local_path)
 
     def succeeded(done_task_id: str, result: object) -> None:
@@ -479,7 +508,7 @@ def _prefetch_output(window: base.MainWindow, index: int) -> None:
         if done_task_id == task_id:
             window.output_prefetching.discard(key)
 
-    worker = async_base.OutputTaskWorker(task_id, task)
+    worker = output_tasks_base.OutputTaskWorker(task_id, task)
     window.output_workers[task_id] = worker
     worker.succeeded.connect(succeeded)
     worker.failed.connect(failed)
@@ -487,28 +516,28 @@ def _prefetch_output(window: base.MainWindow, index: int) -> None:
     worker.start()
 
 
-def _prefetch_neighbors(window: base.MainWindow, index: int) -> None:
+def _prefetch_neighbors(window: MainWindow, index: int) -> None:
     if not window.output_files:
         return
     _prefetch_output(window, (index + 1) % len(window.output_files))
     _prefetch_output(window, (index + 2) % len(window.output_files))
 
 
-def _poll_message(window: base.MainWindow, kind: str, text: str) -> None:
+def _poll_message(window: MainWindow, kind: str, text: str) -> None:
     window.log(text)
     _set_process_status(window, kind, text)
 
 
-def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
+def _start_batch_with_status(self: MainWindow, kind: str) -> None:
     self.sync_settings()
-    async_base._ensure_output_worker_state(self)
-    settings = async_base._copy_settings(self.settings)
+    output_tasks_base._ensure_output_worker_state(self)
+    settings = output_tasks_base._copy_settings(self.settings)
     self.log(f"starting {kind} batch...")
     _set_process_status(self, kind, f"Starting {kind} batch...")
     _set_batch_button_running(self, kind)
 
     def task() -> dict[str, Any]:
-        return async_base._prepare_and_start_batch(settings, kind)
+        return output_tasks_base._prepare_and_start_batch(settings, kind)
 
     def on_job_finished(status: str, batch_kind: str) -> None:
         self.log(f"job finished: {status}")
@@ -529,7 +558,7 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
         if self.active_job_id:
             if self.poller:
                 self.poller.stop()
-            self.poller = base.PollWorker(self.client, self.active_job_id)
+            self.poller = PollWorker(self.client, self.active_job_id)
             self.poller.message.connect(lambda text, batch_kind=kind: _poll_message(self, batch_kind, text))
             self.poller.finished_status.connect(lambda status, batch_kind=kind: on_job_finished(status, batch_kind))
             self.poller.start()
@@ -547,7 +576,7 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
         self.log(text)
         _set_batch_button_idle(self, kind)
 
-    self.output_batch_task_id = async_base._start_output_task(
+    self.output_batch_task_id = output_tasks_base._start_output_task(
         self,
         f"Starting {kind} batch...",
         task,
@@ -556,17 +585,17 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
     )
 
 
-def start_photos(self: base.MainWindow) -> None:
+def start_photos(self: MainWindow) -> None:
     _start_batch_with_status(self, "photos")
 
 
-def start_videos(self: base.MainWindow) -> None:
+def start_videos(self: MainWindow) -> None:
     _start_batch_with_status(self, "videos")
 
 
-def check_connection(self: base.MainWindow) -> None:
+def check_connection(self: MainWindow) -> None:
     self.sync_settings()
-    async_base._ensure_output_worker_state(self)
+    output_tasks_base._ensure_output_worker_state(self)
     self.log("checking connection...")
     _set_process_status(self, "setup", "Checking connection...")
 
@@ -576,7 +605,7 @@ def check_connection(self: base.MainWindow) -> None:
     def succeeded(task_id: str, payload: object) -> None:
         if task_id != self.output_health_task_id:
             return
-        self.log("health: " + base.json.dumps(payload, indent=2))
+        self.log("health: " + json.dumps(payload, indent=2))
         _set_process_status(self, "setup", "Connected to Colab API")
 
     def failed(task_id: str, error: str) -> None:
@@ -586,7 +615,7 @@ def check_connection(self: base.MainWindow) -> None:
         self.log(text)
         _set_process_status(self, "setup", text)
 
-    self.output_health_task_id = async_base._start_output_task(
+    self.output_health_task_id = output_tasks_base._start_output_task(
         self,
         "Checking connection...",
         fetch_health,
@@ -595,7 +624,7 @@ def check_connection(self: base.MainWindow) -> None:
     )
 
 
-def cancel_job(self: base.MainWindow) -> None:
+def cancel_job(self: MainWindow) -> None:
     self.sync_settings()
     if not self.active_job_id:
         self.log("no active job")
@@ -604,7 +633,7 @@ def cancel_job(self: base.MainWindow) -> None:
         return
     try:
         payload = self.client.request_json("POST", "/jobs/cancel", {"job_id": self.active_job_id})
-        text = "cancel: " + base.json.dumps(payload)
+        text = "cancel: " + json.dumps(payload)
         self.log(text)
         _set_process_status(self, "photos", "Cancel requested")
         _set_process_status(self, "videos", "Cancel requested")
@@ -615,27 +644,27 @@ def cancel_job(self: base.MainWindow) -> None:
         _set_process_status(self, "videos", text)
 
 
-def start_live(self: base.MainWindow) -> None:
+def start_live(self: MainWindow) -> None:
     self.sync_settings()
     if self.live_worker and self.live_worker.isRunning():
         self.log("live already running")
         _set_process_status(self, "live", "Live already running")
         return
-    self.live_worker = base.LiveWorker(self.settings)
+    self.live_worker = LiveWorker(self.settings)
     self.live_worker.message.connect(lambda text: _poll_message(self, "live", text))
     self.live_worker.frame.connect(self.update_live_preview)
     self.live_worker.start()
     _set_process_status(self, "live", "Starting live...")
 
 
-def stop_live(self: base.MainWindow) -> None:
+def stop_live(self: MainWindow) -> None:
     if self.live_worker:
         self.live_worker.stop()
         self.log("live stop requested")
         _set_process_status(self, "live", "Live stop requested")
 
 
-def update_live_preview(self: base.MainWindow, jpeg_bytes: bytes) -> None:
+def update_live_preview(self: MainWindow, jpeg_bytes: bytes) -> None:
     image = QImage.fromData(jpeg_bytes, "JPG")
     if image.isNull():
         return
@@ -644,7 +673,7 @@ def update_live_preview(self: base.MainWindow, jpeg_bytes: bytes) -> None:
     _set_process_status(self, "live", "Live receiving frames")
 
 
-def show_output_at(self: base.MainWindow, index: int) -> None:
+def show_output_at(self: MainWindow, index: int) -> None:
     if index < 0 or index >= len(self.output_files):
         return
     self.output_current_loaded = False
@@ -667,7 +696,7 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
             _prefetch_neighbors(self, index)
             self.output_current_loaded = True
             return
-        size_str = base.format_size(file_size) if file_size > 0 else ""
+        size_str = format_size(file_size) if file_size > 0 else ""
         self.output_preview.setText(f"Loading photo preview... {size_str}")
         # Show progress bar
         if hasattr(self, "outputs_progress"):
@@ -678,7 +707,7 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
 
         from typing import Callable
         def fetch_photo(progress_cb: Callable[[int, int], None]) -> bytes:
-            return async_base._download_bytes_with_progress(self.client, key, timeout=20.0, progress_callback=progress_cb)
+            return output_tasks_base._download_bytes_with_progress(self.client, key, timeout=20.0, progress_callback=progress_cb)
 
         def photo_ready(task_id: str, data: object) -> None:
             if task_id != self.output_preview_task_id:
@@ -700,7 +729,7 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
             self.log(f"output preview failed: {error}")
             self.output_current_loaded = True
 
-        self.output_preview_task_id = async_base._start_output_task_with_progress(
+        self.output_preview_task_id = output_tasks_base._start_output_task_with_progress(
             self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed
         )
         return
@@ -713,14 +742,14 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
     self.show_video_output(item)
 
 
-def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
+def show_video_output(self: MainWindow, item: dict[str, Any]) -> None:
     _ensure_prefetch_state(self)
     key = _cache_key(item)
     file_size = int(item.get("size") or 0)
     relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
     local_path = _video_cache_path(self, item)
     self.output_preview.setPixmap(QPixmap())
-    size_str = base.format_size(file_size) if file_size > 0 else ""
+    size_str = format_size(file_size) if file_size > 0 else ""
     self.output_preview.setText(f"Loading video preview:\n{relative}\n{size_str}")
     # Show progress bar
     if hasattr(self, "outputs_progress"):
@@ -732,7 +761,7 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
     from typing import Callable
     def fetch_video(progress_cb: Callable[[int, int], None]) -> dict[str, str]:
         if not local_path.exists() or local_path.stat().st_size != file_size:
-            async_base._download_file_fast(self.client, key, local_path, timeout=900.0, progress_callback=progress_cb)
+            output_tasks_base._download_file_fast(self.client, key, local_path, timeout=900.0, progress_callback=progress_cb)
         return {"relative": relative, "local_path": str(local_path), "key": key}
 
     def video_ready(task_id: str, result: object) -> None:
@@ -756,12 +785,12 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
         self.log(f"output preview failed: {error}")
         self.output_current_loaded = True
 
-    self.output_preview_task_id = async_base._start_output_task_with_progress(
+    self.output_preview_task_id = output_tasks_base._start_output_task_with_progress(
         self, f"Loading video preview: {relative}", fetch_video, video_ready, video_failed
     )
 
 
-def sync_settings(self: base.MainWindow) -> None:
+def sync_settings(self: MainWindow) -> None:
     """Extended sync_settings that reads from both Photos and Videos tab widgets."""
     self.settings.host = self.host.text().strip()
     self.settings.port = int(self.port.value())
@@ -790,12 +819,12 @@ def sync_settings(self: base.MainWindow) -> None:
     self.settings.end_pct = float(self.end_pct.value())
     self.settings.camera_index = int(self.camera_index.value())
     self.settings.virtual_camera = self.virtual_camera.text().strip()
-    base.save_settings(self.settings)
+    save_settings(self.settings)
     # Sync both tabs' widgets to stay consistent
     _sync_common_widgets(self)
 
 
-def _sync_common_widgets(window: base.MainWindow) -> None:
+def _sync_common_widgets(window: MainWindow) -> None:
     """Keep Photos and Videos tab common widgets in sync."""
     s = window.settings
     # Update photos tab widgets

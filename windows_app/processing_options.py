@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from windows_app import app_base as base
 from windows_app import main_window_ui as ui_base
 from windows_app import output_tasks as output_tasks_base
 from windows_app.settings import (
+    AppSettings,
     PROCESSING_OPTION_KEYS,
     apply_processing_options_to_settings,
     coerce_processing_options,
@@ -15,6 +15,8 @@ from windows_app.settings import (
     save_settings as _save_settings,
     settings_options,
 )
+from windows_app.window_core import WindowCore as MainWindow
+from windows_app.workers import PollWorker
 
 
 def _default_processing_options() -> dict[str, Any]:
@@ -29,23 +31,23 @@ def _coerce_processing_options(value: object, fallback: dict[str, Any]) -> dict[
     return coerce_processing_options(value, fallback)
 
 
-def load_settings() -> base.AppSettings:
+def load_settings() -> AppSettings:
     return _load_settings()
 
 
-def save_settings(settings: base.AppSettings) -> None:
+def save_settings(settings: AppSettings) -> None:
     _save_settings(settings)
 
 
-def _settings_options(settings: base.AppSettings, kind: str) -> dict[str, Any]:
+def _settings_options(settings: AppSettings, kind: str) -> dict[str, Any]:
     return settings_options(settings, kind)
 
 
-def _apply_processing_options_to_settings(settings: base.AppSettings, kind: str) -> None:
+def _apply_processing_options_to_settings(settings: AppSettings, kind: str) -> None:
     apply_processing_options_to_settings(settings, kind)
 
 
-def _read_processing_options(window: base.MainWindow, kind: str) -> dict[str, Any]:
+def _read_processing_options(window: MainWindow, kind: str) -> dict[str, Any]:
     if kind == "videos" and hasattr(window, "v_enhancer"):
         return {
             "recursive": window.v_recursive.isChecked(),
@@ -77,7 +79,7 @@ def _read_processing_options(window: base.MainWindow, kind: str) -> dict[str, An
     return _settings_options(window.settings, kind)
 
 
-def _apply_processing_options_to_widgets(window: base.MainWindow, kind: str) -> None:
+def _apply_processing_options_to_widgets(window: MainWindow, kind: str) -> None:
     options = _settings_options(window.settings, kind)
     if kind == "photos" and hasattr(window, "enhancer"):
         window.recursive.setChecked(bool(options["recursive"]))
@@ -105,7 +107,7 @@ def _apply_processing_options_to_widgets(window: base.MainWindow, kind: str) -> 
         window.v_color_correction.setChecked(bool(options["color_correction"]))
 
 
-def sync_settings(self: base.MainWindow) -> None:
+def sync_settings(self: MainWindow) -> None:
     self.settings.host = self.host.text().strip()
     self.settings.port = int(self.port.value())
     self.settings.drive_root = self.drive_root.text().strip()
@@ -128,13 +130,13 @@ def sync_settings(self: base.MainWindow) -> None:
     self.settings.end_pct = float(self.end_pct.value())
     self.settings.camera_index = int(self.camera_index.value())
     self.settings.virtual_camera = self.virtual_camera.text().strip()
-    base.save_settings(self.settings)
+    _save_settings(self.settings)
 
 
-def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
+def _start_batch_with_status(self: MainWindow, kind: str) -> None:
     self.sync_settings()
     _apply_processing_options_to_settings(self.settings, kind)
-    base.save_settings(self.settings)
+    _save_settings(self.settings)
     output_tasks_base._ensure_output_worker_state(self)
     settings = output_tasks_base._copy_settings(self.settings)
     self.log(f"starting {kind} batch...")
@@ -163,7 +165,7 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
         if self.active_job_id:
             if self.poller:
                 self.poller.stop()
-            self.poller = base.PollWorker(self.client, self.active_job_id)
+            self.poller = PollWorker(self.client, self.active_job_id)
             self.poller.message.connect(lambda text, batch_kind=kind: ui_base._poll_message(self, batch_kind, text))
             self.poller.finished_status.connect(lambda status, batch_kind=kind: on_job_finished(status, batch_kind))
             self.poller.start()
@@ -189,20 +191,20 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
     )
 
 
-def start_photos(self: base.MainWindow) -> None:
+def start_photos(self: MainWindow) -> None:
     _start_batch_with_status(self, "photos")
 
 
-def start_videos(self: base.MainWindow) -> None:
+def start_videos(self: MainWindow) -> None:
     _start_batch_with_status(self, "videos")
 
 
-def _build_photos_tab(self: base.MainWindow) -> None:
+def _build_photos_tab(self: MainWindow) -> None:
     ui_base._build_photos_tab(self)
     _apply_processing_options_to_widgets(self, "photos")
 
 
-def _build_videos_tab(self: base.MainWindow) -> None:
+def _build_videos_tab(self: MainWindow) -> None:
     ui_base._build_videos_tab(self)
     _apply_processing_options_to_widgets(self, "videos")
 
