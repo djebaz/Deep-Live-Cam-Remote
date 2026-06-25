@@ -3,11 +3,32 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
 from windows_app.api_client import ApiClient
 from windows_app.settings import AppSettings
+
+
+class OutputTaskWorker(QThread):
+    succeeded = Signal(str, object)
+    failed = Signal(str, str)
+    progress = Signal(str, int, int)  # task_id, current, total
+
+    def __init__(self, task_id: str, task: Callable[[], object]):
+        super().__init__()
+        self.task_id = task_id
+        self.task = task
+
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(self.task_id, self.task())
+        except Exception as exc:
+            self.failed.emit(self.task_id, str(exc))
+
+    def report_progress(self, current: int, total: int) -> None:
+        self.progress.emit(self.task_id, current, total)
 
 
 class LiveWorker(QThread):
@@ -130,4 +151,4 @@ class PollWorker(QThread):
             time.sleep(1.0)
 
 
-__all__ = ["LiveWorker", "PollWorker"]
+__all__ = ["LiveWorker", "OutputTaskWorker", "PollWorker"]
