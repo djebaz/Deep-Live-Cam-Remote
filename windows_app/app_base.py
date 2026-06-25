@@ -71,8 +71,10 @@ from windows_app.settings import (
     load_settings,
     save_settings,
 )
-from windows_app.window_core import MainWindow, WindowCore, set_dark_title_bar
+from windows_app.window_core import WindowCore, set_dark_title_bar
 from windows_app.workers import LiveWorker, OutputTaskWorker, PollWorker
+
+MainWindow = WindowCore
 
 
 def main() -> int:
