@@ -235,7 +235,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_fps.setRange(1, 120)
     self.live_fps.setValue(_live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS))
     self.live_pipeline_frames = base.QSpinBox()
-    self.live_pipeline_frames.setRange(1, 16)
+    self.live_pipeline_frames.setRange(1, 32)
     self.live_pipeline_frames.setValue(_live_setting(self.settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES))
 
     form.addRow("Camera index", self.camera_index)
