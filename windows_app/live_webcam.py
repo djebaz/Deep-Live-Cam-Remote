@@ -74,13 +74,6 @@ LIVE_OPTION_KEYS = (
     "preview_scale",
 )
 
-_previous_load_settings = processing_options_base.load_settings
-_previous_save_settings = processing_options_base.save_settings
-_original_sync_settings = processing_options_base.sync_settings
-_original_close_event = MainWindow.closeEvent
-_original_stop_live = ui_base.stop_live
-
-
 def _live_setting(settings: AppSettings, name: str, default: int) -> int:
     try:
         value = int(getattr(settings, name, default))
@@ -268,7 +261,7 @@ def _apply_live_options_to_widgets(window: MainWindow) -> None:
 
 
 def load_settings() -> AppSettings:
-    settings = _previous_load_settings()
+    settings = processing_options_base.load_settings()
     data: dict[str, Any] = {}
     if APP_STATE.is_file():
         try:
@@ -286,7 +279,7 @@ def load_settings() -> AppSettings:
 
 
 def save_settings(settings: AppSettings) -> None:
-    _previous_save_settings(settings)
+    processing_options_base.save_settings(settings)
     try:
         data = json.loads(APP_STATE.read_text(encoding="utf-8")) if APP_STATE.is_file() else {}
         if not isinstance(data, dict):
@@ -476,7 +469,7 @@ def _build_live_tab(self: MainWindow) -> None:
 
 
 def sync_settings(self: MainWindow) -> None:
-    _original_sync_settings(self)
+    processing_options_base.sync_settings(self)
     if hasattr(self, "live_source_face"):
         self.settings.source_face = self.live_source_face.text().strip()
     if hasattr(self, "live_width"):
@@ -505,7 +498,7 @@ def closeEvent(self: MainWindow, event: Any) -> None:
     except Exception as exc:
         self.log(f"settings save on close failed: {exc}")
     stop_live_preview_timer(self)
-    _original_close_event(self, event)
+    MainWindow.closeEvent(self, event)
 
 
 def _prepare_live_settings(settings: AppSettings) -> dict[str, Any]:
@@ -798,7 +791,7 @@ def stop_live_preview_timer(self: MainWindow) -> None:
 
 def stop_live(self: MainWindow) -> None:
     stop_live_preview_timer(self)
-    _original_stop_live(self)
+    ui_base.stop_live(self)
 
 
 def enqueue_live_preview_frame(self: MainWindow, frame_bytes: bytes) -> None:
