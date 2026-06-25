@@ -439,13 +439,19 @@ class LiveWorker(base.LiveWorker):
                     if not ok:
                         continue
                     await websocket.send(encoded.tobytes())
-                    reply = await websocket.recv()
-                    if isinstance(reply, str):
-                        self.message.emit(reply)
-                        payload = _json_payload(reply)
-                        if "error" in payload:
-                            raise RuntimeError(str(payload["error"]))
-                        continue
+                    reply = None
+                    while not self._stop:
+                        candidate = await websocket.recv()
+                        if isinstance(candidate, str):
+                            self.message.emit(candidate)
+                            payload = _json_payload(candidate)
+                            if "error" in payload:
+                                raise RuntimeError(str(payload["error"]))
+                            continue
+                        reply = candidate
+                        break
+                    if reply is None:
+                        break
                     self.frame.emit(reply)
                     stats_frames += 1
                     now = clock()
