@@ -627,7 +627,9 @@ class MainWindow(QMainWindow):
 
         self.outputs_progress = QProgressBar()
         self.outputs_progress.setMaximum(100)
-        self.outputs_progress.setVisible(False)
+        self.outputs_progress.setFixedHeight(20)
+        self.outputs_progress.setTextVisible(True)
+        self.outputs_progress.hide()
         layout.addWidget(self.outputs_progress)
 
         self.outputs_list = QListWidget()

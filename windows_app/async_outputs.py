@@ -273,7 +273,9 @@ def refresh_outputs(self: base.MainWindow) -> None:
     # Indeterminate progress bar during network fetch (min=max=0)
     self.outputs_progress.setMinimum(0)
     self.outputs_progress.setMaximum(0)
-    self.outputs_progress.setVisible(True)
+    self.outputs_progress.show()
+    self.outputs_progress.repaint()
+    base.QApplication.processEvents()
 
     def fetch() -> dict[str, Any]:
         return self.client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
@@ -286,14 +288,19 @@ def refresh_outputs(self: base.MainWindow) -> None:
         total = len(self.output_files)
         # Switch to determinate mode for list population
         self.outputs_progress.setMaximum(100)
+        self.outputs_progress.setValue(0)
+        self.outputs_progress.repaint()
         for idx, item in enumerate(self.output_files):
             label = f"[{item.get('source')}] {item.get('relative_path')} ({base.format_size(item.get('size'))})"
             self.outputs_list.addItem(QListWidgetItem(label))
             progress = int((idx + 1) / total * 100) if total > 0 else 0
             self.outputs_progress.setValue(progress)
             self.output_status.setText(f"Loading... {idx + 1}/{total}")
-            base.QApplication.processEvents()
-        self.outputs_progress.setVisible(False)
+            # Update UI every 10 items or on last item
+            if idx % 10 == 0 or idx == total - 1:
+                self.outputs_progress.repaint()
+                base.QApplication.processEvents()
+        self.outputs_progress.hide()
         self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
         if self.output_files:
             self.outputs_list.setCurrentRow(0)
@@ -305,7 +312,7 @@ def refresh_outputs(self: base.MainWindow) -> None:
         if task_id != self.output_refresh_task_id:
             return
         self.outputs_list.setEnabled(True)
-        self.outputs_progress.setVisible(False)
+        self.outputs_progress.hide()
         self.output_status.setText(f"refresh failed: {error}")
         self.log(f"outputs refresh failed: {error}")
 
@@ -334,7 +341,8 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
         self.outputs_progress.setMinimum(0)
         self.outputs_progress.setMaximum(100)
         self.outputs_progress.setValue(0)
-        self.outputs_progress.setVisible(True)
+        self.outputs_progress.show()
+        self.outputs_progress.repaint()
 
         def fetch_photo(progress_cb: Callable[[int, int], None]) -> bytes:
             return _download_bytes_with_progress(self.client, path, timeout=20.0, progress_callback=progress_cb)
@@ -342,7 +350,7 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
         def photo_ready(task_id: str, data: object) -> None:
             if task_id != self.output_preview_task_id:
                 return
-            self.outputs_progress.setVisible(False)
+            self.outputs_progress.hide()
             if self.output_video is not None:
                 self.output_video.hide()
             self.output_preview.show()
@@ -359,7 +367,7 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
         def photo_failed(task_id: str, error: str) -> None:
             if task_id != self.output_preview_task_id:
                 return
-            self.outputs_progress.setVisible(False)
+            self.outputs_progress.hide()
             self.output_status.setText(f"preview failed: {error}")
             self.log(f"output preview failed: {error}")
             self.output_current_loaded = True
@@ -385,7 +393,8 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
     self.outputs_progress.setMinimum(0)
     self.outputs_progress.setMaximum(100)
     self.outputs_progress.setValue(0)
-    self.outputs_progress.setVisible(True)
+    self.outputs_progress.show()
+    self.outputs_progress.repaint()
 
     def fetch_video(progress_cb: Callable[[int, int], None]) -> dict[str, str]:
         if not local_path.exists() or local_path.stat().st_size != file_size:
@@ -395,7 +404,7 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
     def video_ready(task_id: str, result: object) -> None:
         if task_id != self.output_preview_task_id:
             return
-        self.outputs_progress.setVisible(False)
+        self.outputs_progress.hide()
         payload = result if isinstance(result, dict) else {}
         ready_relative = str(payload.get("relative") or relative)
         ready_path = Path(str(payload.get("local_path") or local_path))
@@ -417,7 +426,7 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
     def video_failed(task_id: str, error: str) -> None:
         if task_id != self.output_preview_task_id:
             return
-        self.outputs_progress.setVisible(False)
+        self.outputs_progress.hide()
         self.output_status.setText(f"preview failed: {error}")
         self.log(f"output preview failed: {error}")
         self.output_current_loaded = True
