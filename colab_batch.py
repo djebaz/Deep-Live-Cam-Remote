@@ -63,6 +63,7 @@ class ProcessConfig:
     interpolation_weight: float = 0.0
     enhancer: str = "none"
     face_model_pack: str = "buffalo_l"
+    swapper_precision: str = "fp32"
 
 
 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -224,6 +225,7 @@ class ModernEngine:
         from modules.processors.frame import face_swapper
 
         set_face_analyser_model_pack(config.face_model_pack)
+        face_swapper.set_face_swapper_precision(config.swapper_precision)
         self.globals = globals_module
         self.get_one_face = get_one_face
         self.get_many_faces = get_many_faces

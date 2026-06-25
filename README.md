@@ -111,7 +111,7 @@ The app currently provides:
 - Photos and Videos tabs with shared processing options.
 - Recursive input scanning, overwrite/skip behavior, and graceful cancel.
 - Video percentage range selection.
-- Live webcam InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) with `buffalo_l` as the safest default.
+- Live webcam InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) with `buffalo_l` as the safest default, plus fp32/fp16 swapper precision selection for `swap_ms` comparison.
 - Output browser with preview/player support.
 - Local source/input upload to the Colab API.
 - Settings sync between photo and video workflows.

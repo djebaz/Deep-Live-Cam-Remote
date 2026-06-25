@@ -41,8 +41,9 @@ ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v5"
+API_VERSION = "live-fast-detect-v6"
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
+LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 
 
 class JobRequest(BaseModel):
@@ -322,6 +323,26 @@ def live_face_model_pack(config: dict[str, Any]) -> str:
     return model_pack
 
 
+def live_swapper_precision(config: dict[str, Any]) -> str:
+    precision = str(config.get("swapper_precision") or "fp32").lower()
+    if precision not in LIVE_SWAPPER_PRECISIONS:
+        return "fp32"
+    return precision
+
+
+def live_swapper_diagnostics(engine: colab_batch.ModernEngine) -> dict[str, str]:
+    diagnostics = {}
+    getter = getattr(engine.swapper, "get_face_swapper_diagnostics", None)
+    if callable(getter):
+        loaded = getter()
+        if isinstance(loaded, dict):
+            diagnostics.update({str(key): str(value) for key, value in loaded.items()})
+    diagnostics.setdefault("requested_precision", live_swapper_precision({}))
+    diagnostics.setdefault("loaded_precision", "")
+    diagnostics.setdefault("model_path", "")
+    return diagnostics
+
+
 def live_detect_faces(frame: np.ndarray, many_faces: bool, detector_size: int) -> Any:
     from insightface.app.common import Face
     from modules.face_analyser import get_face_analyser
@@ -596,6 +617,7 @@ async def live_socket(websocket: WebSocket) -> None:
             interpolation_weight=float(config.get("interpolation_weight", 0.0)),
             enhancer=config.get("enhancer", "none"),
             face_model_pack=live_face_model_pack(config),
+            swapper_precision=live_swapper_precision(config),
         )
         with ENGINE_LOCK:
             engine = colab_batch.ModernEngine(process_config)
@@ -604,6 +626,7 @@ async def live_socket(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
 
+    swapper_diagnostics = live_swapper_diagnostics(engine)
     await websocket.send_json({
         "status": "ready",
         "api_version": API_VERSION,
@@ -611,6 +634,9 @@ async def live_socket(websocket: WebSocket) -> None:
         "detector_size": live_detection_size(config),
         "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
         "face_model_pack": live_face_model_pack(config),
+        "swapper_precision": live_swapper_precision(config),
+        "swapper_loaded_precision": swapper_diagnostics.get("loaded_precision", ""),
+        "swapper_model_path": swapper_diagnostics.get("model_path", ""),
         "source_embedding_cached": engine.default_source is not None,
     })
     geometry_logged = False
@@ -659,6 +685,8 @@ async def live_socket(websocket: WebSocket) -> None:
                     "detector_size": live_detection_size(config),
                     "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
                     "face_model_pack": live_face_model_pack(config),
+                    "swapper_precision": live_swapper_precision(config),
+                    "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
                 })
                 geometry_logged = True
             try:
@@ -711,6 +739,8 @@ async def live_socket(websocket: WebSocket) -> None:
                         "detector_size": live_detection_size(config),
                         "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
                         "face_model_pack": live_face_model_pack(config),
+                        "swapper_precision": live_swapper_precision(config),
+                        "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
                         "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),

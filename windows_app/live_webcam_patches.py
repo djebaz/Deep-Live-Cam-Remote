@@ -20,6 +20,8 @@ DEFAULT_LIVE_DETECTOR_SIZE = 320
 DEFAULT_LIVE_DETECT_EVERY_N = 1
 DEFAULT_LIVE_FACE_MODEL_PACK = "buffalo_l"
 LIVE_FACE_MODEL_PACKS = ("buffalo_l", "buffalo_m", "buffalo_s")
+DEFAULT_LIVE_SWAPPER_PRECISION = "fp32"
+LIVE_SWAPPER_PRECISIONS = ("fp32", "fp16")
 LIVE_OPTION_KEYS = (
     "many_faces",
     "enhancer",
@@ -34,6 +36,7 @@ LIVE_OPTION_KEYS = (
     "detector_size",
     "detect_every_n",
     "face_model_pack",
+    "swapper_precision",
 )
 
 _previous_load_settings = base.load_settings
@@ -83,6 +86,7 @@ def _default_live_options() -> dict[str, Any]:
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
         "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
+        "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
     }
 
 
@@ -108,6 +112,9 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["face_model_pack"] = str(options["face_model_pack"])
     if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
         options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
+    options["swapper_precision"] = str(options["swapper_precision"]).lower()
+    if options["swapper_precision"] not in LIVE_SWAPPER_PRECISIONS:
+        options["swapper_precision"] = DEFAULT_LIVE_SWAPPER_PRECISION
     return options
 
 
@@ -172,6 +179,7 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "detector_size": int(window.live_detector_size.value()),
             "detect_every_n": int(window.live_detect_every_n.value()),
             "face_model_pack": window.live_face_model_pack.currentText(),
+            "swapper_precision": window.live_swapper_precision.currentText(),
         }
     )
 
@@ -193,6 +201,7 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_detector_size.setValue(int(options["detector_size"]))
     window.live_detect_every_n.setValue(int(options["detect_every_n"]))
     window.live_face_model_pack.setCurrentText(str(options["face_model_pack"]))
+    window.live_swapper_precision.setCurrentText(str(options["swapper_precision"]))
 
 
 def load_settings() -> base.AppSettings:
@@ -301,8 +310,12 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_face_model_pack = base.QComboBox()
     self.live_face_model_pack.addItems(list(LIVE_FACE_MODEL_PACKS))
     self.live_face_model_pack.setToolTip(
-        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options."
+        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options. "
+        "Use Swapper precision to compare fp32 vs fp16 swap_ms."
     )
+    self.live_swapper_precision = base.QComboBox()
+    self.live_swapper_precision.addItems(list(LIVE_SWAPPER_PRECISIONS))
+    self.live_swapper_precision.setToolTip("Use fp32 as baseline; choose fp16 to test T4/RTX swap_ms.")
 
     options_form.addRow("Many faces", self.live_many_faces)
     options_form.addRow("Enhancer", self.live_enhancer)
@@ -317,6 +330,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("Detector size", self.live_detector_size)
     options_form.addRow("Detect every N frames", self.live_detect_every_n)
     options_form.addRow("InsightFace pack", self.live_face_model_pack)
+    options_form.addRow("Swapper precision", self.live_swapper_precision)
     _apply_live_options_to_widgets(self)
     controls_layout.addWidget(options_box)
 
@@ -336,7 +350,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     controls_layout.addWidget(self.live_status)
     self.live_note = _status_label(
         "Live sends webcam JPEG frames to ws://HOST:PORT/ws/live and previews returned frames. "
-        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options."
+        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options. "
+        "Use Swapper precision to compare fp32 vs fp16 swap_ms."
     )
     controls_layout.addWidget(self.live_note)
     controls_layout.addStretch(1)
@@ -551,6 +566,7 @@ class LiveWorker(base.LiveWorker):
                             "detector_size": getattr(self.settings, "detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
                             "detect_every_n": getattr(self.settings, "detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
                             "face_model_pack": getattr(self.settings, "face_model_pack", DEFAULT_LIVE_FACE_MODEL_PACK),
+                            "swapper_precision": getattr(self.settings, "swapper_precision", DEFAULT_LIVE_SWAPPER_PRECISION),
                         }
                     )
                 )
