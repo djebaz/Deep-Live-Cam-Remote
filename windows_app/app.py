@@ -723,7 +723,7 @@ class MainWindow(QMainWindow):
             self.log(f"outputs refresh failed: {exc}")
 
     def show_output_at(self, index: int) -> None:
-        # Note: This method is patched by async_outputs.py
+        # Note: This method is patched by ui_patches.py
         if index < 0 or index >= len(self.output_files):
             return
         item = self.output_files[index]

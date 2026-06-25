@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QThread, Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import QFileDialog, QListWidgetItem
 
@@ -72,7 +72,7 @@ def _download_bytes_with_progress(
                 break
             chunks.append(chunk)
             downloaded += len(chunk)
-            if progress_callback and total_size > 0:
+            if progress_callback:
                 progress_callback(downloaded, total_size)
         return b"".join(chunks)
 
@@ -126,11 +126,20 @@ def _start_output_task_with_progress(
     task_id = uuid.uuid4().hex
 
     def on_progress(_tid: str, current: int, total: int) -> None:
-        if total > 0 and hasattr(window, "outputs_progress"):
+        if not hasattr(window, "outputs_progress"):
+            return
+        window.outputs_progress.show()
+        if total > 0:
             pct = int(current / total * 100)
             window.outputs_progress.setMaximum(100)
             window.outputs_progress.setValue(pct)
             window.output_status.setText(f"Loading... {pct}%")
+        else:
+            # Unknown total size - show indeterminate with bytes downloaded
+            window.outputs_progress.setMaximum(0)
+            window.output_status.setText(f"Loading... {base.format_size(current)}")
+        window.outputs_progress.repaint()
+        base.QApplication.processEvents()
 
     # Create a mutable container for worker reference
     worker_holder: list[OutputTaskWorker] = []
@@ -148,7 +157,8 @@ def _start_output_task_with_progress(
     window.output_status.setText(status)
     worker.succeeded.connect(on_success)
     worker.failed.connect(on_failure)
-    worker.progress.connect(on_progress)
+    # Use QueuedConnection to ensure signal is processed in main thread
+    worker.progress.connect(on_progress, Qt.QueuedConnection)
     worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
     worker.start()
     return task_id
@@ -327,6 +337,7 @@ def refresh_outputs(self: base.MainWindow) -> None:
 
 
 def show_output_at(self: base.MainWindow, index: int) -> None:
+    # Note: This function is overridden by ui_patches.py
     if index < 0 or index >= len(self.output_files):
         return
     self.output_current_loaded = False
