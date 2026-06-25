@@ -239,6 +239,9 @@ def job_payload(settings: AppSettings, input_dir: str, output_dir: str, source_f
         "max_fps": settings.max_fps,
         "max_width": settings.max_width,
         "quality": settings.quality,
+        "detector_size": int(getattr(settings, "detector_size", 640)),
+        "face_model_pack": str(getattr(settings, "face_model_pack", "buffalo_l")),
+        "swapper_precision": str(getattr(settings, "swapper_precision", "fp32")),
         "start_pct": settings.start_pct,
         "end_pct": settings.end_pct,
     }
