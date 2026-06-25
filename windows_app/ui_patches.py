@@ -315,6 +315,13 @@ def _build_outputs_tab(self: base.MainWindow) -> None:
     controls.addStretch(1)
     layout.addLayout(controls)
 
+    self.outputs_progress = base.QProgressBar()
+    self.outputs_progress.setMaximum(100)
+    self.outputs_progress.setFixedHeight(20)
+    self.outputs_progress.setTextVisible(True)
+    self.outputs_progress.hide()
+    layout.addWidget(self.outputs_progress)
+
     splitter = QSplitter(Qt.Horizontal)
     self.outputs_list = QListWidget()
     self.outputs_list.setMinimumWidth(180)
