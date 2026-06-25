@@ -41,7 +41,7 @@ ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v3"
+API_VERSION = "live-fast-detect-v4"
 
 
 class JobRequest(BaseModel):
@@ -289,6 +289,14 @@ def start_job(kind: str, argv: list[str]) -> JobState:
     return job
 
 
+def int_config(config: dict[str, Any], name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(config.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple[int, int]:
     height, width = frame.shape[:2]
     configured = config.get("max_width")
@@ -301,35 +309,100 @@ def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple
     return process_width, process_height
 
 
-def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray) -> np.ndarray:
+def live_detection_size(config: dict[str, Any]) -> int:
+    detector_size = int_config(config, "detector_size", 320, 160, 640)
+    return max(32, detector_size // 32 * 32)
+
+
+def live_detect_faces(frame: np.ndarray, many_faces: bool, detector_size: int) -> Any:
+    from insightface.app.common import Face
+    from modules.face_analyser import get_face_analyser
+
+    fa = get_face_analyser()
+    input_size = (detector_size, detector_size)
+    max_num = 0 if many_faces else 1
+    bboxes, kpss = fa.det_model.detect(frame, input_size=input_size, max_num=max_num, metric="default")
+    if bboxes.shape[0] == 0:
+        return [] if many_faces else None
+    faces = [Face(bbox=bboxes[i, :4], kps=kpss[i], det_score=bboxes[i, 4]) for i in range(bboxes.shape[0])]
+    if many_faces:
+        return faces
+    return min(faces, key=lambda face: face.bbox[0])
+
+
+def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, config: dict[str, Any], state: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+    timings: dict[str, Any] = {
+        "detect": 0.0,
+        "landmarks": 0.0,
+        "swap": 0.0,
+        "post": 0.0,
+        "enhance": 0.0,
+        "detect_reused": False,
+        "faces": 0,
+    }
     if engine.mapping:
-        return engine.process(frame, "live")
+        started = time.monotonic()
+        return engine.process(frame, "live"), {**timings, "swap": time.monotonic() - started}
 
-    from modules.face_analyser import detect_many_faces_fast, detect_one_face_fast, ensure_landmarks
-
+    detector_size = live_detection_size(config)
+    detect_every_n = int_config(config, "detect_every_n", 1, 1, 30)
+    many_faces = bool(engine.globals.many_faces)
     needs_landmarks = bool(engine.enhancer) or bool(getattr(engine.globals, "mouth_mask", False))
-    if engine.globals.many_faces:
-        faces = detect_many_faces_fast(frame) or []
-        if needs_landmarks:
-            ensure_landmarks(frame, faces)
+    frame_index = int(state.get("frame_index", 0))
+    cache_key = "many_faces" if many_faces else "single_face"
+    should_detect = frame_index % detect_every_n == 0 or state.get(cache_key) is None
+    state["frame_index"] = frame_index + 1
+
+    detect_started = time.monotonic()
+    if should_detect:
+        detected = live_detect_faces(frame, many_faces, detector_size)
+        state[cache_key] = detected
+    else:
+        detected = state.get(cache_key)
+        timings["detect_reused"] = True
+    timings["detect"] = time.monotonic() - detect_started
+
+    landmark_started = time.monotonic()
+    if needs_landmarks:
+        from modules.face_analyser import ensure_landmarks
+        ensure_landmarks(frame, detected)
+    timings["landmarks"] = time.monotonic() - landmark_started
+
+    if getattr(engine.globals, "opacity", 1.0) == 0:
+        if hasattr(engine.swapper, "PREVIOUS_FRAME_RESULT"):
+            engine.swapper.PREVIOUS_FRAME_RESULT = None
+        return frame, timings
+
+    swap_started = time.monotonic()
+    bboxes = []
+    if many_faces:
+        faces = detected or []
         output = frame.copy()
-        bboxes = []
         for face in faces:
             output = engine.swapper.swap_face(engine.default_source, face, output)
             if face is not None and hasattr(face, "bbox") and face.bbox is not None:
                 bboxes.append(face.bbox.astype(int))
-        output = engine.swapper.apply_post_processing(output, bboxes)
-        detected = faces
+        detected_for_enhancer = faces
     else:
-        face = detect_one_face_fast(frame)
-        if needs_landmarks:
-            ensure_landmarks(frame, face)
-        output = engine.swapper.process_frame(engine.default_source, frame, target_face=face)
-        detected = [face] if face is not None else []
+        face = detected
+        output = frame
+        if face is not None:
+            output = engine.swapper.swap_face(engine.default_source, face, output)
+            if hasattr(face, "bbox") and face.bbox is not None:
+                bboxes.append(face.bbox.astype(int))
+        detected_for_enhancer = [face] if face is not None else []
+    timings["swap"] = time.monotonic() - swap_started
+    timings["faces"] = len(detected_for_enhancer)
 
+    post_started = time.monotonic()
+    output = engine.swapper.apply_post_processing(output, bboxes)
+    timings["post"] = time.monotonic() - post_started
+
+    enhance_started = time.monotonic()
     if engine.enhancer:
-        output = engine.enhancer.process_frame(None, output, detected_faces=detected)
-    return output
+        output = engine.enhancer.process_frame(None, output, detected_faces=detected_for_enhancer)
+    timings["enhance"] = time.monotonic() - enhance_started
+    return output, timings
 
 
 @app.get("/health")
@@ -522,14 +595,28 @@ async def live_socket(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
 
-    await websocket.send_json({"status": "ready", "api_version": API_VERSION, "live_fast_detection": True})
+    await websocket.send_json({
+        "status": "ready",
+        "api_version": API_VERSION,
+        "live_fast_detection": True,
+        "detector_size": live_detection_size(config),
+        "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
+    })
     geometry_logged = False
+    live_state: dict[str, Any] = {}
     perf_started = time.monotonic()
     perf_frames = 0
     perf_wait = 0.0
     perf_decode = 0.0
     perf_resize = 0.0
     perf_process = 0.0
+    perf_detect = 0.0
+    perf_landmarks = 0.0
+    perf_swap = 0.0
+    perf_post = 0.0
+    perf_enhance = 0.0
+    perf_detect_reused = 0
+    perf_faces = 0
     perf_encode = 0.0
     perf_in_bytes = 0
     perf_out_bytes = 0
@@ -558,11 +645,13 @@ async def live_socket(websocket: WebSocket) -> None:
                     "api_version": API_VERSION,
                     "input": f"{frame_width}x{frame_height}",
                     "processing": f"{process_width}x{process_height}",
+                    "detector_size": live_detection_size(config),
+                    "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
                 })
                 geometry_logged = True
             try:
                 with ENGINE_LOCK:
-                    output = live_process_frame(engine, process_frame.copy())
+                    output, frame_timings = live_process_frame(engine, process_frame.copy(), config, live_state)
                 processed_at = time.monotonic()
             except Exception as exc:
                 await websocket.send_json({"error": f"live frame failed: {exc}"})
@@ -580,6 +669,13 @@ async def live_socket(websocket: WebSocket) -> None:
                 perf_decode += decoded_at - received_at
                 perf_resize += resized_at - decoded_at
                 perf_process += processed_at - resized_at
+                perf_detect += float(frame_timings.get("detect", 0.0))
+                perf_landmarks += float(frame_timings.get("landmarks", 0.0))
+                perf_swap += float(frame_timings.get("swap", 0.0))
+                perf_post += float(frame_timings.get("post", 0.0))
+                perf_enhance += float(frame_timings.get("enhance", 0.0))
+                perf_detect_reused += 1 if frame_timings.get("detect_reused") else 0
+                perf_faces += int(frame_timings.get("faces", 0) or 0)
                 perf_encode += encoded_at - processed_at
                 perf_in_bytes += len(payload)
                 perf_out_bytes += out_bytes
@@ -593,6 +689,15 @@ async def live_socket(websocket: WebSocket) -> None:
                         "decode_ms": round((perf_decode / perf_frames) * 1000.0, 1),
                         "resize_ms": round((perf_resize / perf_frames) * 1000.0, 1),
                         "process_ms": round((perf_process / perf_frames) * 1000.0, 1),
+                        "detect_ms": round((perf_detect / perf_frames) * 1000.0, 1),
+                        "landmarks_ms": round((perf_landmarks / perf_frames) * 1000.0, 1),
+                        "swap_ms": round((perf_swap / perf_frames) * 1000.0, 1),
+                        "post_ms": round((perf_post / perf_frames) * 1000.0, 1),
+                        "enhance_ms": round((perf_enhance / perf_frames) * 1000.0, 1),
+                        "detect_reuse_pct": round((perf_detect_reused / perf_frames) * 100.0, 1),
+                        "faces": round(perf_faces / perf_frames, 2),
+                        "detector_size": live_detection_size(config),
+                        "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
                         "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),
@@ -603,6 +708,13 @@ async def live_socket(websocket: WebSocket) -> None:
                     perf_decode = 0.0
                     perf_resize = 0.0
                     perf_process = 0.0
+                    perf_detect = 0.0
+                    perf_landmarks = 0.0
+                    perf_swap = 0.0
+                    perf_post = 0.0
+                    perf_enhance = 0.0
+                    perf_detect_reused = 0
+                    perf_faces = 0
                     perf_encode = 0.0
                     perf_in_bytes = 0
                     perf_out_bytes = 0
