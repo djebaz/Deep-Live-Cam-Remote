@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtWidgets import QScrollArea
+
 from windows_app import processing_options_patches as _processing_options_patches
 from windows_app import app as base
 from windows_app import async_outputs as async_base
@@ -27,7 +29,6 @@ LIVE_OPTION_KEYS = (
 
 _previous_load_settings = base.load_settings
 _previous_save_settings = base.save_settings
-_original_build_live_tab = base.MainWindow._build_live_tab
 _original_sync_settings = base.MainWindow.sync_settings
 _original_close_event = base.MainWindow.closeEvent
 
@@ -48,6 +49,13 @@ def _json_payload(text: object) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _status_label(text: str = "") -> base.QLabel:
+    label = base.QLabel(text)
+    label.setObjectName("statusLabel")
+    label.setWordWrap(True)
+    return label
 
 
 def _default_live_options() -> dict[str, Any]:
@@ -194,30 +202,37 @@ def save_settings(settings: base.AppSettings) -> None:
 
 
 def _build_live_tab(self: base.MainWindow) -> None:
-    _original_build_live_tab(self)
-    live_tab = self.tabs.widget(self.tabs.count() - 1)
-    layout = live_tab.layout() if live_tab is not None else None
-    form_item = layout.itemAt(0) if layout is not None and layout.count() else None
-    form = form_item.layout() if form_item is not None else None
-    if form is None:
-        return
+    tab = base.QWidget()
+    layout = base.QVBoxLayout(tab)
+    splitter = ui_base.QSplitter(ui_base.Qt.Horizontal)
 
+    controls_panel = base.QWidget()
+    controls_layout = base.QVBoxLayout(controls_panel)
+    form = base.QFormLayout()
+
+    self.camera_index = base.QSpinBox()
+    self.camera_index.setRange(0, 20)
+    self.camera_index.setValue(self.settings.camera_index)
+    self.virtual_camera = base.QLineEdit(self.settings.virtual_camera)
     self.live_source_face = base.QLineEdit(self.settings.source_face)
     live_source_row = self._path_row(
         self.live_source_face,
         lambda: self._browse_file(self.live_source_face, "Select source face image"),
     )
-    form.addRow("Source face path", live_source_row)
-    _link_live_source_fields(self)
-
     self.live_width = base.QSpinBox()
     self.live_width.setRange(160, 4096)
     self.live_width.setValue(_live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH))
     self.live_height = base.QSpinBox()
     self.live_height.setRange(120, 2160)
     self.live_height.setValue(_live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT))
+
+    form.addRow("Camera index", self.camera_index)
+    form.addRow("Virtual camera", self.virtual_camera)
+    form.addRow("Source face path", live_source_row)
     form.addRow("Capture width", self.live_width)
     form.addRow("Capture height", self.live_height)
+    controls_layout.addLayout(form)
+    _link_live_source_fields(self)
 
     options_box = base.QGroupBox("Live processing options")
     options_form = base.QFormLayout(options_box)
@@ -254,11 +269,48 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("Process max width", self.live_max_width)
     options_form.addRow("JPEG quality", self.live_jpeg_quality)
     _apply_live_options_to_widgets(self)
-    layout.insertWidget(1, options_box)
+    controls_layout.addWidget(options_box)
 
-    if hasattr(self, "live_preview"):
-        self.live_preview.setMinimumHeight(180)
-        self.live_preview.setMaximumHeight(720)
+    row = base.QHBoxLayout()
+    start = base.QPushButton("Start live")
+    start.setObjectName("successButton")
+    stop = base.QPushButton("Stop live")
+    stop.setObjectName("dangerButton")
+    start.clicked.connect(self.start_live)
+    stop.clicked.connect(self.stop_live)
+    row.addWidget(start)
+    row.addWidget(stop)
+    row.addStretch(1)
+    controls_layout.addLayout(row)
+
+    self.live_status = _status_label("Idle")
+    controls_layout.addWidget(self.live_status)
+    self.live_note = _status_label(
+        "Live sends webcam JPEG frames to ws://HOST:PORT/ws/live and previews returned frames."
+    )
+    controls_layout.addWidget(self.live_note)
+    controls_layout.addStretch(1)
+
+    controls_scroll = QScrollArea()
+    controls_scroll.setWidgetResizable(True)
+    controls_scroll.setMinimumWidth(260)
+    controls_scroll.setWidget(controls_panel)
+    splitter.addWidget(controls_scroll)
+
+    preview_panel = base.QWidget()
+    preview_layout = base.QVBoxLayout(preview_panel)
+    self.live_preview = base.QLabel("Live preview")
+    self.live_preview.setAlignment(base.Qt.AlignCenter)
+    self.live_preview.setMinimumSize(320, 240)
+    self.live_preview.setWordWrap(True)
+    preview_layout.addWidget(self.live_preview, 1)
+    splitter.addWidget(preview_panel)
+
+    splitter.setStretchFactor(0, 0)
+    splitter.setStretchFactor(1, 1)
+    splitter.setSizes([360, 900])
+    layout.addWidget(splitter, 1)
+    self.tabs.addTab(tab, "Live")
 
 
 def sync_settings(self: base.MainWindow) -> None:
@@ -462,15 +514,11 @@ def update_live_preview(self: base.MainWindow, jpeg_bytes: bytes) -> None:
     image = base.QImage.fromData(jpeg_bytes, "JPG")
     if image.isNull():
         return
-    if image.width() > 0 and hasattr(self, "live_preview"):
-        preview_width = max(1, self.live_preview.width())
-        target_height = int(round(preview_width * image.height() / image.width()))
-        target_height = max(160, min(720, target_height))
-        if getattr(self, "_live_preview_height", None) != target_height:
-            self.live_preview.setMinimumHeight(target_height)
-            self.live_preview.setMaximumHeight(target_height)
-            self._live_preview_height = target_height
-    pixmap = base.QPixmap.fromImage(image).scaled(self.live_preview.size(), base.Qt.KeepAspectRatio, base.Qt.SmoothTransformation)
+    pixmap = base.QPixmap.fromImage(image).scaled(
+        self.live_preview.size(),
+        base.Qt.KeepAspectRatio,
+        base.Qt.SmoothTransformation,
+    )
     self.live_preview.setPixmap(pixmap)
     ui_base._set_process_status(self, "live", f"Live receiving frames ({image.width()}x{image.height()})")
 
