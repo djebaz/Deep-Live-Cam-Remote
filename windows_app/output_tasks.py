@@ -101,6 +101,22 @@ def _filter_processed_local_files(client: ApiClient, kind: str, files: list[Path
     return pending
 
 
+def _isolated_upload_endpoint(kind: str) -> tuple[str, str]:
+    batch_id = uuid.uuid4().hex
+    return f"/upload/{kind}?batch_id={batch_id}", batch_id
+
+
+def _require_isolated_input_dir(kind: str, batch_id: str, response: dict[str, Any]) -> str:
+    input_dir = str(response.get("input_dir") or "")
+    normalized = input_dir.replace("\\", "/")
+    if f"/{batch_id}" not in normalized and not normalized.endswith(f"/{batch_id}"):
+        raise RuntimeError(
+            f"Colab API did not return an isolated {kind} upload directory for batch {batch_id}. "
+            "Restart/update the Colab API server so /upload/photos and /upload/videos support batch_id."
+        )
+    return input_dir
+
+
 def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]:
     client = ApiClient(settings)
     logs: list[str] = ["checking Colab API before starting batch"]
@@ -148,13 +164,14 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
                 f"Too many {kind} files for one upload after skip_processed preflight: {len(files)}. "
                 f"Backend maximum is {MAX_UPLOAD_FILES}; select a smaller folder/subset."
             )
-        logs.append(f"uploading {len(files)} local {kind} file(s)")
-        response = client.upload_files(f"/upload/{kind}", files, timeout=600.0)
-        input_dir = str(response.get("input_dir") or input_path)
+        upload_endpoint, batch_id = _isolated_upload_endpoint(kind)
+        logs.append(f"uploading {len(files)} local {kind} file(s) to isolated batch {batch_id}")
+        response = client.upload_files(upload_endpoint, files, timeout=600.0)
+        input_dir = _require_isolated_input_dir(kind, batch_id, response)
         if is_local_path(output_path):
             output_dir = str(response.get("output_dir") or output_path)
             logs.append(f"local output path is not reachable from Colab; using: {output_dir}")
-        logs.append(f"{kind} uploaded to: {input_dir}")
+        logs.append(f"{kind} uploaded to isolated input dir: {input_dir}")
 
     endpoint = "/jobs/photos" if kind == "photos" else "/jobs/videos"
     payload = job_payload(settings, input_dir, output_dir, source_face)
