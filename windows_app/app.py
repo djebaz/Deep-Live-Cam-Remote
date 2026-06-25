@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -624,6 +625,11 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
         layout.addLayout(controls)
 
+        self.outputs_progress = QProgressBar()
+        self.outputs_progress.setMaximum(100)
+        self.outputs_progress.setVisible(False)
+        layout.addWidget(self.outputs_progress)
+
         self.outputs_list = QListWidget()
         self.outputs_list.currentRowChanged.connect(self.show_output_at)
         layout.addWidget(self.outputs_list)
@@ -698,20 +704,27 @@ class MainWindow(QMainWindow):
         self.output_status.setText("Refreshing outputs...")
         self.stop_output_video()
         self.output_preview.setText("Loading outputs...")
+        self.outputs_progress.setVisible(True)
+        self.outputs_progress.setValue(0)
         try:
             payload = self.client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
             self.output_files = list(payload.get("files") or [])
+            total = len(self.output_files)
             for idx, item in enumerate(self.output_files):
                 label = f"[{item.get('source')}] {item.get('relative_path')} ({format_size(item.get('size'))})"
                 self.outputs_list.addItem(QListWidgetItem(label))
-                self.output_status.setText(f"Loading... {idx + 1}/{len(self.output_files)}")
+                progress = int((idx + 1) / total * 100) if total > 0 else 0
+                self.outputs_progress.setValue(progress)
+                self.output_status.setText(f"Loading... {idx + 1}/{total}")
                 QApplication.processEvents()
+            self.outputs_progress.setVisible(False)
             self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
             if self.output_files:
                 self.outputs_list.setCurrentRow(0)
             else:
                 self.output_preview.setText("No remote outputs found")
         except Exception as exc:
+            self.outputs_progress.setVisible(False)
             self.output_status.setText(f"refresh failed: {exc}")
             self.log(f"outputs refresh failed: {exc}")
 
