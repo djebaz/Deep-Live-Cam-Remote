@@ -41,9 +41,10 @@ ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v6"
+API_VERSION = "live-fast-detect-v7"
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
+LIVE_FRAME_CODECS = {"jpeg", "webp"}
 
 
 def bool_config(config: dict[str, Any], name: str, default: bool) -> bool:
@@ -327,6 +328,34 @@ def live_detection_size(config: dict[str, Any]) -> int:
 
 def live_jpeg_quality(config: dict[str, Any]) -> int:
     return int_config(config, "jpeg_quality", 80, 20, 95)
+
+
+def live_frame_codec(config: dict[str, Any]) -> str:
+    codec = str(config.get("frame_codec") or "jpeg").lower()
+    if codec not in LIVE_FRAME_CODECS:
+        return "jpeg"
+    return codec
+
+
+def live_output_codec(config: dict[str, Any]) -> str:
+    codec = str(config.get("output_codec") or live_frame_codec(config)).lower()
+    if codec not in LIVE_FRAME_CODECS:
+        return "jpeg"
+    return codec
+
+
+def live_encode_frame(frame: np.ndarray, config: dict[str, Any]) -> tuple[bool, Any, str]:
+    quality = live_jpeg_quality(config)
+    requested = live_output_codec(config)
+    if requested == "webp":
+        try:
+            ok, encoded = cv2.imencode(".webp", frame, [int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY)), quality])
+        except Exception:
+            ok, encoded = False, None
+        if ok:
+            return True, encoded, "webp"
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    return bool(ok), encoded, "jpeg"
 
 
 def live_face_model_pack(config: dict[str, Any]) -> str:
@@ -655,6 +684,9 @@ async def live_socket(websocket: WebSocket) -> None:
         "swapper_model_path": swapper_diagnostics.get("model_path", ""),
         "source_embedding_cached": engine.default_source is not None and engine.cache_source_face,
         "cache_source_face": engine.cache_source_face,
+        "frame_codec": live_frame_codec(config),
+        "output_codec": live_output_codec(config),
+        "frame_quality": live_jpeg_quality(config),
         "jpeg_quality": live_jpeg_quality(config),
     })
     geometry_logged = False
@@ -706,6 +738,9 @@ async def live_socket(websocket: WebSocket) -> None:
                     "swapper_precision": live_swapper_precision(config),
                     "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
                     "cache_source_face": getattr(engine, "cache_source_face", True),
+                    "frame_codec": live_frame_codec(config),
+                    "output_codec": live_output_codec(config),
+                    "frame_quality": live_jpeg_quality(config),
                     "jpeg_quality": live_jpeg_quality(config),
                 })
                 geometry_logged = True
@@ -720,7 +755,7 @@ async def live_socket(websocket: WebSocket) -> None:
                 output = process_frame
             if output.shape[:2] != (process_height, process_width):
                 output = cv2.resize(output, (process_width, process_height), interpolation=cv2.INTER_LINEAR)
-            ok, encoded = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), live_jpeg_quality(config)])
+            ok, encoded, encoded_codec = live_encode_frame(output, config)
             encoded_at = time.monotonic()
             if ok:
                 out_bytes = int(encoded.size)
@@ -762,6 +797,10 @@ async def live_socket(websocket: WebSocket) -> None:
                         "swapper_precision": live_swapper_precision(config),
                         "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
                         "cache_source_face": getattr(engine, "cache_source_face", True),
+                        "frame_codec": live_frame_codec(config),
+                        "output_codec": live_output_codec(config),
+                        "encoded_codec": encoded_codec,
+                        "frame_quality": live_jpeg_quality(config),
                         "jpeg_quality": live_jpeg_quality(config),
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),

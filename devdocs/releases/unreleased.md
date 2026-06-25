@@ -9,6 +9,7 @@
 - Cache the live source face embedding once when the Colab live engine starts and reuse it across live frames.
 - Report the requested and loaded live swapper precision plus model path in live backend diagnostics/perf events.
 - Add configurable buffered, fixed-cadence live preview rendering that delays frames briefly, coalesces bursty WebSocket arrivals, and drops stale preview frames for smoother timing.
+- Add experimental Live webcam frame codec controls for JPEG/WebP send and return frames, with frame quality and codec fields in live backend/perf diagnostics.
 - **Windows Remote App**: PySide6 desktop app for controlling Colab batch processing over Tailscale
   - Dark title bar and custom app icon on Windows 10/11
   - Photos and Videos tabs with full processing options (recursive, overwrite, skip processed, many faces, enhancer, opacity, sharpness, mouth mask, interpolation, poisson blend, color correction)

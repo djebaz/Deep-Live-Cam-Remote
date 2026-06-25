@@ -17,3 +17,18 @@ Branch: live-webcam-stability
 
 ## Deferred validation
 - User-owned live Colab/webcam validation for pack download latency, speed, and swap quality.
+
+## 2026-06-25 WebP live frame codec update
+
+### Scope
+- Add Live tab controls for send codec and return codec (`jpeg`, `webp`) while keeping JPEG as the safe default.
+- Send selected codecs plus frame quality in the `/ws/live` config.
+- Let the server auto-decode incoming JPEG/WebP bytes with OpenCV `imdecode` and encode returned frames with JPEG or WebP.
+- Report `frame_codec`, `output_codec`, `encoded_codec`, `frame_quality`, `in_kb`, and `out_kb` in live diagnostics/perf logs.
+
+### Decision
+- Use one existing quality spinbox as generic frame quality for JPEG and WebP to keep the UI compact and preserve existing settings.
+- Fallback to JPEG if WebP encode fails on either side.
+
+### Deferred validation
+- User-owned Colab webcam validation for WebP availability, preview compatibility, latency, and visual quality.

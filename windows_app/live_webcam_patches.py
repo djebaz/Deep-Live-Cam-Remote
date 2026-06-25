@@ -19,6 +19,9 @@ DEFAULT_LIVE_HEIGHT = 720
 DEFAULT_LIVE_FPS = 30
 DEFAULT_LIVE_PIPELINE_FRAMES = 16
 DEFAULT_LIVE_JPEG_QUALITY = 80
+DEFAULT_LIVE_FRAME_CODEC = "jpeg"
+DEFAULT_LIVE_OUTPUT_CODEC = "jpeg"
+LIVE_FRAME_CODECS = ("jpeg", "webp")
 DEFAULT_LIVE_DETECTOR_SIZE = 320
 DEFAULT_LIVE_DETECT_EVERY_N = 1
 DEFAULT_LIVE_FACE_MODEL_PACK = "buffalo_l"
@@ -36,6 +39,8 @@ LIVE_OPTION_KEYS = (
     "poisson_blend",
     "color_correction",
     "max_width",
+    "frame_codec",
+    "output_codec",
     "jpeg_quality",
     "detector_size",
     "detect_every_n",
@@ -89,6 +94,8 @@ def _default_live_options() -> dict[str, Any]:
         "poisson_blend": False,
         "color_correction": False,
         "max_width": defaults.max_width,
+        "frame_codec": DEFAULT_LIVE_FRAME_CODEC,
+        "output_codec": DEFAULT_LIVE_OUTPUT_CODEC,
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
@@ -114,6 +121,12 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["poisson_blend"] = bool(options["poisson_blend"])
     options["color_correction"] = bool(options["color_correction"])
     options["max_width"] = max(64, int(options["max_width"]))
+    options["frame_codec"] = str(options["frame_codec"]).lower()
+    if options["frame_codec"] not in LIVE_FRAME_CODECS:
+        options["frame_codec"] = DEFAULT_LIVE_FRAME_CODEC
+    options["output_codec"] = str(options["output_codec"]).lower()
+    if options["output_codec"] not in LIVE_FRAME_CODECS:
+        options["output_codec"] = DEFAULT_LIVE_OUTPUT_CODEC
     options["jpeg_quality"] = max(20, min(95, int(options["jpeg_quality"])))
     options["detector_size"] = max(160, min(640, int(options["detector_size"])))
     options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
@@ -186,6 +199,8 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "poisson_blend": window.live_poisson_blend.isChecked(),
             "color_correction": window.live_color_correction.isChecked(),
             "max_width": int(window.live_max_width.value()),
+            "frame_codec": window.live_frame_codec.currentText(),
+            "output_codec": window.live_output_codec.currentText(),
             "jpeg_quality": int(window.live_jpeg_quality.value()),
             "detector_size": int(window.live_detector_size.value()),
             "detect_every_n": int(window.live_detect_every_n.value()),
@@ -210,6 +225,8 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_poisson_blend.setChecked(bool(options["poisson_blend"]))
     window.live_color_correction.setChecked(bool(options["color_correction"]))
     window.live_max_width.setValue(int(options["max_width"]))
+    window.live_frame_codec.setCurrentText(str(options["frame_codec"]))
+    window.live_output_codec.setCurrentText(str(options["output_codec"]))
     window.live_jpeg_quality.setValue(int(options["jpeg_quality"]))
     window.live_detector_size.setValue(int(options["detector_size"]))
     window.live_detect_every_n.setValue(int(options["detect_every_n"]))
@@ -315,6 +332,12 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_color_correction = base.QCheckBox()
     self.live_max_width = base.QSpinBox()
     self.live_max_width.setRange(64, 4096)
+    self.live_frame_codec = base.QComboBox()
+    self.live_frame_codec.addItems(list(LIVE_FRAME_CODECS))
+    self.live_frame_codec.setToolTip("Codec used for webcam frames sent to the Colab live websocket. WebP can reduce in_kb when OpenCV supports it.")
+    self.live_output_codec = base.QComboBox()
+    self.live_output_codec.addItems(list(LIVE_FRAME_CODECS))
+    self.live_output_codec.setToolTip("Codec used by the Colab server for frames returned to preview/virtual camera. JPEG is safest; WebP may reduce out_kb.")
     self.live_jpeg_quality = base.QSpinBox()
     self.live_jpeg_quality.setRange(20, 95)
     self.live_detector_size = base.QSpinBox()
@@ -348,7 +371,9 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("Poisson blend", self.live_poisson_blend)
     options_form.addRow("Color correction", self.live_color_correction)
     options_form.addRow("Process max width", self.live_max_width)
-    options_form.addRow("JPEG quality", self.live_jpeg_quality)
+    options_form.addRow("Send codec", self.live_frame_codec)
+    options_form.addRow("Return codec", self.live_output_codec)
+    options_form.addRow("Frame quality", self.live_jpeg_quality)
     options_form.addRow("Detector size", self.live_detector_size)
     options_form.addRow("Detect every N frames", self.live_detect_every_n)
     options_form.addRow("InsightFace pack", self.live_face_model_pack)
@@ -373,7 +398,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_status = _status_label("Idle")
     controls_layout.addWidget(self.live_status)
     self.live_note = _status_label(
-        "Live sends webcam JPEG frames to ws://HOST:PORT/ws/live and previews returned frames. "
+        "Live sends webcam JPEG/WebP frames to ws://HOST:PORT/ws/live and previews returned frames. "
         "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options. "
         "Use Swapper precision to compare fp32 vs fp16 swap_ms."
     )
@@ -498,6 +523,14 @@ class LiveWorker(base.LiveWorker):
             f"actual {actual_width}x{actual_height}@{actual_fps:.1f}, pipeline {pipeline_frames}"
         )
         virtual_cam = None
+        frame_codec = str(getattr(self.settings, "frame_codec", DEFAULT_LIVE_FRAME_CODEC)).lower()
+        if frame_codec not in LIVE_FRAME_CODECS:
+            frame_codec = DEFAULT_LIVE_FRAME_CODEC
+        output_codec = str(getattr(self.settings, "output_codec", DEFAULT_LIVE_OUTPUT_CODEC)).lower()
+        if output_codec not in LIVE_FRAME_CODECS:
+            output_codec = DEFAULT_LIVE_OUTPUT_CODEC
+        frame_quality = int(getattr(self.settings, "live_jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY))
+        self.message.emit(f"live frame codec: send={frame_codec}, return={output_codec}, quality={frame_quality}")
         clock = asyncio.get_running_loop().time
         stats_started = clock()
         stats_frames = 0
@@ -521,11 +554,14 @@ class LiveWorker(base.LiveWorker):
                             condition.notify_all()
                         await asyncio.sleep(0.03)
                         continue
-                    ok, encoded = cv2.imencode(
-                        ".jpg",
-                        frame,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), int(getattr(self.settings, "live_jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY))],
-                    )
+                    encode_ext = ".webp" if frame_codec == "webp" else ".jpg"
+                    encode_flag = int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY)) if frame_codec == "webp" else int(cv2.IMWRITE_JPEG_QUALITY)
+                    try:
+                        ok, encoded = cv2.imencode(encode_ext, frame, [encode_flag, frame_quality])
+                    except Exception:
+                        if frame_codec != "webp":
+                            raise
+                        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), frame_quality])
                     if not ok:
                         async with condition:
                             in_flight = max(0, in_flight - 1)
@@ -593,7 +629,10 @@ class LiveWorker(base.LiveWorker):
                             "poisson_blend": self.settings.poisson_blend,
                             "color_correction": self.settings.color_correction,
                             "max_width": self.settings.max_width,
-                            "jpeg_quality": getattr(self.settings, "live_jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY),
+                            "frame_codec": frame_codec,
+                            "output_codec": output_codec,
+                            "jpeg_quality": frame_quality,
+                            "frame_quality": frame_quality,
                             "detector_size": getattr(self.settings, "detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
                             "detect_every_n": getattr(self.settings, "detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
                             "face_model_pack": getattr(self.settings, "face_model_pack", DEFAULT_LIVE_FACE_MODEL_PACK),
@@ -718,7 +757,7 @@ def stop_live(self: base.MainWindow) -> None:
     _original_stop_live(self)
 
 
-def enqueue_live_preview_frame(self: base.MainWindow, jpeg_bytes: bytes) -> None:
+def enqueue_live_preview_frame(self: base.MainWindow, frame_bytes: bytes) -> None:
     # Buffer by arrival time so the QTimer can render frames at an even cadence
     # after a small delay. Do not coalesce during normal playback; render one
     # queued frame per timer tick. Drop only if the backlog exceeds a safety cap.
@@ -727,7 +766,7 @@ def enqueue_live_preview_frame(self: base.MainWindow, jpeg_bytes: bytes) -> None
         buffer = deque()
         self._live_preview_buffer = buffer
     now = time.monotonic()
-    buffer.append((now, bytes(jpeg_bytes)))
+    buffer.append((now, bytes(frame_bytes)))
     buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
     fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
     max_frames = max(3, int(math.ceil((buffer_seconds + 2.0) * fps)))
@@ -744,7 +783,7 @@ def render_live_preview_frame(self: base.MainWindow) -> None:
         if time.monotonic() - buffer[0][0] < buffer_seconds:
             return
         self._live_preview_started = True
-    _timestamp, jpeg_bytes = buffer.popleft()
+    _timestamp, frame_bytes = buffer.popleft()
     if buffer_seconds > 0:
         fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
         # If the producer outruns the preview for a while, keep the stream near
@@ -753,15 +792,26 @@ def render_live_preview_frame(self: base.MainWindow) -> None:
         max_frames = max(target_frames + fps, target_frames * 2)
         while len(buffer) > max_frames:
             buffer.popleft()
-    if not jpeg_bytes:
+    if not frame_bytes:
         return
-    update_live_preview(self, jpeg_bytes)
+    update_live_preview(self, frame_bytes)
 
 
-def update_live_preview(self: base.MainWindow, jpeg_bytes: bytes) -> None:
-    image = base.QImage.fromData(jpeg_bytes, "JPG")
+def update_live_preview(self: base.MainWindow, frame_bytes: bytes) -> None:
+    image = base.QImage.fromData(frame_bytes)
     if image.isNull():
-        return
+        try:
+            import cv2
+            import numpy as np
+
+            decoded = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if decoded is None:
+                return
+            rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+            height, width, channels = rgb.shape
+            image = base.QImage(rgb.data, width, height, channels * width, base.QImage.Format_RGB888).copy()
+        except Exception:
+            return
     pixmap = base.QPixmap.fromImage(image).scaled(
         self.live_preview.size(),
         base.Qt.KeepAspectRatio,

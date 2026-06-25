@@ -113,6 +113,7 @@ The app currently provides:
 - Video percentage range selection.
 - Live webcam InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) with `buffalo_l` as the safest default, plus fp32/fp16 swapper precision selection for `swap_ms` comparison.
 - Live webcam uses configurable buffered, fixed-cadence preview rendering so bursty backend frames are delayed briefly, evenly paced, and coalesced instead of repainting stale frame backlogs.
+- Live webcam can send and receive either JPEG or WebP frames, with frame quality and codec values reported in backend diagnostics/perf logs.
 - Output browser with preview/player support.
 - Local source/input upload to the Colab API.
 - Settings sync between photo and video workflows.
