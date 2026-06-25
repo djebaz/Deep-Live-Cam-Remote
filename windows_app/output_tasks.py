@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtGui import QImageReader, QPixmap
-from PySide6.QtWidgets import QFileDialog, QListWidgetItem
+from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem
 
 from windows_app.api_client import ApiClient, format_size, is_local_path, job_payload, local_files
 from windows_app.task_runner import (
