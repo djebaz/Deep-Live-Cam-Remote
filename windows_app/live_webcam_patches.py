@@ -29,6 +29,8 @@ LIVE_FACE_MODEL_PACKS = ("buffalo_l", "buffalo_m", "buffalo_s")
 DEFAULT_LIVE_SWAPPER_PRECISION = "fp32"
 LIVE_SWAPPER_PRECISIONS = ("fp32", "fp16")
 DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS = 1.0
+DEFAULT_LIVE_PREVIEW_SCALE = "fit"
+LIVE_PREVIEW_SCALES = ("fit", "1x", "1.5x", "2x")
 LIVE_OPTION_KEYS = (
     "many_faces",
     "enhancer",
@@ -48,6 +50,7 @@ LIVE_OPTION_KEYS = (
     "swapper_precision",
     "cache_source_face",
     "preview_buffer_seconds",
+    "preview_scale",
 )
 
 _previous_load_settings = base.load_settings
@@ -103,6 +106,7 @@ def _default_live_options() -> dict[str, Any]:
         "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
         "cache_source_face": True,
         "preview_buffer_seconds": DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
+        "preview_scale": DEFAULT_LIVE_PREVIEW_SCALE,
     }
 
 
@@ -136,6 +140,9 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
         options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
     options["cache_source_face"] = bool(options["cache_source_face"])
     options["preview_buffer_seconds"] = max(0.0, min(5.0, float(options["preview_buffer_seconds"])))
+    options["preview_scale"] = str(options["preview_scale"]).lower()
+    if options["preview_scale"] not in LIVE_PREVIEW_SCALES:
+        options["preview_scale"] = DEFAULT_LIVE_PREVIEW_SCALE
     options["swapper_precision"] = str(options["swapper_precision"]).lower()
     if options["swapper_precision"] not in LIVE_SWAPPER_PRECISIONS:
         options["swapper_precision"] = DEFAULT_LIVE_SWAPPER_PRECISION
@@ -208,6 +215,7 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "swapper_precision": window.live_swapper_precision.currentText(),
             "cache_source_face": window.live_cache_source_face.isChecked(),
             "preview_buffer_seconds": float(window.live_preview_buffer_seconds.value()),
+            "preview_scale": window.live_preview_scale.currentText() if hasattr(window, "live_preview_scale") else DEFAULT_LIVE_PREVIEW_SCALE,
         }
     )
 
@@ -234,6 +242,8 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_swapper_precision.setCurrentText(str(options["swapper_precision"]))
     window.live_cache_source_face.setChecked(bool(options["cache_source_face"]))
     window.live_preview_buffer_seconds.setValue(float(options["preview_buffer_seconds"]))
+    if hasattr(window, "live_preview_scale"):
+        window.live_preview_scale.setCurrentText(str(options["preview_scale"]))
 
 
 def load_settings() -> base.AppSettings:
@@ -413,6 +423,16 @@ def _build_live_tab(self: base.MainWindow) -> None:
 
     preview_panel = base.QWidget()
     preview_layout = base.QVBoxLayout(preview_panel)
+    preview_controls = base.QHBoxLayout()
+    preview_controls.addWidget(base.QLabel("Preview size"))
+    self.live_preview_scale = base.QComboBox()
+    self.live_preview_scale.addItems(list(LIVE_PREVIEW_SCALES))
+    self.live_preview_scale.setCurrentText(str(_live_options(self.settings)["preview_scale"]))
+    self.live_preview_scale.setToolTip("Fit fills the panel. 1x/1.5x/2x use that pixel scale only when it fits; otherwise they fall back to fit.")
+    self.live_preview_scale.currentTextChanged.connect(lambda _text: update_live_preview_from_last_frame(self))
+    preview_controls.addWidget(self.live_preview_scale)
+    preview_controls.addStretch(1)
+    preview_layout.addLayout(preview_controls)
     self.live_preview = base.QLabel("Live preview")
     self.live_preview.setAlignment(base.Qt.AlignCenter)
     self.live_preview.setMinimumSize(320, 240)
@@ -422,6 +442,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self._live_preview_buffer = deque()
     self._live_preview_buffer_seconds = DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS
     self._live_preview_frames = 0
+    self._live_preview_last_frame = None
     self._live_preview_timer = base.QTimer(self)
     self._live_preview_timer.timeout.connect(lambda: render_live_preview_frame(self))
     splitter.addWidget(preview_panel)
@@ -736,6 +757,7 @@ def start_live_preview_timer(self: base.MainWindow, settings: base.AppSettings) 
     self._live_preview_buffer_seconds = float(_live_options(settings)["preview_buffer_seconds"])
     self._live_preview_started = self._live_preview_buffer_seconds <= 0
     self._live_preview_frames = 0
+    self._live_preview_last_frame = None
     fps = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
     interval_ms = max(1, int(round(1000.0 / max(1, fps))))
     timer.setInterval(interval_ms)
@@ -747,6 +769,7 @@ def stop_live_preview_timer(self: base.MainWindow) -> None:
     if timer is not None:
         timer.stop()
     self._live_latest_jpeg = None
+    self._live_preview_last_frame = None
     buffer = getattr(self, "_live_preview_buffer", None)
     if buffer is not None:
         buffer.clear()
@@ -797,7 +820,40 @@ def render_live_preview_frame(self: base.MainWindow) -> None:
     update_live_preview(self, frame_bytes)
 
 
-def update_live_preview(self: base.MainWindow, frame_bytes: bytes) -> None:
+def _preview_scale_factor(scale: str) -> float | None:
+    normalized = str(scale or DEFAULT_LIVE_PREVIEW_SCALE).lower()
+    if normalized == "fit":
+        return None
+    try:
+        return float(normalized.rstrip("x"))
+    except ValueError:
+        return None
+
+
+def _preview_target_size(self: base.MainWindow, image: base.QImage) -> tuple[int, int]:
+    panel_size = self.live_preview.size()
+    panel_width = max(1, int(panel_size.width()))
+    panel_height = max(1, int(panel_size.height()))
+    factor = _preview_scale_factor(getattr(getattr(self, "live_preview_scale", None), "currentText", lambda: DEFAULT_LIVE_PREVIEW_SCALE)())
+    if factor is not None:
+        target_width = max(1, int(round(image.width() * factor)))
+        target_height = max(1, int(round(image.height() * factor)))
+        if target_width <= panel_width and target_height <= panel_height:
+            return target_width, target_height
+    image_ratio = image.width() / max(1, image.height())
+    panel_ratio = panel_width / max(1, panel_height)
+    if image_ratio >= panel_ratio:
+        return panel_width, max(1, int(round(panel_width / image_ratio)))
+    return max(1, int(round(panel_height * image_ratio))), panel_height
+
+
+def update_live_preview_from_last_frame(self: base.MainWindow) -> None:
+    frame = getattr(self, "_live_preview_last_frame", None)
+    if frame:
+        update_live_preview(self, frame, remember=False)
+
+
+def update_live_preview(self: base.MainWindow, frame_bytes: bytes, remember: bool = True) -> None:
     image = base.QImage.fromData(frame_bytes)
     if image.isNull():
         try:
@@ -812,8 +868,12 @@ def update_live_preview(self: base.MainWindow, frame_bytes: bytes) -> None:
             image = base.QImage(rgb.data, width, height, channels * width, base.QImage.Format_RGB888).copy()
         except Exception:
             return
+    if remember:
+        self._live_preview_last_frame = bytes(frame_bytes)
+    target_width, target_height = _preview_target_size(self, image)
     pixmap = base.QPixmap.fromImage(image).scaled(
-        self.live_preview.size(),
+        target_width,
+        target_height,
         base.Qt.KeepAspectRatio,
         base.Qt.FastTransformation,
     )
@@ -824,7 +884,8 @@ def update_live_preview(self: base.MainWindow, frame_bytes: bytes) -> None:
             self,
             "live",
             (
-                f"Live buffered preview ({image.width()}x{image.height()}, "
+                f"Live buffered preview ({image.width()}x{image.height()} -> {pixmap.width()}x{pixmap.height()}, "
+                f"size {getattr(getattr(self, 'live_preview_scale', None), 'currentText', lambda: DEFAULT_LIVE_PREVIEW_SCALE)()}, "
                 f"buffer {float(getattr(self, '_live_preview_buffer_seconds', DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS)):.2f}s, "
                 f"rendered {self._live_preview_frames})"
             ),
@@ -841,6 +902,7 @@ def install() -> None:
     base.MainWindow.stop_live = stop_live
     base.MainWindow.enqueue_live_preview_frame = enqueue_live_preview_frame
     base.MainWindow.update_live_preview = update_live_preview
+    base.MainWindow.update_live_preview_from_last_frame = update_live_preview_from_last_frame
 
 
 install()

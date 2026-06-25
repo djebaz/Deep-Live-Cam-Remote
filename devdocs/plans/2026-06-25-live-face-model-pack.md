@@ -32,3 +32,13 @@ Branch: live-webcam-stability
 
 ### Deferred validation
 - User-owned Colab webcam validation for WebP availability, preview compatibility, latency, and visual quality.
+
+## 2026-06-25 Live preview size control
+
+### Scope
+- Add a small Live preview-panel control for `fit`, `1x`, `1.5x`, and `2x`.
+- Keep `fit` as the default preview behavior.
+- Cap requested pixel scales to the preview panel; if the scaled frame is larger than the panel, render fit instead.
+
+### Deferred validation
+- User-owned manual GUI validation for preview sizing behavior during live webcam playback.
