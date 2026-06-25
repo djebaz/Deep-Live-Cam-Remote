@@ -34,6 +34,31 @@ Turn the PR #5 transitional cleanup into a cleaner modular Windows app architect
 - Old names such as `async_base` no longer match their module purpose.
 - The earlier accidental upstream PR showed that PR creation needs an explicit repository guard.
 
+## PR #6 Status
+
+PR #6 is the first implementation phase for this plan, not the final completion of every acceptance criterion.
+
+Done in PR #6:
+
+- Created the planned branch `refactor/windows-app-modules-v2`.
+- Added focused ownership modules for settings, API/client helpers, and worker classes.
+- Moved `AppSettings`, settings persistence, processing option migration, and live option migration into `windows_app/settings.py`.
+- Moved `ApiClient`, local path helpers, upload/download helpers, archive helper calls, and `job_payload()` into `windows_app/api_client.py`.
+- Added `LiveWorker`, `PollWorker`, and `OutputTaskWorker` to `windows_app/workers.py`.
+- Rewired `windows_app/app.py` so the compatibility namespace is populated from the new owner modules before GUI mixins are imported.
+- Replaced the stale `async_base` alias in `processing_options.py` with `output_tasks_base`.
+- Added `scripts/create_downstream_pr.ps1`, which verifies the current repo and `origin`, refuses upstream, and calls `gh pr create --repo djebaz/Deep-Live-Cam-Remote`.
+- Kept the launcher commands unchanged.
+
+Still open after PR #6:
+
+- `app_base.py` is still large and remains a legacy compatibility module, not yet a narrow shim.
+- Several GUI modules still import `app_base as base` for Qt symbols and legacy compatibility.
+- Function-assigned mixins still exist.
+- `live_webcam.py` still contains import-time previous-function capture and still needs a deeper pass.
+- `main_window_ui.py`, `output_tasks.py`, and `live_webcam.py` still need further responsibility splitting.
+- Syntax and GUI validation still need to be run in the Windows/PySide environment.
+
 ## Implementation Plan
 
 ### 1. Branch and PR safety
