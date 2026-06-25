@@ -161,6 +161,11 @@ def _start_batch_with_status(self: MainWindow, kind: str) -> None:
             self.log(line_text)
             ui_base._set_process_status(self, kind, line_text)
         response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+        if response.get("skipped"):
+            skipped_count = int(response.get("skipped_count") or 0)
+            ui_base._set_batch_button_idle(self, kind)
+            ui_base._set_process_status(self, kind, f"{kind} batch skipped: {skipped_count} already processed file(s)")
+            return
         self.active_job_id = response.get("job_id")
         if self.active_job_id:
             if self.poller:
@@ -207,5 +212,3 @@ def _build_photos_tab(self: MainWindow) -> None:
 def _build_videos_tab(self: MainWindow) -> None:
     ui_base._build_videos_tab(self)
     _apply_processing_options_to_widgets(self, "videos")
-
-
