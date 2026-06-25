@@ -223,12 +223,13 @@ class ApiClient:
 def job_payload(settings: AppSettings, input_dir: str, output_dir: str, source_face: str | None = None) -> dict[str, Any]:
     normalized_input = str(input_dir).replace("\\", "/")
     is_photo_job = "/photos" in normalized_input and "/videos" not in normalized_input
-    max_width = int(getattr(settings, "photo_max_width", 0)) if is_photo_job else int(settings.max_width)
+    output_max_width = int(getattr(settings, "photo_max_width", 0)) if is_photo_job else None
+    max_width = int(settings.max_width)
     quality = int(getattr(settings, "photo_quality", 95)) if is_photo_job else int(settings.quality)
     detector_size = int(getattr(settings, "photo_detector_size", 640)) if is_photo_job else int(getattr(settings, "detector_size", 640))
     face_model_pack = str(getattr(settings, "photo_face_model_pack", "buffalo_l")) if is_photo_job else str(getattr(settings, "face_model_pack", "buffalo_l"))
     swapper_precision = str(getattr(settings, "photo_swapper_precision", "fp32")) if is_photo_job else str(getattr(settings, "swapper_precision", "fp32"))
-    return {
+    payload: dict[str, Any] = {
         "source_face": source_face or settings.source_face,
         "input_dir": input_dir,
         "output_dir": output_dir,
@@ -252,6 +253,9 @@ def job_payload(settings: AppSettings, input_dir: str, output_dir: str, source_f
         "start_pct": settings.start_pct,
         "end_pct": settings.end_pct,
     }
+    if output_max_width and output_max_width > 0:
+        payload["output_max_width"] = output_max_width
+    return payload
 
 
 __all__ = [
