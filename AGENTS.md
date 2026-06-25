@@ -37,7 +37,7 @@ When working in Windows/PowerShell:
 - Quote git revspecs containing `@{}`; for example `git rev-list --left-right --count "@{u}...HEAD"`.
 - For native commands (`git`, `gh`, `python`, etc.), check `$LASTEXITCODE` immediately when command success matters.
 - For external `.ps1` execution from another shell or process boundary, prefer `pwsh -NoProfile -ExecutionPolicy Bypass -File .\script.ps1`. This is process-scoped and not a persistent machine policy change.
-- Write text files as UTF-8 without BOM and respect the repository EOL policy from `.gitattributes` or other repo config.
+- Write text files as UTF-8 without BOM and enforce **LF line endings** (not CRLF). This repository enforces LF via `.gitattributes` and `.editorconfig`. When running tools with EOL options (e.g., notebook round-trip scripts), always use `--eol lf` explicitly.
 
 ## Repository Map
 
@@ -112,13 +112,13 @@ Commands:
 python scripts/py_to_ipynb.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.ipynb `
-  --eol auto
+  --eol lf
 
 # Notebook -> markerized py
 python scripts/ipynb_to_py.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.ipynb `
   .\google-colab\Deep_Live_Cam_Remote_Batch.py `
-  --eol auto
+  --eol lf
 ```
 
 Important: since the notebook clones from GitHub, push changes to `main` before running the notebook in Colab if the notebook/runtime needs those changes.
