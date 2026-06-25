@@ -41,7 +41,7 @@ ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v2"
+API_VERSION = "live-fast-detect-v3"
 
 
 class JobRequest(BaseModel):
@@ -524,11 +524,23 @@ async def live_socket(websocket: WebSocket) -> None:
 
     await websocket.send_json({"status": "ready", "api_version": API_VERSION, "live_fast_detection": True})
     geometry_logged = False
+    perf_started = time.monotonic()
+    perf_frames = 0
+    perf_wait = 0.0
+    perf_decode = 0.0
+    perf_resize = 0.0
+    perf_process = 0.0
+    perf_encode = 0.0
+    perf_in_bytes = 0
+    perf_out_bytes = 0
     try:
         while True:
+            frame_started = time.monotonic()
             payload = await websocket.receive_bytes()
+            received_at = time.monotonic()
             array = np.frombuffer(payload, dtype=np.uint8)
             frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
+            decoded_at = time.monotonic()
             if frame is None:
                 await websocket.send_json({"error": "invalid frame"})
                 continue
@@ -539,6 +551,7 @@ async def live_socket(websocket: WebSocket) -> None:
             else:
                 interpolation = cv2.INTER_AREA if process_width < frame_width or process_height < frame_height else cv2.INTER_LINEAR
                 process_frame = cv2.resize(frame, (process_width, process_height), interpolation=interpolation)
+            resized_at = time.monotonic()
             if not geometry_logged:
                 await websocket.send_json({
                     "status": "live_geometry",
@@ -550,6 +563,7 @@ async def live_socket(websocket: WebSocket) -> None:
             try:
                 with ENGINE_LOCK:
                     output = live_process_frame(engine, process_frame.copy())
+                processed_at = time.monotonic()
             except Exception as exc:
                 await websocket.send_json({"error": f"live frame failed: {exc}"})
                 continue
@@ -558,7 +572,40 @@ async def live_socket(websocket: WebSocket) -> None:
             if output.shape[:2] != (process_height, process_width):
                 output = cv2.resize(output, (process_width, process_height), interpolation=cv2.INTER_LINEAR)
             ok, encoded = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), int(config.get("jpeg_quality", 80))])
+            encoded_at = time.monotonic()
             if ok:
+                out_bytes = int(encoded.size)
+                perf_frames += 1
+                perf_wait += received_at - frame_started
+                perf_decode += decoded_at - received_at
+                perf_resize += resized_at - decoded_at
+                perf_process += processed_at - resized_at
+                perf_encode += encoded_at - processed_at
+                perf_in_bytes += len(payload)
+                perf_out_bytes += out_bytes
+                elapsed = encoded_at - perf_started
+                if elapsed >= 5.0 and perf_frames:
+                    await websocket.send_json({
+                        "status": "live_perf",
+                        "api_version": API_VERSION,
+                        "server_fps": round(perf_frames / elapsed, 2),
+                        "wait_ms": round((perf_wait / perf_frames) * 1000.0, 1),
+                        "decode_ms": round((perf_decode / perf_frames) * 1000.0, 1),
+                        "resize_ms": round((perf_resize / perf_frames) * 1000.0, 1),
+                        "process_ms": round((perf_process / perf_frames) * 1000.0, 1),
+                        "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
+                        "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
+                        "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),
+                    })
+                    perf_started = encoded_at
+                    perf_frames = 0
+                    perf_wait = 0.0
+                    perf_decode = 0.0
+                    perf_resize = 0.0
+                    perf_process = 0.0
+                    perf_encode = 0.0
+                    perf_in_bytes = 0
+                    perf_out_bytes = 0
                 await websocket.send_bytes(encoded.tobytes())
     except WebSocketDisconnect:
         return
