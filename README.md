@@ -112,6 +112,7 @@ The app currently provides:
 - Recursive input scanning, overwrite/skip behavior, and graceful cancel.
 - Video percentage range selection.
 - Live webcam InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) with `buffalo_l` as the safest default, plus fp32/fp16 swapper precision selection for `swap_ms` comparison.
+- Live webcam uses configurable buffered, fixed-cadence preview rendering so bursty backend frames are delayed briefly, evenly paced, and coalesced instead of repainting stale frame backlogs.
 - Output browser with preview/player support.
 - Local source/input upload to the Colab API.
 - Settings sync between photo and video workflows.

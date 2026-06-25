@@ -325,6 +325,10 @@ def live_detection_size(config: dict[str, Any]) -> int:
     return max(32, detector_size // 32 * 32)
 
 
+def live_jpeg_quality(config: dict[str, Any]) -> int:
+    return int_config(config, "jpeg_quality", 80, 20, 95)
+
+
 def live_face_model_pack(config: dict[str, Any]) -> str:
     model_pack = str(config.get("face_model_pack") or "buffalo_l")
     if model_pack not in LIVE_FACE_MODEL_PACKS:
@@ -651,6 +655,7 @@ async def live_socket(websocket: WebSocket) -> None:
         "swapper_model_path": swapper_diagnostics.get("model_path", ""),
         "source_embedding_cached": engine.default_source is not None and engine.cache_source_face,
         "cache_source_face": engine.cache_source_face,
+        "jpeg_quality": live_jpeg_quality(config),
     })
     geometry_logged = False
     live_state: dict[str, Any] = {}
@@ -701,6 +706,7 @@ async def live_socket(websocket: WebSocket) -> None:
                     "swapper_precision": live_swapper_precision(config),
                     "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
                     "cache_source_face": getattr(engine, "cache_source_face", True),
+                    "jpeg_quality": live_jpeg_quality(config),
                 })
                 geometry_logged = True
             try:
@@ -714,7 +720,7 @@ async def live_socket(websocket: WebSocket) -> None:
                 output = process_frame
             if output.shape[:2] != (process_height, process_width):
                 output = cv2.resize(output, (process_width, process_height), interpolation=cv2.INTER_LINEAR)
-            ok, encoded = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), int(config.get("jpeg_quality", 80))])
+            ok, encoded = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), live_jpeg_quality(config)])
             encoded_at = time.monotonic()
             if ok:
                 out_bytes = int(encoded.size)
@@ -756,7 +762,7 @@ async def live_socket(websocket: WebSocket) -> None:
                         "swapper_precision": live_swapper_precision(config),
                         "swapper_loaded_precision": live_swapper_diagnostics(engine).get("loaded_precision", ""),
                         "cache_source_face": getattr(engine, "cache_source_face", True),
-                    "cache_source_face": getattr(engine, "cache_source_face", True),
+                        "jpeg_quality": live_jpeg_quality(config),
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
                         "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),

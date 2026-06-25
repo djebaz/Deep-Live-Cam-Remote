@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +25,7 @@ DEFAULT_LIVE_FACE_MODEL_PACK = "buffalo_l"
 LIVE_FACE_MODEL_PACKS = ("buffalo_l", "buffalo_m", "buffalo_s")
 DEFAULT_LIVE_SWAPPER_PRECISION = "fp32"
 LIVE_SWAPPER_PRECISIONS = ("fp32", "fp16")
+DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS = 1.0
 LIVE_OPTION_KEYS = (
     "many_faces",
     "enhancer",
@@ -38,12 +42,14 @@ LIVE_OPTION_KEYS = (
     "face_model_pack",
     "swapper_precision",
     "cache_source_face",
+    "preview_buffer_seconds",
 )
 
 _previous_load_settings = base.load_settings
 _previous_save_settings = base.save_settings
 _original_sync_settings = base.MainWindow.sync_settings
 _original_close_event = base.MainWindow.closeEvent
+_original_stop_live = base.MainWindow.stop_live
 
 
 def _live_setting(settings: base.AppSettings, name: str, default: int) -> int:
@@ -89,6 +95,7 @@ def _default_live_options() -> dict[str, Any]:
         "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
         "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
         "cache_source_face": True,
+        "preview_buffer_seconds": DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
     }
 
 
@@ -115,6 +122,7 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
         options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
     options["cache_source_face"] = bool(options["cache_source_face"])
+    options["preview_buffer_seconds"] = max(0.0, min(5.0, float(options["preview_buffer_seconds"])))
     options["swapper_precision"] = str(options["swapper_precision"]).lower()
     if options["swapper_precision"] not in LIVE_SWAPPER_PRECISIONS:
         options["swapper_precision"] = DEFAULT_LIVE_SWAPPER_PRECISION
@@ -184,6 +192,7 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "face_model_pack": window.live_face_model_pack.currentText(),
             "swapper_precision": window.live_swapper_precision.currentText(),
             "cache_source_face": window.live_cache_source_face.isChecked(),
+            "preview_buffer_seconds": float(window.live_preview_buffer_seconds.value()),
         }
     )
 
@@ -207,6 +216,7 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_face_model_pack.setCurrentText(str(options["face_model_pack"]))
     window.live_swapper_precision.setCurrentText(str(options["swapper_precision"]))
     window.live_cache_source_face.setChecked(bool(options["cache_source_face"]))
+    window.live_preview_buffer_seconds.setValue(float(options["preview_buffer_seconds"]))
 
 
 def load_settings() -> base.AppSettings:
@@ -271,7 +281,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_fps.setRange(1, 120)
     self.live_fps.setValue(_live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS))
     self.live_pipeline_frames = base.QSpinBox()
-    self.live_pipeline_frames.setRange(8, 256)
+    self.live_pipeline_frames.setRange(8, 512)
     self.live_pipeline_frames.setValue(_live_setting(self.settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES))
 
     form.addRow("Camera index", self.camera_index)
@@ -323,6 +333,11 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_swapper_precision.setToolTip("Use fp32 as baseline; choose fp16 to test T4/RTX swap_ms.")
     self.live_cache_source_face = base.QCheckBox()
     self.live_cache_source_face.setToolTip("Keep on for speed. Turn off to re-read/re-analyze the source face each frame if a source swap looks stale.")
+    self.live_preview_buffer_seconds = base.QDoubleSpinBox()
+    self.live_preview_buffer_seconds.setRange(0.0, 5.0)
+    self.live_preview_buffer_seconds.setSingleStep(0.25)
+    self.live_preview_buffer_seconds.setDecimals(2)
+    self.live_preview_buffer_seconds.setToolTip("Delay preview by this many seconds so frames can render at an even cadence.")
 
     options_form.addRow("Many faces", self.live_many_faces)
     options_form.addRow("Enhancer", self.live_enhancer)
@@ -339,6 +354,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("InsightFace pack", self.live_face_model_pack)
     options_form.addRow("Swapper precision", self.live_swapper_precision)
     options_form.addRow("Cache source face", self.live_cache_source_face)
+    options_form.addRow("Preview buffer seconds", self.live_preview_buffer_seconds)
     _apply_live_options_to_widgets(self)
     controls_layout.addWidget(options_box)
 
@@ -377,6 +393,12 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_preview.setMinimumSize(320, 240)
     self.live_preview.setWordWrap(True)
     preview_layout.addWidget(self.live_preview, 1)
+    self._live_latest_jpeg = None
+    self._live_preview_buffer = deque()
+    self._live_preview_buffer_seconds = DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS
+    self._live_preview_frames = 0
+    self._live_preview_timer = base.QTimer(self)
+    self._live_preview_timer.timeout.connect(lambda: render_live_preview_frame(self))
     splitter.addWidget(preview_panel)
 
     splitter.setStretchFactor(0, 0)
@@ -415,6 +437,7 @@ def closeEvent(self: base.MainWindow, event: Any) -> None:
         self.sync_settings()
     except Exception as exc:
         self.log(f"settings save on close failed: {exc}")
+    stop_live_preview_timer(self)
     _original_close_event(self, event)
 
 
@@ -644,7 +667,8 @@ def start_live(self: base.MainWindow) -> None:
             return
         self.live_worker = LiveWorker(live_settings)
         self.live_worker.message.connect(lambda text: ui_base._poll_message(self, "live", text))
-        self.live_worker.frame.connect(self.update_live_preview)
+        self.live_worker.frame.connect(self.enqueue_live_preview_frame)
+        start_live_preview_timer(self, live_settings)
         self.live_worker.start()
         ui_base._set_process_status(self, "live", f"Starting live on camera index {live_settings.camera_index}...")
 
@@ -664,6 +688,76 @@ def start_live(self: base.MainWindow) -> None:
     )
 
 
+def start_live_preview_timer(self: base.MainWindow, settings: base.AppSettings) -> None:
+    timer = getattr(self, "_live_preview_timer", None)
+    if timer is None:
+        return
+    self._live_latest_jpeg = None
+    self._live_preview_buffer = deque()
+    self._live_preview_buffer_seconds = float(_live_options(settings)["preview_buffer_seconds"])
+    self._live_preview_started = self._live_preview_buffer_seconds <= 0
+    self._live_preview_frames = 0
+    fps = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
+    interval_ms = max(1, int(round(1000.0 / max(1, fps))))
+    timer.setInterval(interval_ms)
+    timer.start()
+
+
+def stop_live_preview_timer(self: base.MainWindow) -> None:
+    timer = getattr(self, "_live_preview_timer", None)
+    if timer is not None:
+        timer.stop()
+    self._live_latest_jpeg = None
+    buffer = getattr(self, "_live_preview_buffer", None)
+    if buffer is not None:
+        buffer.clear()
+
+
+def stop_live(self: base.MainWindow) -> None:
+    stop_live_preview_timer(self)
+    _original_stop_live(self)
+
+
+def enqueue_live_preview_frame(self: base.MainWindow, jpeg_bytes: bytes) -> None:
+    # Buffer by arrival time so the QTimer can render frames at an even cadence
+    # after a small delay. Do not coalesce during normal playback; render one
+    # queued frame per timer tick. Drop only if the backlog exceeds a safety cap.
+    buffer = getattr(self, "_live_preview_buffer", None)
+    if buffer is None:
+        buffer = deque()
+        self._live_preview_buffer = buffer
+    now = time.monotonic()
+    buffer.append((now, bytes(jpeg_bytes)))
+    buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
+    fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
+    max_frames = max(3, int(math.ceil((buffer_seconds + 2.0) * fps)))
+    while len(buffer) > max_frames:
+        buffer.popleft()
+
+
+def render_live_preview_frame(self: base.MainWindow) -> None:
+    buffer = getattr(self, "_live_preview_buffer", None)
+    if not buffer:
+        return
+    buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
+    if not getattr(self, "_live_preview_started", False):
+        if time.monotonic() - buffer[0][0] < buffer_seconds:
+            return
+        self._live_preview_started = True
+    _timestamp, jpeg_bytes = buffer.popleft()
+    if buffer_seconds > 0:
+        fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
+        # If the producer outruns the preview for a while, keep the stream near
+        # the target delay by dropping only the oldest excess frames.
+        target_frames = max(1, int(round(buffer_seconds * fps)))
+        max_frames = max(target_frames + fps, target_frames * 2)
+        while len(buffer) > max_frames:
+            buffer.popleft()
+    if not jpeg_bytes:
+        return
+    update_live_preview(self, jpeg_bytes)
+
+
 def update_live_preview(self: base.MainWindow, jpeg_bytes: bytes) -> None:
     image = base.QImage.fromData(jpeg_bytes, "JPG")
     if image.isNull():
@@ -671,10 +765,20 @@ def update_live_preview(self: base.MainWindow, jpeg_bytes: bytes) -> None:
     pixmap = base.QPixmap.fromImage(image).scaled(
         self.live_preview.size(),
         base.Qt.KeepAspectRatio,
-        base.Qt.SmoothTransformation,
+        base.Qt.FastTransformation,
     )
     self.live_preview.setPixmap(pixmap)
-    ui_base._set_process_status(self, "live", f"Live receiving frames ({image.width()}x{image.height()})")
+    self._live_preview_frames = int(getattr(self, "_live_preview_frames", 0)) + 1
+    if self._live_preview_frames == 1 or self._live_preview_frames % max(1, _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)) == 0:
+        ui_base._set_process_status(
+            self,
+            "live",
+            (
+                f"Live buffered preview ({image.width()}x{image.height()}, "
+                f"buffer {float(getattr(self, '_live_preview_buffer_seconds', DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS)):.2f}s, "
+                f"rendered {self._live_preview_frames})"
+            ),
+        )
 
 
 def install() -> None:
@@ -684,6 +788,8 @@ def install() -> None:
     base.MainWindow.sync_settings = sync_settings
     base.MainWindow.closeEvent = closeEvent
     base.MainWindow.start_live = start_live
+    base.MainWindow.stop_live = stop_live
+    base.MainWindow.enqueue_live_preview_frame = enqueue_live_preview_frame
     base.MainWindow.update_live_preview = update_live_preview
 
 
