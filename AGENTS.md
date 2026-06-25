@@ -81,6 +81,7 @@ When working in Windows/PowerShell:
 - Start/Stop toggle: batch start buttons switch to red Stop when running; cancel is graceful.
 - Outputs tab: resizable split view with list panel and preview/player; autoplay with prefetch.
 - Local file upload: source faces and input folders can be local desktop paths; the app uploads to Colab before starting jobs.
+- Live webcam exposes an InsightFace pack selector (`buffalo_l`, `buffalo_m`, `buffalo_s`); keep `buffalo_l` as the safest default for `inswapper_128`, and treat `buffalo_m`/`buffalo_s` as experimental speed options.
 - Settings sync: changes in one tab sync to the other when saving or starting jobs.
 
 ### Colab Notebook Features

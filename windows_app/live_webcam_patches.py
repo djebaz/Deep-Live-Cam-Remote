@@ -18,6 +18,8 @@ DEFAULT_LIVE_PIPELINE_FRAMES = 16
 DEFAULT_LIVE_JPEG_QUALITY = 80
 DEFAULT_LIVE_DETECTOR_SIZE = 320
 DEFAULT_LIVE_DETECT_EVERY_N = 1
+DEFAULT_LIVE_FACE_MODEL_PACK = "buffalo_l"
+LIVE_FACE_MODEL_PACKS = ("buffalo_l", "buffalo_m", "buffalo_s")
 LIVE_OPTION_KEYS = (
     "many_faces",
     "enhancer",
@@ -31,6 +33,7 @@ LIVE_OPTION_KEYS = (
     "jpeg_quality",
     "detector_size",
     "detect_every_n",
+    "face_model_pack",
 )
 
 _previous_load_settings = base.load_settings
@@ -79,6 +82,7 @@ def _default_live_options() -> dict[str, Any]:
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
+        "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
     }
 
 
@@ -101,6 +105,9 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["detector_size"] = max(160, min(640, int(options["detector_size"])))
     options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
     options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
+    options["face_model_pack"] = str(options["face_model_pack"])
+    if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
+        options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
     return options
 
 
@@ -164,6 +171,7 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "jpeg_quality": int(window.live_jpeg_quality.value()),
             "detector_size": int(window.live_detector_size.value()),
             "detect_every_n": int(window.live_detect_every_n.value()),
+            "face_model_pack": window.live_face_model_pack.currentText(),
         }
     )
 
@@ -184,6 +192,7 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_jpeg_quality.setValue(int(options["jpeg_quality"]))
     window.live_detector_size.setValue(int(options["detector_size"]))
     window.live_detect_every_n.setValue(int(options["detect_every_n"]))
+    window.live_face_model_pack.setCurrentText(str(options["face_model_pack"]))
 
 
 def load_settings() -> base.AppSettings:
@@ -289,6 +298,11 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_detector_size.setSingleStep(32)
     self.live_detect_every_n = base.QSpinBox()
     self.live_detect_every_n.setRange(1, 30)
+    self.live_face_model_pack = base.QComboBox()
+    self.live_face_model_pack.addItems(list(LIVE_FACE_MODEL_PACKS))
+    self.live_face_model_pack.setToolTip(
+        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options."
+    )
 
     options_form.addRow("Many faces", self.live_many_faces)
     options_form.addRow("Enhancer", self.live_enhancer)
@@ -302,6 +316,7 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("JPEG quality", self.live_jpeg_quality)
     options_form.addRow("Detector size", self.live_detector_size)
     options_form.addRow("Detect every N frames", self.live_detect_every_n)
+    options_form.addRow("InsightFace pack", self.live_face_model_pack)
     _apply_live_options_to_widgets(self)
     controls_layout.addWidget(options_box)
 
@@ -320,7 +335,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_status = _status_label("Idle")
     controls_layout.addWidget(self.live_status)
     self.live_note = _status_label(
-        "Live sends webcam JPEG frames to ws://HOST:PORT/ws/live and previews returned frames."
+        "Live sends webcam JPEG frames to ws://HOST:PORT/ws/live and previews returned frames. "
+        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options."
     )
     controls_layout.addWidget(self.live_note)
     controls_layout.addStretch(1)
@@ -534,6 +550,7 @@ class LiveWorker(base.LiveWorker):
                             "jpeg_quality": getattr(self.settings, "live_jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY),
                             "detector_size": getattr(self.settings, "detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
                             "detect_every_n": getattr(self.settings, "detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
+                            "face_model_pack": getattr(self.settings, "face_model_pack", DEFAULT_LIVE_FACE_MODEL_PACK),
                         }
                     )
                 )

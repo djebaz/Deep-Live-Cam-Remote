@@ -41,7 +41,8 @@ ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v4"
+API_VERSION = "live-fast-detect-v5"
+LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 
 
 class JobRequest(BaseModel):
@@ -312,6 +313,13 @@ def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple
 def live_detection_size(config: dict[str, Any]) -> int:
     detector_size = int_config(config, "detector_size", 320, 160, 640)
     return max(32, detector_size // 32 * 32)
+
+
+def live_face_model_pack(config: dict[str, Any]) -> str:
+    model_pack = str(config.get("face_model_pack") or "buffalo_l")
+    if model_pack not in LIVE_FACE_MODEL_PACKS:
+        return "buffalo_l"
+    return model_pack
 
 
 def live_detect_faces(frame: np.ndarray, many_faces: bool, detector_size: int) -> Any:
@@ -587,6 +595,7 @@ async def live_socket(websocket: WebSocket) -> None:
             color_correction=bool(config.get("color_correction", False)),
             interpolation_weight=float(config.get("interpolation_weight", 0.0)),
             enhancer=config.get("enhancer", "none"),
+            face_model_pack=live_face_model_pack(config),
         )
         with ENGINE_LOCK:
             engine = colab_batch.ModernEngine(process_config)
@@ -601,6 +610,8 @@ async def live_socket(websocket: WebSocket) -> None:
         "live_fast_detection": True,
         "detector_size": live_detection_size(config),
         "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
+        "face_model_pack": live_face_model_pack(config),
+        "source_embedding_cached": engine.default_source is not None,
     })
     geometry_logged = False
     live_state: dict[str, Any] = {}
@@ -647,6 +658,7 @@ async def live_socket(websocket: WebSocket) -> None:
                     "processing": f"{process_width}x{process_height}",
                     "detector_size": live_detection_size(config),
                     "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
+                    "face_model_pack": live_face_model_pack(config),
                 })
                 geometry_logged = True
             try:
@@ -698,6 +710,7 @@ async def live_socket(websocket: WebSocket) -> None:
                         "faces": round(perf_faces / perf_frames, 2),
                         "detector_size": live_detection_size(config),
                         "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
+                        "face_model_pack": live_face_model_pack(config),
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
                         "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),

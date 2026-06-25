@@ -5,6 +5,8 @@
 - Add a Lite PyInstaller build mode that excludes Live webcam dependencies (`cv2`, `numpy`, `pyvirtualcam`) for a smaller desktop controller executable.
 - Add versioned PyInstaller artifact naming, versioned `dist/<version>/` output folders, Python-version suffixes, final output checks, and build summary logging.
 - Add manual GitHub Actions workflows for desktop app builds and existing-release asset uploads, without UPX support.
+- Add a Live webcam InsightFace model-pack selector for `buffalo_l`, `buffalo_m`, and `buffalo_s`, with `buffalo_l` kept as the safest default for `inswapper_128`.
+- Cache the live source face embedding once when the Colab live engine starts and reuse it across live frames.
 - **Windows Remote App**: PySide6 desktop app for controlling Colab batch processing over Tailscale
   - Dark title bar and custom app icon on Windows 10/11
   - Photos and Videos tabs with full processing options (recursive, overwrite, skip processed, many faces, enhancer, opacity, sharpness, mouth mask, interpolation, poisson blend, color correction)

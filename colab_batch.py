@@ -62,6 +62,7 @@ class ProcessConfig:
     color_correction: bool = False
     interpolation_weight: float = 0.0
     enhancer: str = "none"
+    face_model_pack: str = "buffalo_l"
 
 
 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -219,9 +220,10 @@ def encoder_command(path: Path, output: Path, start: float, duration: float, fps
 class ModernEngine:
     def __init__(self, config: ProcessConfig):
         import modules.globals as globals_module
-        from modules.face_analyser import get_many_faces, get_one_face
+        from modules.face_analyser import get_many_faces, get_one_face, set_face_analyser_model_pack
         from modules.processors.frame import face_swapper
 
+        set_face_analyser_model_pack(config.face_model_pack)
         self.globals = globals_module
         self.get_one_face = get_one_face
         self.get_many_faces = get_many_faces
@@ -275,6 +277,7 @@ class ModernEngine:
             face = self.get_one_face(image)
             if face is None:
                 raise ValueError(f"No face detected in source image: {path}")
+            print(f"Cached source face embedding once: {path}")
             self.source_cache[key] = face
         return self.source_cache[key]
 
