@@ -93,6 +93,12 @@ def _apply_processing_options_to_widgets(window: MainWindow, kind: str) -> None:
         window.interpolation_weight.setValue(float(options["interpolation_weight"]))
         window.poisson_blend.setChecked(bool(options["poisson_blend"]))
         window.color_correction.setChecked(bool(options["color_correction"]))
+        if hasattr(window, "photos_max_width"):
+            window.photos_max_width.setValue(int(getattr(window.settings, "photo_max_width", 0)))
+            window.photos_quality.setValue(int(getattr(window.settings, "photo_quality", 95)))
+            window.photos_detector_size.setValue(int(getattr(window.settings, "photo_detector_size", 640)))
+            window.photos_face_model_pack.setCurrentText(str(getattr(window.settings, "photo_face_model_pack", "buffalo_l")))
+            window.photos_swapper_precision.setCurrentText(str(getattr(window.settings, "photo_swapper_precision", "fp32")))
     if kind == "videos" and hasattr(window, "v_enhancer"):
         window.v_recursive.setChecked(bool(options["recursive"]))
         window.v_overwrite.setChecked(bool(options["overwrite"]))
@@ -105,6 +111,17 @@ def _apply_processing_options_to_widgets(window: MainWindow, kind: str) -> None:
         window.v_interpolation_weight.setValue(float(options["interpolation_weight"]))
         window.v_poisson_blend.setChecked(bool(options["poisson_blend"]))
         window.v_color_correction.setChecked(bool(options["color_correction"]))
+
+
+def _sync_photo_advanced_settings(self: MainWindow) -> None:
+    if not hasattr(self, "photos_max_width"):
+        return
+    self.settings.photo_max_width = int(self.photos_max_width.value())
+    self.settings.photo_quality = int(self.photos_quality.value())
+    detector_size = int(self.photos_detector_size.value())
+    self.settings.photo_detector_size = max(32, detector_size // 32 * 32)
+    self.settings.photo_face_model_pack = self.photos_face_model_pack.currentText()
+    self.settings.photo_swapper_precision = self.photos_swapper_precision.currentText()
 
 
 def sync_settings(self: MainWindow) -> None:
@@ -128,6 +145,7 @@ def sync_settings(self: MainWindow) -> None:
     self.settings.quality = int(self.quality.value())
     self.settings.start_pct = float(self.start_pct.value())
     self.settings.end_pct = float(self.end_pct.value())
+    _sync_photo_advanced_settings(self)
     self.settings.camera_index = int(self.camera_index.value())
     self.settings.virtual_camera = self.virtual_camera.text().strip()
     _save_settings(self.settings)
@@ -136,6 +154,8 @@ def sync_settings(self: MainWindow) -> None:
 def _start_batch_with_status(self: MainWindow, kind: str) -> None:
     self.sync_settings()
     _apply_processing_options_to_settings(self.settings, kind)
+    if kind == "photos":
+        _sync_photo_advanced_settings(self)
     _save_settings(self.settings)
     output_tasks_base._ensure_output_worker_state(self)
     settings = output_tasks_base._copy_settings(self.settings)
