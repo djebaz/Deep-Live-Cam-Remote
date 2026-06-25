@@ -41,6 +41,7 @@ ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
+API_VERSION = "live-fast-detect-v2"
 
 
 class JobRequest(BaseModel):
@@ -336,6 +337,7 @@ def health() -> dict[str, Any]:
     paths = ensure_drive_layout()
     return {
         "ok": True,
+        "api_version": API_VERSION,
         "paths": paths,
         "local_paths": ensure_local_layout(),
         "active_jobs": [job.snapshot() for job in JOBS.values() if job.status in {"queued", "running"}],
@@ -520,7 +522,7 @@ async def live_socket(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
 
-    await websocket.send_json({"status": "ready"})
+    await websocket.send_json({"status": "ready", "api_version": API_VERSION, "live_fast_detection": True})
     geometry_logged = False
     try:
         while True:
@@ -540,6 +542,7 @@ async def live_socket(websocket: WebSocket) -> None:
             if not geometry_logged:
                 await websocket.send_json({
                     "status": "live_geometry",
+                    "api_version": API_VERSION,
                     "input": f"{frame_width}x{frame_height}",
                     "processing": f"{process_width}x{process_height}",
                 })
