@@ -89,6 +89,11 @@ class AppSettings:
     max_fps: float = 30.0
     max_width: int = 420
     quality: int = 18
+    photo_max_width: int = 0
+    photo_quality: int = 95
+    photo_detector_size: int = 640
+    photo_face_model_pack: str = DEFAULT_LIVE_FACE_MODEL_PACK
+    photo_swapper_precision: str = DEFAULT_LIVE_SWAPPER_PRECISION
     start_pct: float = 0.0
     end_pct: float = 100.0
     camera_index: int = 0
