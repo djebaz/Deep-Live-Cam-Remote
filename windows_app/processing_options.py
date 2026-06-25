@@ -2,91 +2,47 @@ from __future__ import annotations
 
 from typing import Any
 
-from windows_app import output_tasks as async_base
-from windows_app import main_window_ui as ui_base
 from windows_app import app_base as base
-
-
-PROCESSING_OPTION_KEYS = (
-    "recursive",
-    "overwrite",
-    "skip_processed",
-    "many_faces",
-    "enhancer",
-    "opacity",
-    "sharpness",
-    "mouth_mask_size",
-    "interpolation_weight",
-    "poisson_blend",
-    "color_correction",
+from windows_app import main_window_ui as ui_base
+from windows_app import output_tasks as output_tasks_base
+from windows_app.settings import (
+    PROCESSING_OPTION_KEYS,
+    apply_processing_options_to_settings,
+    coerce_processing_options,
+    default_processing_options,
+    legacy_processing_options,
+    load_settings as _load_settings,
+    save_settings as _save_settings,
+    settings_options,
 )
 
 
 def _default_processing_options() -> dict[str, Any]:
-    defaults = base.AppSettings()
-    return {key: getattr(defaults, key) for key in PROCESSING_OPTION_KEYS}
+    return default_processing_options()
 
 
 def _legacy_processing_options(data: dict[str, Any] | None = None) -> dict[str, Any]:
-    options = _default_processing_options()
-    if data:
-        for key in PROCESSING_OPTION_KEYS:
-            if key in data:
-                options[key] = data[key]
-    return options
+    return legacy_processing_options(data)
 
 
 def _coerce_processing_options(value: object, fallback: dict[str, Any]) -> dict[str, Any]:
-    options = dict(fallback)
-    if isinstance(value, dict):
-        for key in PROCESSING_OPTION_KEYS:
-            if key in value:
-                options[key] = value[key]
-    return options
+    return coerce_processing_options(value, fallback)
 
 
 def load_settings() -> base.AppSettings:
-    data: dict[str, Any] = {}
-    if base.APP_STATE.is_file():
-        try:
-            loaded = base.json.loads(base.APP_STATE.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception:
-            data = {}
-
-    defaults = base.asdict(base.AppSettings())
-    valid_fields = set(base.AppSettings.__dataclass_fields__)
-    kwargs = {key: data.get(key, defaults[key]) for key in valid_fields if key in defaults}
-    settings = base.AppSettings(**kwargs)
-
-    legacy = _legacy_processing_options(data)
-    settings.photos_options = _coerce_processing_options(data.get("photos_options"), legacy)
-    settings.videos_options = _coerce_processing_options(data.get("videos_options"), legacy)
-
-    # Keep legacy flat fields aligned with Photos for the initial Photos tab build.
-    _apply_processing_options_to_settings(settings, "photos")
-    return settings
+    return _load_settings()
 
 
 def save_settings(settings: base.AppSettings) -> None:
-    data = base.asdict(settings)
-    legacy = _legacy_processing_options(data)
-    data["photos_options"] = _coerce_processing_options(getattr(settings, "photos_options", None), legacy)
-    data["videos_options"] = _coerce_processing_options(getattr(settings, "videos_options", None), legacy)
-    base.APP_STATE.write_text(base.json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _save_settings(settings)
 
 
 def _settings_options(settings: base.AppSettings, kind: str) -> dict[str, Any]:
-    return _coerce_processing_options(
-        getattr(settings, f"{kind}_options", None),
-        _legacy_processing_options(base.asdict(settings)),
-    )
+    return settings_options(settings, kind)
 
 
 def _apply_processing_options_to_settings(settings: base.AppSettings, kind: str) -> None:
-    for key, value in _settings_options(settings, kind).items():
-        setattr(settings, key, value)
+    apply_processing_options_to_settings(settings, kind)
 
 
 def _read_processing_options(window: base.MainWindow, kind: str) -> dict[str, Any]:
@@ -179,14 +135,14 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
     self.sync_settings()
     _apply_processing_options_to_settings(self.settings, kind)
     base.save_settings(self.settings)
-    async_base._ensure_output_worker_state(self)
-    settings = async_base._copy_settings(self.settings)
+    output_tasks_base._ensure_output_worker_state(self)
+    settings = output_tasks_base._copy_settings(self.settings)
     self.log(f"starting {kind} batch...")
     ui_base._set_process_status(self, kind, f"Starting {kind} batch...")
     ui_base._set_batch_button_running(self, kind)
 
     def task() -> dict[str, Any]:
-        return async_base._prepare_and_start_batch(settings, kind)
+        return output_tasks_base._prepare_and_start_batch(settings, kind)
 
     def on_job_finished(status: str, batch_kind: str) -> None:
         self.log(f"job finished: {status}")
@@ -224,7 +180,7 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
         self.log(text)
         ui_base._set_batch_button_idle(self, kind)
 
-    self.output_batch_task_id = async_base._start_output_task(
+    self.output_batch_task_id = output_tasks_base._start_output_task(
         self,
         f"Starting {kind} batch...",
         task,
