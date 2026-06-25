@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 import queue
+import subprocess
 import threading
 import time
 import uuid
@@ -38,6 +39,7 @@ LOCAL_VIDEOS_DIR = LOCAL_ROOT / "videos"
 LOCAL_OUTPUT_PHOTOS_DIR = Path("/content/outputs/photos")
 LOCAL_OUTPUT_VIDEOS_DIR = Path("/content/outputs/videos")
 ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
+ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
@@ -81,6 +83,14 @@ class JobRequest(BaseModel):
 
 class CancelRequest(BaseModel):
     job_id: str
+
+
+class CreateZipResponse(BaseModel):
+    zip_path: str
+    zip_id: str
+    size_bytes: int
+    timestamp: str
+    tailscale_hostname: str | None
 
 
 @dataclass
@@ -136,6 +146,7 @@ class JobWriter(io.TextIOBase):
 
 
 JOBS: dict[str, JobState] = {}
+CREATED_ARCHIVES: dict[str, Path] = {}
 ENGINE_LOCK = threading.Lock()
 app = FastAPI(title="Deep-Live-Cam Remote API", version="1.0")
 
@@ -240,6 +251,24 @@ def safe_output_path(kind: str, source: str, relative_path: str) -> Path:
 
 def remove_file(path: str) -> None:
     Path(path).unlink(missing_ok=True)
+
+
+def get_tailscale_hostname() -> str | None:
+    """Returns Tailscale hostname if tailscale CLI available and connected."""
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+        if result.returncode == 0:
+            status_data = json.loads(result.stdout)
+            return status_data.get("Self", {}).get("HostName")
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+    return None
 
 
 async def write_upload(file: UploadFile, dest: Path) -> int:
@@ -512,6 +541,62 @@ def get_output_zip(kind: str) -> FileResponse:
         media_type="application/zip",
         filename=f"{kind}_outputs.zip",
         background=BackgroundTask(remove_file, str(zip_path)),
+    )
+
+
+@app.post("/outputs/{kind}/create-zip")
+def create_output_zip(kind: str) -> CreateZipResponse:
+    """
+    Creates a zip archive of outputs in /content/archive/ for Taildrop or HTTP download.
+    Does NOT auto-cleanup (user manages retention).
+    """
+    files = output_file_entries(kind)
+    if not files:
+        raise HTTPException(status_code=404, detail=f"no {kind} outputs found")
+
+    # Create archive directory
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Generate timestamped filename
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    zip_id = uuid.uuid4().hex
+    zip_filename = f"{kind}_outputs_{timestamp}.zip"
+    zip_path = ARCHIVE_DIR / zip_filename
+
+    # Create ZIP
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+        for item in files:
+            archive.write(item["path"], f"{item['source']}/{item['relative_path']}")
+
+    # Store for HTTP fallback
+    CREATED_ARCHIVES[zip_id] = zip_path
+
+    # Get Tailscale info
+    tailscale_hostname = get_tailscale_hostname()
+
+    return CreateZipResponse(
+        zip_path=str(zip_path),
+        zip_id=zip_id,
+        size_bytes=zip_path.stat().st_size,
+        timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        tailscale_hostname=tailscale_hostname,
+    )
+
+
+@app.get("/download-archive/{archive_id}")
+def download_archive(archive_id: str) -> FileResponse:
+    """
+    HTTP fallback download for archives created via /create-zip.
+    Used when Taildrop transfer fails.
+    """
+    zip_path = CREATED_ARCHIVES.get(archive_id)
+    if not zip_path or not zip_path.is_file():
+        raise HTTPException(status_code=404, detail="archive not found or expired")
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=zip_path.name,
     )
 
 
