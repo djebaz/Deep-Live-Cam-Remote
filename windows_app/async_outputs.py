@@ -17,6 +17,7 @@ DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 class OutputTaskWorker(QThread):
     succeeded = Signal(str, object)
     failed = Signal(str, str)
+    progress = Signal(str, int, int)  # task_id, current, total
 
     def __init__(self, task_id: str, task: Callable[[], object]):
         super().__init__()
@@ -29,16 +30,51 @@ class OutputTaskWorker(QThread):
         except Exception as exc:
             self.failed.emit(self.task_id, str(exc))
 
+    def report_progress(self, current: int, total: int) -> None:
+        self.progress.emit(self.task_id, current, total)
 
-def _download_file_fast(client: base.ApiClient, path: str, destination: Path, timeout: float = 900.0) -> Path:
+
+def _download_file_fast(
+    client: base.ApiClient,
+    path: str,
+    destination: Path,
+    timeout: float = 900.0,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with base.urllib.request.urlopen(client.url(path), timeout=timeout) as response, destination.open("wb") as handle:
+        total_size = int(response.headers.get("Content-Length", 0))
+        downloaded = 0
         while True:
             chunk = response.read(DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break
             handle.write(chunk)
+            downloaded += len(chunk)
+            if progress_callback and total_size > 0:
+                progress_callback(downloaded, total_size)
     return destination
+
+
+def _download_bytes_with_progress(
+    client: base.ApiClient,
+    path: str,
+    timeout: float = 20.0,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> bytes:
+    with base.urllib.request.urlopen(client.url(path), timeout=timeout) as response:
+        total_size = int(response.headers.get("Content-Length", 0))
+        chunks = []
+        downloaded = 0
+        while True:
+            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if progress_callback and total_size > 0:
+                progress_callback(downloaded, total_size)
+        return b"".join(chunks)
 
 
 def _ensure_output_worker_state(window: base.MainWindow) -> None:
@@ -62,6 +98,7 @@ def _start_output_task(
     task: Callable[[], object],
     on_success: Callable[[str, object], None],
     on_failure: Callable[[str, str], None],
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> str:
     _ensure_output_worker_state(window)
     task_id = uuid.uuid4().hex
@@ -70,6 +107,48 @@ def _start_output_task(
     window.output_status.setText(status)
     worker.succeeded.connect(on_success)
     worker.failed.connect(on_failure)
+    if on_progress:
+        worker.progress.connect(on_progress)
+    worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
+    worker.start()
+    return task_id
+
+
+def _start_output_task_with_progress(
+    window: base.MainWindow,
+    status: str,
+    task_factory: Callable[[Callable[[int, int], None]], object],
+    on_success: Callable[[str, object], None],
+    on_failure: Callable[[str, str], None],
+) -> str:
+    """Start a task that can report progress via a callback."""
+    _ensure_output_worker_state(window)
+    task_id = uuid.uuid4().hex
+
+    def on_progress(_tid: str, current: int, total: int) -> None:
+        if total > 0:
+            pct = int(current / total * 100)
+            window.outputs_progress.setMaximum(100)
+            window.outputs_progress.setValue(pct)
+            window.output_status.setText(f"Loading... {pct}%")
+
+    # Create a mutable container for worker reference
+    worker_holder: list[OutputTaskWorker] = []
+
+    def progress_callback(current: int, total: int) -> None:
+        if worker_holder:
+            worker_holder[0].report_progress(current, total)
+
+    def wrapped_task() -> object:
+        return task_factory(progress_callback)
+
+    worker = OutputTaskWorker(task_id, wrapped_task)
+    worker_holder.append(worker)
+    window.output_workers[task_id] = worker
+    window.output_status.setText(status)
+    worker.succeeded.connect(on_success)
+    worker.failed.connect(on_failure)
+    worker.progress.connect(on_progress)
     worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
     worker.start()
     return task_id
@@ -190,12 +269,14 @@ def refresh_outputs(self: base.MainWindow) -> None:
     self.output_files = []
     self.output_current_loaded = False
     self.stop_output_video()
-    if hasattr(self, "outputs_progress"):
-        self.outputs_progress.setVisible(True)
-        self.outputs_progress.setValue(0)
+    self.output_preview.setText("Loading outputs...")
+    # Indeterminate progress bar during network fetch (min=max=0)
+    self.outputs_progress.setMinimum(0)
+    self.outputs_progress.setMaximum(0)
+    self.outputs_progress.setVisible(True)
 
     def fetch() -> dict[str, Any]:
-        return self.client.request_json("GET", f"/outputs/{kind}", timeout=5.0)
+        return self.client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
 
     def succeeded(task_id: str, payload: object) -> None:
         if task_id != self.output_refresh_task_id:
@@ -203,15 +284,16 @@ def refresh_outputs(self: base.MainWindow) -> None:
         self.outputs_list.setEnabled(True)
         self.output_files = list((payload if isinstance(payload, dict) else {}).get("files") or [])
         total = len(self.output_files)
+        # Switch to determinate mode for list population
+        self.outputs_progress.setMaximum(100)
         for idx, item in enumerate(self.output_files):
             label = f"[{item.get('source')}] {item.get('relative_path')} ({base.format_size(item.get('size'))})"
             self.outputs_list.addItem(QListWidgetItem(label))
-            if hasattr(self, "outputs_progress"):
-                progress = int((idx + 1) / total * 100) if total > 0 else 0
-                self.outputs_progress.setValue(progress)
+            progress = int((idx + 1) / total * 100) if total > 0 else 0
+            self.outputs_progress.setValue(progress)
+            self.output_status.setText(f"Loading... {idx + 1}/{total}")
             base.QApplication.processEvents()
-        if hasattr(self, "outputs_progress"):
-            self.outputs_progress.setVisible(False)
+        self.outputs_progress.setVisible(False)
         self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
         if self.output_files:
             self.outputs_list.setCurrentRow(0)
@@ -223,8 +305,7 @@ def refresh_outputs(self: base.MainWindow) -> None:
         if task_id != self.output_refresh_task_id:
             return
         self.outputs_list.setEnabled(True)
-        if hasattr(self, "outputs_progress"):
-            self.outputs_progress.setVisible(False)
+        self.outputs_progress.setVisible(False)
         self.output_status.setText(f"refresh failed: {error}")
         self.log(f"outputs refresh failed: {error}")
 
@@ -239,6 +320,7 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
     item = dict(self.output_files[index])
     kind = self.outputs_kind.currentText()
     path = str(item.get("download_path") or "")
+    file_size = int(item.get("size") or 0)
     if not path:
         self.output_status.setText("selected output has no download path")
         self.output_current_loaded = True
@@ -246,14 +328,21 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
     self.stop_output_video()
     if kind == "photos":
         self.output_preview.setPixmap(QPixmap())
-        self.output_preview.setText("Loading photo preview...")
+        size_str = base.format_size(file_size) if file_size > 0 else ""
+        self.output_preview.setText(f"Loading photo preview... {size_str}")
+        # Show progress bar (starts at 0)
+        self.outputs_progress.setMinimum(0)
+        self.outputs_progress.setMaximum(100)
+        self.outputs_progress.setValue(0)
+        self.outputs_progress.setVisible(True)
 
-        def fetch_photo() -> bytes:
-            return self.client.download_bytes(path, timeout=20.0)
+        def fetch_photo(progress_cb: Callable[[int, int], None]) -> bytes:
+            return _download_bytes_with_progress(self.client, path, timeout=20.0, progress_callback=progress_cb)
 
         def photo_ready(task_id: str, data: object) -> None:
             if task_id != self.output_preview_task_id:
                 return
+            self.outputs_progress.setVisible(False)
             if self.output_video is not None:
                 self.output_video.hide()
             self.output_preview.show()
@@ -270,11 +359,12 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
         def photo_failed(task_id: str, error: str) -> None:
             if task_id != self.output_preview_task_id:
                 return
+            self.outputs_progress.setVisible(False)
             self.output_status.setText(f"preview failed: {error}")
             self.log(f"output preview failed: {error}")
             self.output_current_loaded = True
 
-        self.output_preview_task_id = _start_output_task(self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed)
+        self.output_preview_task_id = _start_output_task_with_progress(self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed)
         return
 
     self.show_video_output(item)
@@ -283,21 +373,29 @@ def show_output_at(self: base.MainWindow, index: int) -> None:
 def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
     _ensure_output_worker_state(self)
     path = str(item.get("download_path") or "")
+    file_size = int(item.get("size") or 0)
     relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
     safe_relative = relative.replace("/", "_").replace("\\", "_")
     local_name = f"{item.get('source', 'output')}_{safe_relative}"
     local_path = self.output_temp_dir / local_name
     self.output_preview.setPixmap(QPixmap())
-    self.output_preview.setText(f"Loading video preview:\n{relative}")
+    size_str = base.format_size(file_size) if file_size > 0 else ""
+    self.output_preview.setText(f"Loading video preview:\n{relative}\n{size_str}")
+    # Show progress bar (starts at 0)
+    self.outputs_progress.setMinimum(0)
+    self.outputs_progress.setMaximum(100)
+    self.outputs_progress.setValue(0)
+    self.outputs_progress.setVisible(True)
 
-    def fetch_video() -> dict[str, str]:
-        if not local_path.exists() or local_path.stat().st_size != int(item.get("size") or -1):
-            _download_file_fast(self.client, path, local_path, timeout=900.0)
+    def fetch_video(progress_cb: Callable[[int, int], None]) -> dict[str, str]:
+        if not local_path.exists() or local_path.stat().st_size != file_size:
+            _download_file_fast(self.client, path, local_path, timeout=900.0, progress_callback=progress_cb)
         return {"relative": relative, "local_path": str(local_path)}
 
     def video_ready(task_id: str, result: object) -> None:
         if task_id != self.output_preview_task_id:
             return
+        self.outputs_progress.setVisible(False)
         payload = result if isinstance(result, dict) else {}
         ready_relative = str(payload.get("relative") or relative)
         ready_path = Path(str(payload.get("local_path") or local_path))
@@ -319,11 +417,12 @@ def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
     def video_failed(task_id: str, error: str) -> None:
         if task_id != self.output_preview_task_id:
             return
+        self.outputs_progress.setVisible(False)
         self.output_status.setText(f"preview failed: {error}")
         self.log(f"output preview failed: {error}")
         self.output_current_loaded = True
 
-    self.output_preview_task_id = _start_output_task(self, f"Loading video preview: {relative}", fetch_video, video_ready, video_failed)
+    self.output_preview_task_id = _start_output_task_with_progress(self, f"Loading video preview: {relative}", fetch_video, video_ready, video_failed)
 
 
 def download_current_output(self: base.MainWindow) -> None:

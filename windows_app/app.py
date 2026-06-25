@@ -696,42 +696,32 @@ class MainWindow(QMainWindow):
             self.log(f"health failed: {exc}")
 
     def refresh_outputs(self) -> None:
+        # Note: This method is patched by async_outputs.py
         self.sync_settings()
         kind = self.outputs_kind.currentText()
         self.outputs_list.clear()
         self.output_files = []
-        self.output_current_loaded = False
         self.output_status.setText("Refreshing outputs...")
         self.stop_output_video()
-        self.output_preview.setText("Loading outputs...")
-        self.outputs_progress.setVisible(True)
-        self.outputs_progress.setValue(0)
         try:
             payload = self.client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
             self.output_files = list(payload.get("files") or [])
-            total = len(self.output_files)
-            for idx, item in enumerate(self.output_files):
+            for item in self.output_files:
                 label = f"[{item.get('source')}] {item.get('relative_path')} ({format_size(item.get('size'))})"
                 self.outputs_list.addItem(QListWidgetItem(label))
-                progress = int((idx + 1) / total * 100) if total > 0 else 0
-                self.outputs_progress.setValue(progress)
-                self.output_status.setText(f"Loading... {idx + 1}/{total}")
-                QApplication.processEvents()
-            self.outputs_progress.setVisible(False)
             self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
             if self.output_files:
                 self.outputs_list.setCurrentRow(0)
             else:
                 self.output_preview.setText("No remote outputs found")
         except Exception as exc:
-            self.outputs_progress.setVisible(False)
             self.output_status.setText(f"refresh failed: {exc}")
             self.log(f"outputs refresh failed: {exc}")
 
     def show_output_at(self, index: int) -> None:
+        # Note: This method is patched by async_outputs.py
         if index < 0 or index >= len(self.output_files):
             return
-        self.output_current_loaded = False
         item = self.output_files[index]
         kind = self.outputs_kind.currentText()
         path = str(item.get("download_path") or "")
@@ -744,7 +734,6 @@ class MainWindow(QMainWindow):
                 if self.output_video is not None:
                     self.output_video.hide()
                 self.output_preview.show()
-                self.output_preview.setText("Loading photo...")
                 data = self.client.download_bytes(path)
                 image = QImage.fromData(data)
                 if image.isNull():
@@ -752,40 +741,32 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap.fromImage(image).scaled(self.output_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.output_preview.setPixmap(pixmap)
                 self.output_status.setText(f"Showing {item.get('relative_path')} from {item.get('source')}")
-                self.output_current_loaded = True
             else:
                 self.show_video_output(item)
         except Exception as exc:
             self.output_status.setText(f"preview failed: {exc}")
             self.log(f"output preview failed: {exc}")
-            self.output_current_loaded = True
 
     def show_video_output(self, item: dict[str, Any]) -> None:
+        # Note: This method is patched by async_outputs.py
         path = str(item.get("download_path") or "")
         relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
         safe_relative = relative.replace("/", "_").replace("\\", "_")
         local_name = f"{item.get('source', 'output')}_{safe_relative}"
         local_path = self.output_temp_dir / local_name
         self.output_status.setText(f"Loading video preview: {relative}")
-        try:
-            if not local_path.exists() or local_path.stat().st_size != int(item.get("size") or -1):
-                self.client.download_file(path, local_path, timeout=900.0)
-            if self.output_player is None or self.output_video is None:
-                self.output_preview.show()
-                self.output_preview.setText(f"Video ready to download:\n{relative}\n\nInstall PySide6 multimedia support for inline playback.")
-                self.output_status.setText(f"Selected video {relative}")
-                self.output_current_loaded = True
-                return
-            self.output_preview.hide()
-            self.output_video.show()
-            self.output_player.setSource(QUrl.fromLocalFile(str(local_path)))
-            self.output_player.play()
-            self.output_status.setText(f"Playing {relative}")
-            self.output_current_loaded = True
-        except Exception as exc:
-            self.output_status.setText(f"video preview failed: {exc}")
-            self.log(f"video preview failed: {exc}")
-            self.output_current_loaded = True
+        if not local_path.exists() or local_path.stat().st_size != int(item.get("size") or -1):
+            self.client.download_file(path, local_path, timeout=900.0)
+        if self.output_player is None or self.output_video is None:
+            self.output_preview.show()
+            self.output_preview.setText(f"Video ready to download:\n{relative}\n\nInstall PySide6 multimedia support for inline playback.")
+            self.output_status.setText(f"Selected video {relative}")
+            return
+        self.output_preview.hide()
+        self.output_video.show()
+        self.output_player.setSource(QUrl.fromLocalFile(str(local_path)))
+        self.output_player.play()
+        self.output_status.setText(f"Playing {relative}")
 
     def stop_output_video(self) -> None:
         if self.output_player is not None:
