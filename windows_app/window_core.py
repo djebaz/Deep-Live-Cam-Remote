@@ -49,7 +49,7 @@ def set_dark_title_bar(window: QMainWindow) -> None:
 class WindowCore(QMainWindow):
     """Core window state and small shared helpers for the Windows controller.
 
-    Feature-specific tab construction and actions live in the GUI mixins. This
+    Feature-specific tab construction and actions live in focused feature modules. This
     class owns only process-wide widget state, shared browse/path helpers, and
     lifecycle primitives that every feature area needs.
     """

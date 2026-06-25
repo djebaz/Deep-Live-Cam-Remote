@@ -209,18 +209,3 @@ def _build_videos_tab(self: MainWindow) -> None:
     _apply_processing_options_to_widgets(self, "videos")
 
 
-class ProcessingOptionsMixin:
-    def _build_photos_tab(self):
-        return _build_photos_tab(self)
-
-    def _build_videos_tab(self):
-        return _build_videos_tab(self)
-
-    def sync_settings(self):
-        return sync_settings(self)
-
-    def start_photos(self):
-        return start_photos(self)
-
-    def start_videos(self):
-        return start_videos(self)

@@ -52,12 +52,15 @@ Done in PR #6:
 - Converted the migration mixins in `output_tasks.py`, `main_window_ui.py`, `processing_options.py`, and `live_webcam.py` from assignment tables to explicit forwarding methods.
 - Replaced broad `app_base as base` imports in the app and GUI helper modules with explicit imports from PySide6, `settings.py`, `api_client.py`, `workers.py`, and `window_core.py`.
 - Removed Live webcam import-time previous-function capture by calling the owning modules and `WindowCore` lifecycle method explicitly.
+- Replaced migration mixin composition in `app.py` with an explicit `MainWindow(WindowCore)` class that delegates each feature method to its owning module.
+- Split generic output task worker orchestration into `windows_app/task_runner.py`.
+- Split output preview, prefetch, and playback behavior into `windows_app/output_browser.py`.
+- Split Live webcam option/default coercion into `windows_app/live_options.py` and preview buffering/rendering into `windows_app/live_preview.py`.
 - Added `scripts/create_downstream_pr.ps1`, which verifies the current repo and `origin`, refuses upstream, and calls `gh pr create --repo djebaz/Deep-Live-Cam-Remote`.
 - Kept the launcher commands unchanged.
 
 Still open after PR #6:
 
-- `main_window_ui.py`, `output_tasks.py`, and `live_webcam.py` still need deeper responsibility splitting.
 - Syntax and GUI validation still need to be run in the Windows/PySide environment by the user or in a validation-specific pass.
 
 ## Implementation Plan
