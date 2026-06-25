@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -44,6 +45,42 @@ def format_size(size: int | None) -> str:
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024.0
     return f"{size} B"
+
+
+def _http_error_message(exc: urllib.error.HTTPError, method: str, url: str) -> str:
+    try:
+        raw = exc.read()
+    except Exception:
+        raw = b""
+    body = ""
+    if raw:
+        try:
+            body = raw.decode("utf-8", errors="replace").strip()
+        except Exception:
+            body = repr(raw[:1000])
+    base = f"{method} {url} failed: HTTP {exc.code} {exc.reason}"
+    return f"{base}: {body}" if body else base
+
+
+def _read_json_response(response: Any) -> dict[str, Any]:
+    text = response.read().decode("utf-8")
+    return json.loads(text) if text else {}
+
+
+def _open_json(request: urllib.request.Request, timeout: float) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return _read_json_response(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(_http_error_message(exc, request.get_method(), request.full_url)) from exc
+
+
+def _open_bytes(url: str, timeout: float) -> bytes:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(_http_error_message(exc, "GET", url)) from exc
 
 
 def check_tailscale_cli() -> bool:
@@ -102,21 +139,23 @@ class ApiClient:
             method=method,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return _open_json(request, timeout)
 
     def download_bytes(self, path: str, timeout: float = 120.0) -> bytes:
-        with urllib.request.urlopen(self.url(path), timeout=timeout) as response:
-            return response.read()
+        return _open_bytes(self.url(path), timeout)
 
     def download_file(self, path: str, destination: Path, timeout: float = 600.0) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(self.url(path), timeout=timeout) as response, destination.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
+        url = self.url(path)
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response, destination.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(_http_error_message(exc, "GET", url)) from exc
         return destination
 
     def create_zip(self, kind: str, timeout: float = 120.0) -> dict[str, Any]:
@@ -149,8 +188,7 @@ class ApiClient:
             method="POST",
             headers={"Content-Type": content_type},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return _open_json(request, timeout)
 
     def upload_files(
         self,
@@ -179,8 +217,7 @@ class ApiClient:
             method="POST",
             headers={"Content-Type": content_type},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return _open_json(request, timeout)
 
 
 def job_payload(settings: AppSettings, input_dir: str, output_dir: str, source_face: str | None = None) -> dict[str, Any]:
