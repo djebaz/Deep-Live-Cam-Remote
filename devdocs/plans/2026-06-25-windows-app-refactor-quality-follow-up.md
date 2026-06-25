@@ -36,28 +36,29 @@ Turn the PR #5 transitional cleanup into a cleaner modular Windows app architect
 
 ## PR #6 Status
 
-PR #6 is the first implementation phase for this plan, not the final completion of every acceptance criterion.
+PR #6 is a modularization pass for this plan. It completes the low-risk ownership extraction and migration-adapter cleanup, while leaving deeper behavior-sensitive decoupling for follow-up work after local GUI validation.
 
 Done in PR #6:
 
 - Created the planned branch `refactor/windows-app-modules-v2`.
-- Added focused ownership modules for settings, API/client helpers, and worker classes.
+- Added focused ownership modules for settings, API/client helpers, worker classes, and shared window lifecycle/state.
 - Moved `AppSettings`, settings persistence, processing option migration, and live option migration into `windows_app/settings.py`.
 - Moved `ApiClient`, local path helpers, upload/download helpers, archive helper calls, and `job_payload()` into `windows_app/api_client.py`.
 - Added `LiveWorker`, `PollWorker`, and `OutputTaskWorker` to `windows_app/workers.py`.
+- Extracted the real shared MainWindow base into `windows_app/window_core.py`.
+- Reduced `windows_app/app_base.py` into a compatibility shim that aliases `WindowCore` and re-exports compatibility symbols.
 - Rewired `windows_app/app.py` so the compatibility namespace is populated from the new owner modules before GUI mixins are imported.
 - Replaced the stale `async_base` alias in `processing_options.py` with `output_tasks_base`.
+- Converted the migration mixins in `output_tasks.py`, `main_window_ui.py`, `processing_options.py`, and `live_webcam.py` from assignment tables to explicit forwarding methods.
 - Added `scripts/create_downstream_pr.ps1`, which verifies the current repo and `origin`, refuses upstream, and calls `gh pr create --repo djebaz/Deep-Live-Cam-Remote`.
 - Kept the launcher commands unchanged.
 
 Still open after PR #6:
 
-- `app_base.py` is still large and remains a legacy compatibility module, not yet a narrow shim.
-- Several GUI modules still import `app_base as base` for Qt symbols and legacy compatibility.
-- Function-assigned mixins still exist.
-- `live_webcam.py` still contains import-time previous-function capture and still needs a deeper pass.
-- `main_window_ui.py`, `output_tasks.py`, and `live_webcam.py` still need further responsibility splitting.
-- Syntax and GUI validation still need to be run in the Windows/PySide environment.
+- Several GUI modules still import `app_base as base` for Qt symbols and legacy compatibility; replace these module-by-module where explicit imports lower risk.
+- `live_webcam.py` still contains import-time previous-function capture and still needs a behavior-sensitive pass.
+- `main_window_ui.py`, `output_tasks.py`, and `live_webcam.py` still need deeper responsibility splitting.
+- Syntax and GUI validation still need to be run in the Windows/PySide environment by the user or in a validation-specific pass.
 
 ## Implementation Plan
 

@@ -827,18 +827,47 @@ def _sync_common_widgets(window: base.MainWindow) -> None:
 
 
 class MainWindowUiMixin:
-    _build_setup_tab = _build_setup_tab
-    _build_photos_tab = _build_photos_tab
-    _build_videos_tab = _build_videos_tab
-    _build_outputs_tab = _build_outputs_tab
-    _build_live_tab = _build_live_tab
-    check_connection = check_connection
-    sync_settings = sync_settings
-    start_photos = start_photos
-    start_videos = start_videos
-    cancel_job = cancel_job
-    start_live = start_live
-    stop_live = stop_live
-    update_live_preview = update_live_preview
-    show_output_at = show_output_at
-    show_video_output = show_video_output
+    def _build_setup_tab(self):
+        return _build_setup_tab(self)
+
+    def _build_photos_tab(self):
+        return _build_photos_tab(self)
+
+    def _build_videos_tab(self):
+        return _build_videos_tab(self)
+
+    def _build_outputs_tab(self):
+        return _build_outputs_tab(self)
+
+    def _build_live_tab(self):
+        return _build_live_tab(self)
+
+    def check_connection(self):
+        return check_connection(self)
+
+    def sync_settings(self):
+        return sync_settings(self)
+
+    def start_photos(self):
+        return start_photos(self)
+
+    def start_videos(self):
+        return start_videos(self)
+
+    def cancel_job(self):
+        return cancel_job(self)
+
+    def start_live(self):
+        return start_live(self)
+
+    def stop_live(self):
+        return stop_live(self)
+
+    def update_live_preview(self, jpeg_bytes: bytes):
+        return update_live_preview(self, jpeg_bytes)
+
+    def show_output_at(self, index: int):
+        return show_output_at(self, index)
+
+    def show_video_output(self, item: dict[str, Any]):
+        return show_video_output(self, item)

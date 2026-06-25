@@ -537,12 +537,29 @@ def check_connection(self: base.MainWindow) -> None:
 
 
 class OutputTasksMixin:
-    check_connection = check_connection
-    start_photos = start_photos
-    start_videos = start_videos
-    refresh_outputs = refresh_outputs
-    show_output_at = show_output_at
-    show_video_output = show_video_output
-    download_current_output = download_current_output
-    download_all_outputs = download_all_outputs
+    def check_connection(self):
+        return check_connection(self)
+
+    def start_photos(self):
+        return start_photos(self)
+
+    def start_videos(self):
+        return start_videos(self)
+
+    def refresh_outputs(self):
+        return refresh_outputs(self)
+
+    def show_output_at(self, index: int):
+        return show_output_at(self, index)
+
+    def show_video_output(self, item: dict[str, Any]):
+        return show_video_output(self, item)
+
+    def download_current_output(self):
+        return download_current_output(self)
+
+    def download_all_outputs(self):
+        return download_all_outputs(self)
+
+
 main = base.main

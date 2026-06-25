@@ -893,11 +893,26 @@ def update_live_preview(self: base.MainWindow, frame_bytes: bytes, remember: boo
 
 
 class LiveWebcamMixin:
-    _build_live_tab = _build_live_tab
-    sync_settings = sync_settings
-    closeEvent = closeEvent
-    start_live = start_live
-    stop_live = stop_live
-    enqueue_live_preview_frame = enqueue_live_preview_frame
-    update_live_preview = update_live_preview
-    update_live_preview_from_last_frame = update_live_preview_from_last_frame
+    def _build_live_tab(self):
+        return _build_live_tab(self)
+
+    def sync_settings(self):
+        return sync_settings(self)
+
+    def closeEvent(self, event: Any):
+        return closeEvent(self, event)
+
+    def start_live(self):
+        return start_live(self)
+
+    def stop_live(self):
+        return stop_live(self)
+
+    def enqueue_live_preview_frame(self, frame_bytes: bytes):
+        return enqueue_live_preview_frame(self, frame_bytes)
+
+    def update_live_preview(self, frame_bytes: bytes, remember: bool = True):
+        return update_live_preview(self, frame_bytes, remember)
+
+    def update_live_preview_from_last_frame(self):
+        return update_live_preview_from_last_frame(self)

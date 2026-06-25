@@ -27,7 +27,7 @@
   - Sample data cleanup and nvtop installation
 
 ## Changed
-- Continue Windows app modularization by extracting settings, API client, and Qt worker ownership from the PR #5 compatibility layer.
+- Continue Windows app modularization by extracting settings, API client, Qt worker, and shared window core ownership from the PR #5 compatibility layer.
 - Consolidate the Windows remote app runtime patch layers into normal imported modules and a canonical launcher entrypoint.
 - Notebook now clones from GitHub instead of embedding Python source as a bundle
 - Setup cell is idempotent and pulls latest changes on re-run
@@ -35,4 +35,4 @@
 ## Release audit
 
 - PRs: #1, #2, #3, #4, #5, #6
-- Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker ownership, and adds a downstream PR guard.
+- Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; and adds a downstream PR guard.

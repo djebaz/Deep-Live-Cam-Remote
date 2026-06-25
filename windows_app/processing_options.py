@@ -208,8 +208,17 @@ def _build_videos_tab(self: base.MainWindow) -> None:
 
 
 class ProcessingOptionsMixin:
-    _build_photos_tab = _build_photos_tab
-    _build_videos_tab = _build_videos_tab
-    sync_settings = sync_settings
-    start_photos = start_photos
-    start_videos = start_videos
+    def _build_photos_tab(self):
+        return _build_photos_tab(self)
+
+    def _build_videos_tab(self):
+        return _build_videos_tab(self)
+
+    def sync_settings(self):
+        return sync_settings(self)
+
+    def start_photos(self):
+        return start_photos(self)
+
+    def start_videos(self):
+        return start_videos(self)
