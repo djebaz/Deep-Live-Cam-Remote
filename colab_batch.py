@@ -62,6 +62,7 @@ class ProcessConfig:
     color_correction: bool = False
     interpolation_weight: float = 0.0
     enhancer: str = "none"
+    output_max_width: int | None = None
     face_model_pack: str = "buffalo_l"
     swapper_precision: str = "fp32"
     cache_source_face: bool = True
@@ -654,6 +655,11 @@ def process_image_one(path: Path, output: Path, relative: str, config: ProcessCo
     result = engine.process(frame.copy(), relative)
     if result is None:
         result = frame
+    if config.output_max_width is not None and result.shape[1] > config.output_max_width:
+        scale = config.output_max_width / result.shape[1]
+        new_width = config.output_max_width
+        new_height = max(1, int(round(result.shape[0] * scale)))
+        result = cv2.resize(result, (new_width, new_height), interpolation=cv2.INTER_AREA)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
     if not cv2.imwrite(str(output), np.ascontiguousarray(result)):
@@ -670,7 +676,7 @@ def process_photos(args: argparse.Namespace) -> int:
         many_faces=args.many_faces, opacity=args.opacity, sharpness=args.sharpness,
         mouth_mask_size=args.mouth_mask_size, poisson_blend=args.poisson_blend,
         color_correction=args.color_correction, interpolation_weight=args.interpolation_weight,
-        enhancer=args.enhancer,
+        enhancer=args.enhancer, output_max_width=args.output_max_width,
     )
     if not config.input_dir.is_dir(): raise NotADirectoryError(config.input_dir)
     if config.source_face and not config.source_face.is_file(): raise FileNotFoundError(config.source_face)
@@ -749,6 +755,7 @@ def build_parser() -> argparse.ArgumentParser:
     process.set_defaults(func=process_batch)
     photos = subparsers.add_parser("photos", help="process every input image through the modern engine")
     add_common_process_args(photos)
+    photos.add_argument("--output-max-width", type=int, default=None, help="scale output to max width (preserves aspect ratio)")
     photos.set_defaults(func=process_photos)
     return parser
 

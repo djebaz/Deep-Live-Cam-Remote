@@ -75,6 +75,7 @@ class JobRequest(BaseModel):
     interpolation_weight: float = 0.0
     max_fps: float = 30.0
     max_width: int = 420
+    output_max_width: int | None = None
     quality: int = 18
     encoder: str = "auto"
     start_pct: float = 0.0
@@ -684,6 +685,8 @@ def clear_uploads() -> dict[str, Any]:
 def start_photos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
     argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR)]
+    if request.output_max_width is not None:
+        argv.extend(["--output-max-width", str(request.output_max_width)])
     job = start_job("photos", argv)
     return {"job_id": job.job_id, "status": job.status}
 
