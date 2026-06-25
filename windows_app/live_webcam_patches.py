@@ -14,8 +14,10 @@ from windows_app import ui_patches as ui_base
 DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
 DEFAULT_LIVE_FPS = 30
-DEFAULT_LIVE_PIPELINE_FRAMES = 4
+DEFAULT_LIVE_PIPELINE_FRAMES = 16
 DEFAULT_LIVE_JPEG_QUALITY = 80
+DEFAULT_LIVE_DETECTOR_SIZE = 320
+DEFAULT_LIVE_DETECT_EVERY_N = 1
 LIVE_OPTION_KEYS = (
     "many_faces",
     "enhancer",
@@ -27,6 +29,8 @@ LIVE_OPTION_KEYS = (
     "color_correction",
     "max_width",
     "jpeg_quality",
+    "detector_size",
+    "detect_every_n",
 )
 
 _previous_load_settings = base.load_settings
@@ -73,6 +77,8 @@ def _default_live_options() -> dict[str, Any]:
         "color_correction": False,
         "max_width": defaults.max_width,
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
+        "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
+        "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
     }
 
 
@@ -92,6 +98,9 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["color_correction"] = bool(options["color_correction"])
     options["max_width"] = max(64, int(options["max_width"]))
     options["jpeg_quality"] = max(20, min(95, int(options["jpeg_quality"])))
+    options["detector_size"] = max(160, min(640, int(options["detector_size"])))
+    options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
+    options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
     return options
 
 
@@ -153,6 +162,8 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
             "color_correction": window.live_color_correction.isChecked(),
             "max_width": int(window.live_max_width.value()),
             "jpeg_quality": int(window.live_jpeg_quality.value()),
+            "detector_size": int(window.live_detector_size.value()),
+            "detect_every_n": int(window.live_detect_every_n.value()),
         }
     )
 
@@ -171,6 +182,8 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
     window.live_color_correction.setChecked(bool(options["color_correction"]))
     window.live_max_width.setValue(int(options["max_width"]))
     window.live_jpeg_quality.setValue(int(options["jpeg_quality"]))
+    window.live_detector_size.setValue(int(options["detector_size"]))
+    window.live_detect_every_n.setValue(int(options["detect_every_n"]))
 
 
 def load_settings() -> base.AppSettings:
@@ -271,6 +284,11 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_max_width.setRange(64, 4096)
     self.live_jpeg_quality = base.QSpinBox()
     self.live_jpeg_quality.setRange(20, 95)
+    self.live_detector_size = base.QSpinBox()
+    self.live_detector_size.setRange(160, 640)
+    self.live_detector_size.setSingleStep(32)
+    self.live_detect_every_n = base.QSpinBox()
+    self.live_detect_every_n.setRange(1, 30)
 
     options_form.addRow("Many faces", self.live_many_faces)
     options_form.addRow("Enhancer", self.live_enhancer)
@@ -282,6 +300,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     options_form.addRow("Color correction", self.live_color_correction)
     options_form.addRow("Process max width", self.live_max_width)
     options_form.addRow("JPEG quality", self.live_jpeg_quality)
+    options_form.addRow("Detector size", self.live_detector_size)
+    options_form.addRow("Detect every N frames", self.live_detect_every_n)
     _apply_live_options_to_widgets(self)
     controls_layout.addWidget(options_box)
 
@@ -512,6 +532,8 @@ class LiveWorker(base.LiveWorker):
                             "color_correction": self.settings.color_correction,
                             "max_width": self.settings.max_width,
                             "jpeg_quality": getattr(self.settings, "live_jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY),
+                            "detector_size": getattr(self.settings, "detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
+                            "detect_every_n": getattr(self.settings, "detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
                         }
                     )
                 )
