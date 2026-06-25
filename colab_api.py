@@ -300,6 +300,37 @@ def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple
     return process_width, process_height
 
 
+def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray) -> np.ndarray:
+    if engine.mapping:
+        return engine.process(frame, "live")
+
+    from modules.face_analyser import detect_many_faces_fast, detect_one_face_fast, ensure_landmarks
+
+    needs_landmarks = bool(engine.enhancer) or bool(getattr(engine.globals, "mouth_mask", False))
+    if engine.globals.many_faces:
+        faces = detect_many_faces_fast(frame) or []
+        if needs_landmarks:
+            ensure_landmarks(frame, faces)
+        output = frame.copy()
+        bboxes = []
+        for face in faces:
+            output = engine.swapper.swap_face(engine.default_source, face, output)
+            if face is not None and hasattr(face, "bbox") and face.bbox is not None:
+                bboxes.append(face.bbox.astype(int))
+        output = engine.swapper.apply_post_processing(output, bboxes)
+        detected = faces
+    else:
+        face = detect_one_face_fast(frame)
+        if needs_landmarks:
+            ensure_landmarks(frame, face)
+        output = engine.swapper.process_frame(engine.default_source, frame, target_face=face)
+        detected = [face] if face is not None else []
+
+    if engine.enhancer:
+        output = engine.enhancer.process_frame(None, output, detected_faces=detected)
+    return output
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     paths = ensure_drive_layout()
@@ -515,7 +546,7 @@ async def live_socket(websocket: WebSocket) -> None:
                 geometry_logged = True
             try:
                 with ENGINE_LOCK:
-                    output = engine.process(process_frame.copy(), "live")
+                    output = live_process_frame(engine, process_frame.copy())
             except Exception as exc:
                 await websocket.send_json({"error": f"live frame failed: {exc}"})
                 continue
