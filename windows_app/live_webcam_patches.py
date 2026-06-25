@@ -13,6 +13,7 @@ from windows_app import ui_patches as ui_base
 
 DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
+DEFAULT_LIVE_FPS = 30
 DEFAULT_LIVE_JPEG_QUALITY = 80
 LIVE_OPTION_KEYS = (
     "many_faces",
@@ -183,6 +184,7 @@ def load_settings() -> base.AppSettings:
             data = {}
     settings.live_width = int(data.get("live_width") or DEFAULT_LIVE_WIDTH)
     settings.live_height = int(data.get("live_height") or DEFAULT_LIVE_HEIGHT)
+    settings.live_fps = int(data.get("live_fps") or DEFAULT_LIVE_FPS)
     settings.live_options = _coerce_live_options(data.get("live_options"))
     return settings
 
@@ -195,6 +197,7 @@ def save_settings(settings: base.AppSettings) -> None:
             data = {}
         data["live_width"] = _live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
         data["live_height"] = _live_setting(settings, "live_height", DEFAULT_LIVE_HEIGHT)
+        data["live_fps"] = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
         data["live_options"] = _live_options(settings)
         base.APP_STATE.write_text(base.json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except Exception:
@@ -225,12 +228,16 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.live_height = base.QSpinBox()
     self.live_height.setRange(120, 2160)
     self.live_height.setValue(_live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT))
+    self.live_fps = base.QSpinBox()
+    self.live_fps.setRange(1, 120)
+    self.live_fps.setValue(_live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS))
 
     form.addRow("Camera index", self.camera_index)
     form.addRow("Virtual camera", self.virtual_camera)
     form.addRow("Source face path", live_source_row)
     form.addRow("Capture width", self.live_width)
     form.addRow("Capture height", self.live_height)
+    form.addRow("Capture FPS", self.live_fps)
     controls_layout.addLayout(form)
     _link_live_source_fields(self)
 
@@ -325,6 +332,10 @@ def sync_settings(self: base.MainWindow) -> None:
         self.settings.live_height = int(self.live_height.value())
     else:
         self.settings.live_height = _live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT)
+    if hasattr(self, "live_fps"):
+        self.settings.live_fps = int(self.live_fps.value())
+    else:
+        self.settings.live_fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
     self.settings.live_options = _read_live_options(self)
     base.save_settings(self.settings)
 
@@ -345,6 +356,7 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
     live_settings = async_base._copy_settings(settings)
     live_settings.live_width = _live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
     live_settings.live_height = _live_setting(settings, "live_height", DEFAULT_LIVE_HEIGHT)
+    live_settings.live_fps = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
     live_settings.live_options = _live_options(settings)
     _apply_live_options_to_settings(live_settings)
     source_face = live_settings.source_face
@@ -378,14 +390,22 @@ class LiveWorker(base.LiveWorker):
             raise RuntimeError(f"could not open camera index {self.settings.camera_index}")
         requested_width = _live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH)
         requested_height = _live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT)
+        requested_fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
+        cap.set(cv2.CAP_PROP_FPS, requested_fps)
         actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
         self.message.emit(
-            f"webcam capture: requested {requested_width}x{requested_height}, actual {actual_width}x{actual_height}"
+            f"webcam capture: requested {requested_width}x{requested_height}@{requested_fps}, "
+            f"actual {actual_width}x{actual_height}@{actual_fps:.1f}"
         )
         virtual_cam = None
+        clock = asyncio.get_running_loop().time
+        stats_started = clock()
+        stats_frames = 0
         try:
             async with websockets.connect(uri, max_size=8 * 1024 * 1024) as websocket:
                 await websocket.send(
@@ -427,6 +447,12 @@ class LiveWorker(base.LiveWorker):
                             raise RuntimeError(str(payload["error"]))
                         continue
                     self.frame.emit(reply)
+                    stats_frames += 1
+                    now = clock()
+                    if now - stats_started >= 5.0:
+                        self.message.emit(f"live throughput: {stats_frames / (now - stats_started):.1f} fps")
+                        stats_started = now
+                        stats_frames = 0
                     if virtual_cam is None:
                         try:
                             import numpy as np
@@ -434,8 +460,8 @@ class LiveWorker(base.LiveWorker):
 
                             decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
                             h, w = decoded.shape[:2]
-                            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=20, device=self.settings.virtual_camera or None)
-                            self.message.emit(f"virtual camera opened: {virtual_cam.device}")
+                            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=requested_fps, device=self.settings.virtual_camera or None)
+                            self.message.emit(f"virtual camera opened: {virtual_cam.device} at {requested_fps} fps")
                         except Exception as exc:
                             self.message.emit(f"virtual camera unavailable: {exc}")
                             virtual_cam = False
@@ -466,6 +492,7 @@ def start_live(self: base.MainWindow) -> None:
     settings = async_base._copy_settings(self.settings)
     settings.live_width = _live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH)
     settings.live_height = _live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT)
+    settings.live_fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
     settings.live_options = _live_options(self.settings)
     _apply_live_options_to_settings(settings)
     self.log("starting live...")
