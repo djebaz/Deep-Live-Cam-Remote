@@ -81,7 +81,7 @@ When working in Windows/PowerShell:
 - Start/Stop toggle: batch start buttons switch to red Stop when running; cancel is graceful.
 - Outputs tab: resizable split view with list panel and preview/player; autoplay with prefetch.
 - Local file upload: source faces and input folders can be local desktop paths; the app uploads to Colab before starting jobs.
-- Live webcam exposes an InsightFace pack selector (`buffalo_l`, `buffalo_m`, `buffalo_s`) and swapper precision selector (`fp32`, `fp16`); keep `buffalo_l`/`fp32` as the safest baseline for `inswapper_128`, and treat `buffalo_m`/`buffalo_s` plus `fp16` as experimental speed options. Live detects actual webcam frame dimensions and offers a hot-change Capture scale selector; camera/source/FPS/model controls are restart-only and should stay disabled during a run.
+- Live webcam exposes an InsightFace pack selector (`buffalo_l`, `buffalo_m`, `buffalo_s`) and swapper precision selector (`fp32`, `fp16`); keep `buffalo_l`/`fp32` as the safest baseline for `inswapper_128`, and treat `buffalo_m`/`buffalo_s` plus `fp16` as experimental speed options. Live detects actual webcam frame dimensions and offers a hot-change Capture scale selector plus custom exact send width/height; camera/source/FPS/model controls are restart-only and should stay disabled during a run.
 - Settings sync: changes in one tab sync to the other when saving or starting jobs.
 
 ### Colab Notebook Features

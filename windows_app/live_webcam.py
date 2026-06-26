@@ -33,6 +33,8 @@ from windows_app.api_client import ApiClient, is_local_path
 from windows_app.settings import APP_STATE, AppSettings
 from windows_app.live_options import (
     DEFAULT_LIVE_CAPTURE_SCALE,
+    DEFAULT_LIVE_CAPTURE_HEIGHT,
+    DEFAULT_LIVE_CAPTURE_WIDTH,
     DEFAULT_LIVE_DETECT_EVERY_N,
     DEFAULT_LIVE_DETECTOR_SIZE,
     DEFAULT_LIVE_FACE_MODEL_PACK,
@@ -77,6 +79,8 @@ LIVE_HOT_CHANGE_KEYS = (
 )
 LIVE_LOCAL_HOT_CHANGE_KEYS = (
     "capture_scale",
+    "capture_width",
+    "capture_height",
     "live_pipeline_frames",
 )
 
@@ -115,8 +119,19 @@ def _scaled_frame_size(frame: Any, scale: str) -> tuple[int, int]:
     return _even_dimension(width * factor), _even_dimension(height * factor)
 
 
-def _resize_for_capture_scale(frame: Any, scale: str, cv2_module: Any) -> Any:
-    target_width, target_height = _scaled_frame_size(frame, scale)
+def _capture_target_size(frame: Any, config: dict[str, Any] | None = None) -> tuple[int, int]:
+    options = config or {}
+    scale = str(options.get("capture_scale", DEFAULT_LIVE_CAPTURE_SCALE)).lower()
+    if scale == "custom":
+        return (
+            _even_dimension(options.get("capture_width", DEFAULT_LIVE_CAPTURE_WIDTH)),
+            _even_dimension(options.get("capture_height", DEFAULT_LIVE_CAPTURE_HEIGHT)),
+        )
+    return _scaled_frame_size(frame, scale)
+
+
+def _resize_for_capture_config(frame: Any, config: dict[str, Any], cv2_module: Any) -> Any:
+    target_width, target_height = _capture_target_size(frame, config)
     height, width = frame.shape[:2]
     if (target_width, target_height) == (width, height):
         return frame
@@ -184,6 +199,8 @@ def _read_live_options(window: MainWindow) -> dict[str, Any]:
             "detector_size": int(window.live_detector_size.value()),
             "detect_every_n": int(window.live_detect_every_n.value()),
             "capture_scale": window.live_capture_scale.currentText(),
+            "capture_width": int(window.live_capture_width.value()),
+            "capture_height": int(window.live_capture_height.value()),
             "face_model_pack": window.live_face_model_pack.currentText(),
             "swapper_precision": window.live_swapper_precision.currentText(),
             "cache_source_face": window.live_cache_source_face.isChecked(),
@@ -212,6 +229,8 @@ def _apply_live_options_to_widgets(window: MainWindow) -> None:
     window.live_detector_size.setValue(int(options["detector_size"]))
     window.live_detect_every_n.setValue(int(options["detect_every_n"]))
     window.live_capture_scale.setCurrentText(str(options["capture_scale"]))
+    window.live_capture_width.setValue(int(options["capture_width"]))
+    window.live_capture_height.setValue(int(options["capture_height"]))
     window.live_face_model_pack.setCurrentText(str(options["face_model_pack"]))
     window.live_swapper_precision.setCurrentText(str(options["swapper_precision"]))
     window.live_cache_source_face.setChecked(bool(options["cache_source_face"]))
@@ -270,6 +289,14 @@ def _set_live_controls_running(window: MainWindow, running: bool) -> None:
         note.setVisible(running)
 
 
+def _update_capture_custom_controls(window: MainWindow) -> None:
+    is_custom = getattr(window, "live_capture_scale", None) is not None and window.live_capture_scale.currentText() == "custom"
+    for widget_name in ("live_capture_width", "live_capture_height"):
+        widget = getattr(window, widget_name, None)
+        if widget is not None:
+            widget.setEnabled(is_custom)
+
+
 def _apply_live_hot_change(self: MainWindow) -> None:
     if not hasattr(self, "live_preview_buffer_seconds"):
         return
@@ -298,6 +325,10 @@ def _connect_live_hot_change_controls(window: MainWindow) -> None:
         else:
             _apply_live_hot_change(window)
 
+    def scale_changed(*_args: object) -> None:
+        _update_capture_custom_controls(window)
+        changed()
+
     for widget in (
         window.live_many_faces,
         window.live_poisson_blend,
@@ -307,9 +338,9 @@ def _connect_live_hot_change_controls(window: MainWindow) -> None:
     for widget in (
         window.live_frame_codec,
         window.live_output_codec,
-        window.live_capture_scale,
     ):
         widget.currentTextChanged.connect(changed)
+    window.live_capture_scale.currentTextChanged.connect(scale_changed)
     for widget in (
         window.live_opacity,
         window.live_sharpness,
@@ -321,6 +352,8 @@ def _connect_live_hot_change_controls(window: MainWindow) -> None:
         window.live_detect_every_n,
         window.live_preview_buffer_seconds,
         window.live_pipeline_frames,
+        window.live_capture_width,
+        window.live_capture_height,
     ):
         widget.valueChanged.connect(changed)
     window._live_hot_change_controls_connected = True
@@ -382,8 +415,14 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_capture_scale = QComboBox()
     self.live_capture_scale.addItems(list(LIVE_CAPTURE_SCALES))
     self.live_capture_scale.setToolTip(
-        "Scale the actual webcam frame before sending it. The real camera ratio is preserved."
+        "Scale the actual webcam frame before sending it. Use custom to force exact send width/height."
     )
+    self.live_capture_width = QSpinBox()
+    self.live_capture_width.setRange(2, 4096)
+    self.live_capture_width.setSingleStep(2)
+    self.live_capture_height = QSpinBox()
+    self.live_capture_height.setRange(2, 4096)
+    self.live_capture_height.setSingleStep(2)
     self.live_fps = QSpinBox()
     self.live_fps.setRange(1, 120)
     self.live_fps.setValue(_live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS))
@@ -395,6 +434,8 @@ def _build_live_tab(self: MainWindow) -> None:
     form.addRow("Virtual camera", self.virtual_camera)
     form.addRow("Source face path", live_source_row)
     form.addRow("Capture scale", self.live_capture_scale)
+    form.addRow("Custom send width", self.live_capture_width)
+    form.addRow("Custom send height", self.live_capture_height)
     form.addRow("Capture FPS", self.live_fps)
     form.addRow("Pipeline frames", self.live_pipeline_frames)
     controls_layout.addLayout(form)
@@ -474,6 +515,7 @@ def _build_live_tab(self: MainWindow) -> None:
     options_form.addRow("Cache source face", self.live_cache_source_face)
     options_form.addRow("Preview buffer seconds", self.live_preview_buffer_seconds)
     _apply_live_options_to_widgets(self)
+    _update_capture_custom_controls(self)
     _connect_live_hot_change_controls(self)
     controls_layout.addWidget(options_box)
 
@@ -669,7 +711,9 @@ class LiveWorker(BaseLiveWorker):
         first_frame = _read_warm_camera_frame(cap)
         actual_height, actual_width = first_frame.shape[:2]
         actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        send_width, send_height = _scaled_frame_size(first_frame, capture_scale)
+        with self._runtime_config_lock:
+            initial_capture_config = dict(self._runtime_config)
+        send_width, send_height = _capture_target_size(first_frame, initial_capture_config)
         self.message.emit(
             f"webcam capture: preferred {requested_width}x{requested_height}@{requested_fps}, "
             f"actual {actual_width}x{actual_height}@{actual_fps:.1f}, "
@@ -721,10 +765,12 @@ class LiveWorker(BaseLiveWorker):
                                 condition.notify_all()
                             await asyncio.sleep(0.03)
                             continue
-                    current_capture_scale = str(self._runtime_value("capture_scale", capture_scale)).lower()
+                    with self._runtime_config_lock:
+                        capture_config = dict(self._runtime_config)
+                    current_capture_scale = str(capture_config.get("capture_scale", capture_scale)).lower()
                     if current_capture_scale not in LIVE_CAPTURE_SCALES:
-                        current_capture_scale = DEFAULT_LIVE_CAPTURE_SCALE
-                    frame = _resize_for_capture_scale(frame, current_capture_scale, cv2)
+                        capture_config["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
+                    frame = _resize_for_capture_config(frame, capture_config, cv2)
                     current_frame_codec = str(self._runtime_value("frame_codec", frame_codec)).lower()
                     if current_frame_codec not in LIVE_FRAME_CODECS:
                         current_frame_codec = DEFAULT_LIVE_FRAME_CODEC
