@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,23 @@ from windows_app.live_options import (
 )
 from windows_app.window_core import WindowCore as MainWindow
 from windows_app.workers import LiveWorker as BaseLiveWorker
+
+LIVE_HOT_CHANGE_KEYS = (
+    "many_faces",
+    "opacity",
+    "sharpness",
+    "mouth_mask_size",
+    "interpolation_weight",
+    "poisson_blend",
+    "color_correction",
+    "max_width",
+    "frame_codec",
+    "output_codec",
+    "jpeg_quality",
+    "detector_size",
+    "detect_every_n",
+)
+
 
 def _json_payload(text: object) -> dict[str, Any]:
     if not isinstance(text, str):
@@ -156,6 +175,105 @@ def _apply_live_options_to_widgets(window: MainWindow) -> None:
         window.live_preview_scale.setCurrentText(str(options["preview_scale"]))
 
 
+def _live_hot_change_payload(window: MainWindow) -> dict[str, Any]:
+    options = _read_live_options(window)
+    payload = {key: options[key] for key in LIVE_HOT_CHANGE_KEYS}
+    payload["live_pipeline_frames"] = int(window.live_pipeline_frames.value())
+    return payload
+
+
+def _live_hot_change_payload_from_settings(settings: AppSettings) -> dict[str, Any]:
+    options = _live_options(settings)
+    payload = {key: options[key] for key in LIVE_HOT_CHANGE_KEYS}
+    payload["live_pipeline_frames"] = _live_setting(settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES)
+    return payload
+
+
+def _live_restart_only_widgets(window: MainWindow) -> list[Any]:
+    return [
+        widget
+        for widget in (
+            getattr(window, "camera_index", None),
+            getattr(window, "virtual_camera", None),
+            getattr(window, "live_source_face", None),
+            getattr(window, "live_source_browse", None),
+            getattr(window, "live_width", None),
+            getattr(window, "live_height", None),
+            getattr(window, "live_fps", None),
+            getattr(window, "live_enhancer", None),
+            getattr(window, "live_face_model_pack", None),
+            getattr(window, "live_swapper_precision", None),
+            getattr(window, "live_cache_source_face", None),
+        )
+        if widget is not None
+    ]
+
+
+def _set_live_controls_running(window: MainWindow, running: bool) -> None:
+    for widget in _live_restart_only_widgets(window):
+        widget.setEnabled(not running)
+    start_button = getattr(window, "live_start_btn", None)
+    if start_button is not None:
+        start_button.setEnabled(not running)
+    stop_button = getattr(window, "live_stop_btn", None)
+    if stop_button is not None:
+        stop_button.setEnabled(running)
+    note = getattr(window, "live_restart_note", None)
+    if note is not None:
+        note.setVisible(running)
+
+
+def _apply_live_hot_change(self: MainWindow) -> None:
+    if not hasattr(self, "live_preview_buffer_seconds"):
+        return
+    self.settings.live_pipeline_frames = int(self.live_pipeline_frames.value())
+    self.settings.live_options = _read_live_options(self)
+    processing_options_base.save_settings(self.settings)
+    self._live_preview_buffer_seconds = float(self.settings.live_options["preview_buffer_seconds"])
+    worker = getattr(self, "live_worker", None)
+    if worker is None or not worker.isRunning():
+        return
+    payload = _live_hot_change_payload(self)
+    updater = getattr(worker, "update_live_config", None)
+    if callable(updater):
+        updater(payload)
+        ui_base._set_process_status(self, "live", "Live settings update queued")
+
+
+def _connect_live_hot_change_controls(window: MainWindow) -> None:
+    if getattr(window, "_live_hot_change_controls_connected", False):
+        return
+
+    def changed(*_args: object) -> None:
+        _apply_live_hot_change(window)
+
+    for widget in (
+        window.live_many_faces,
+        window.live_poisson_blend,
+        window.live_color_correction,
+    ):
+        widget.stateChanged.connect(changed)
+    for widget in (
+        window.live_frame_codec,
+        window.live_output_codec,
+    ):
+        widget.currentTextChanged.connect(changed)
+    for widget in (
+        window.live_opacity,
+        window.live_sharpness,
+        window.live_mouth_mask_size,
+        window.live_interpolation_weight,
+        window.live_max_width,
+        window.live_jpeg_quality,
+        window.live_detector_size,
+        window.live_detect_every_n,
+        window.live_preview_buffer_seconds,
+        window.live_pipeline_frames,
+    ):
+        widget.valueChanged.connect(changed)
+    window._live_hot_change_controls_connected = True
+
+
 def load_settings() -> AppSettings:
     settings = processing_options_base.load_settings()
     data: dict[str, Any] = {}
@@ -204,10 +322,11 @@ def _build_live_tab(self: MainWindow) -> None:
     self.camera_index.setValue(self.settings.camera_index)
     self.virtual_camera = QLineEdit(self.settings.virtual_camera)
     self.live_source_face = QLineEdit(self.settings.source_face)
-    live_source_row = self._path_row(
-        self.live_source_face,
-        lambda: self._browse_file(self.live_source_face, "Select source face image"),
-    )
+    live_source_row = QHBoxLayout()
+    live_source_row.addWidget(self.live_source_face)
+    self.live_source_browse = QPushButton("Browse...")
+    self.live_source_browse.clicked.connect(lambda: self._browse_file(self.live_source_face, "Select source face image"))
+    live_source_row.addWidget(self.live_source_browse)
     self.live_width = QSpinBox()
     self.live_width.setRange(160, 4096)
     self.live_width.setValue(_live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH))
@@ -301,17 +420,19 @@ def _build_live_tab(self: MainWindow) -> None:
     options_form.addRow("Cache source face", self.live_cache_source_face)
     options_form.addRow("Preview buffer seconds", self.live_preview_buffer_seconds)
     _apply_live_options_to_widgets(self)
+    _connect_live_hot_change_controls(self)
     controls_layout.addWidget(options_box)
 
     row = QHBoxLayout()
-    start = QPushButton("Start live")
-    start.setObjectName("successButton")
-    stop = QPushButton("Stop live")
-    stop.setObjectName("dangerButton")
-    start.clicked.connect(self.start_live)
-    stop.clicked.connect(self.stop_live)
-    row.addWidget(start)
-    row.addWidget(stop)
+    self.live_start_btn = QPushButton("Start live")
+    self.live_start_btn.setObjectName("successButton")
+    self.live_stop_btn = QPushButton("Stop live")
+    self.live_stop_btn.setObjectName("dangerButton")
+    self.live_start_btn.clicked.connect(self.start_live)
+    self.live_stop_btn.clicked.connect(self.stop_live)
+    self.live_stop_btn.setEnabled(False)
+    row.addWidget(self.live_start_btn)
+    row.addWidget(self.live_stop_btn)
     row.addStretch(1)
     controls_layout.addLayout(row)
 
@@ -323,6 +444,12 @@ def _build_live_tab(self: MainWindow) -> None:
         "Use Swapper precision to compare fp32 vs fp16 swap_ms."
     )
     controls_layout.addWidget(self.live_note)
+    self.live_restart_note = _status_label(
+        "Live is running: camera, source, capture size/FPS, enhancer, InsightFace pack, swapper precision, "
+        "and source-cache controls are restart-only and temporarily disabled."
+    )
+    self.live_restart_note.setVisible(False)
+    controls_layout.addWidget(self.live_restart_note)
     controls_layout.addStretch(1)
 
     controls_scroll = QScrollArea()
@@ -339,7 +466,9 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_preview_scale.addItems(list(LIVE_PREVIEW_SCALES))
     self.live_preview_scale.setCurrentText(str(_live_options(self.settings)["preview_scale"]))
     self.live_preview_scale.setToolTip("Fit fills the panel. 1x/1.5x/2x use that pixel scale only when it fits; otherwise they fall back to fit.")
-    self.live_preview_scale.currentTextChanged.connect(lambda _text: self.update_live_preview_from_last_frame())
+    self.live_preview_scale.currentTextChanged.connect(
+        lambda _text: (self.update_live_preview_from_last_frame(), _apply_live_hot_change(self))
+    )
     preview_controls.addWidget(self.live_preview_scale)
     preview_controls.addStretch(1)
     preview_layout.addLayout(preview_controls)
@@ -429,6 +558,34 @@ def _prepare_live_settings(settings: AppSettings) -> dict[str, Any]:
 
 
 class LiveWorker(BaseLiveWorker):
+    def __init__(self, settings: AppSettings):
+        super().__init__(settings)
+        self._live_config_updates: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._runtime_config_lock = threading.Lock()
+        self._runtime_config = {
+            **_live_hot_change_payload_from_settings(settings),
+            "live_pipeline_frames": _live_setting(settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES),
+        }
+
+    def update_live_config(self, payload: dict[str, Any]) -> None:
+        self._live_config_updates.put(dict(payload))
+
+    def _runtime_value(self, name: str, default: Any) -> Any:
+        with self._runtime_config_lock:
+            return self._runtime_config.get(name, default)
+
+    def _drain_live_config_updates(self) -> list[dict[str, Any]]:
+        updates = []
+        while True:
+            try:
+                payload = self._live_config_updates.get_nowait()
+            except queue.Empty:
+                break
+            with self._runtime_config_lock:
+                self._runtime_config.update(payload)
+                updates.append(dict(self._runtime_config))
+        return updates
+
     async def _run_live(self) -> None:
         import cv2
         import websockets
@@ -454,13 +611,13 @@ class LiveWorker(BaseLiveWorker):
             f"actual {actual_width}x{actual_height}@{actual_fps:.1f}, pipeline {pipeline_frames}"
         )
         virtual_cam = None
-        frame_codec = str(getattr(self.settings, "frame_codec", DEFAULT_LIVE_FRAME_CODEC)).lower()
+        frame_codec = str(self._runtime_value("frame_codec", DEFAULT_LIVE_FRAME_CODEC)).lower()
         if frame_codec not in LIVE_FRAME_CODECS:
             frame_codec = DEFAULT_LIVE_FRAME_CODEC
-        output_codec = str(getattr(self.settings, "output_codec", DEFAULT_LIVE_OUTPUT_CODEC)).lower()
+        output_codec = str(self._runtime_value("output_codec", DEFAULT_LIVE_OUTPUT_CODEC)).lower()
         if output_codec not in LIVE_FRAME_CODECS:
             output_codec = DEFAULT_LIVE_OUTPUT_CODEC
-        frame_quality = int(getattr(self.settings, "live_jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY))
+        frame_quality = int(self._runtime_value("jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY))
         self.message.emit(f"live frame codec: send={frame_codec}, return={output_codec}, quality={frame_quality}")
         clock = asyncio.get_running_loop().time
         stats_started = clock()
@@ -471,8 +628,13 @@ class LiveWorker(BaseLiveWorker):
         async def sender(websocket: Any) -> None:
             nonlocal in_flight
             while not self._stop:
+                for update in self._drain_live_config_updates():
+                    server_update = {key: update[key] for key in LIVE_HOT_CHANGE_KEYS if key in update}
+                    if server_update:
+                        await websocket.send(json.dumps({"type": "live_config_update", "config": server_update}))
                 async with condition:
-                    while in_flight >= pipeline_frames and not self._stop:
+                    current_pipeline_frames = max(1, int(self._runtime_value("live_pipeline_frames", pipeline_frames)))
+                    while in_flight >= current_pipeline_frames and not self._stop:
                         await condition.wait()
                     if self._stop:
                         break
@@ -485,14 +647,18 @@ class LiveWorker(BaseLiveWorker):
                             condition.notify_all()
                         await asyncio.sleep(0.03)
                         continue
-                    encode_ext = ".webp" if frame_codec == "webp" else ".jpg"
-                    encode_flag = int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY)) if frame_codec == "webp" else int(cv2.IMWRITE_JPEG_QUALITY)
+                    current_frame_codec = str(self._runtime_value("frame_codec", frame_codec)).lower()
+                    if current_frame_codec not in LIVE_FRAME_CODECS:
+                        current_frame_codec = DEFAULT_LIVE_FRAME_CODEC
+                    current_frame_quality = int(self._runtime_value("jpeg_quality", frame_quality))
+                    encode_ext = ".webp" if current_frame_codec == "webp" else ".jpg"
+                    encode_flag = int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY)) if current_frame_codec == "webp" else int(cv2.IMWRITE_JPEG_QUALITY)
                     try:
-                        ok, encoded = cv2.imencode(encode_ext, frame, [encode_flag, frame_quality])
+                        ok, encoded = cv2.imencode(encode_ext, frame, [encode_flag, current_frame_quality])
                     except Exception:
-                        if frame_codec != "webp":
+                        if current_frame_codec != "webp":
                             raise
-                        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), frame_quality])
+                        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), current_frame_quality])
                     if not ok:
                         async with condition:
                             in_flight = max(0, in_flight - 1)
@@ -608,6 +774,7 @@ def start_live(self: MainWindow) -> None:
     output_tasks_base._ensure_output_worker_state(self)
     self.settings.live_options = _read_live_options(self)
     processing_options_base.save_settings(self.settings)
+    _set_live_controls_running(self, True)
     settings = output_tasks_base._copy_settings(self.settings)
     settings.live_width = _live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH)
     settings.live_height = _live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT)
@@ -634,10 +801,12 @@ def start_live(self: MainWindow) -> None:
             text = "live failed before start: invalid prepared settings"
             self.log(text)
             ui_base._set_process_status(self, "live", text)
+            _set_live_controls_running(self, False)
             return
         self.live_worker = LiveWorker(live_settings)
         self.live_worker.message.connect(lambda text: ui_base._poll_message(self, "live", text))
         self.live_worker.frame.connect(self.enqueue_live_preview_frame)
+        self.live_worker.finished.connect(lambda: _set_live_controls_running(self, False))
         live_preview.start_live_preview_timer(self, live_settings)
         self.live_worker.start()
         ui_base._set_process_status(self, "live", f"Starting live on camera index {live_settings.camera_index}...")
@@ -648,6 +817,7 @@ def start_live(self: MainWindow) -> None:
         text = f"live failed before start: {error}"
         self.log(text)
         ui_base._set_process_status(self, "live", text)
+        _set_live_controls_running(self, False)
 
     self.output_live_task_id = output_tasks_base._start_output_task(
         self,
@@ -664,5 +834,5 @@ def stop_live(self: MainWindow) -> None:
         self.live_worker.stop()
         self.log("live stop requested")
         ui_base._set_process_status(self, "live", "Live stop requested")
-
-
+    else:
+        _set_live_controls_running(self, False)
