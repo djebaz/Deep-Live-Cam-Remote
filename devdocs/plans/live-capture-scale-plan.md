@@ -367,3 +367,18 @@ Manual checks:
 
 The user no longer has to guess capture width/height. Live detects the true webcam frame size from the actual decoded frame, preserves the camera ratio, and sends a scaled version that is predictable and easy to tune.
 
+## Implementation Status
+
+- [x] Added persisted `capture_scale` live option with `auto`, `1x`, `3/4x`, `2/3x`, `1/2x`, `1/3x`, and `1/4x`; default is `1/2x` for current Live performance tuning.
+- [x] Replaced visible raw capture width/height controls with the Capture scale combo while preserving legacy width/height settings for backward-compatible state reads.
+- [x] LiveWorker now requests the legacy/default camera mode to avoid OpenCV defaulting to 4:3, then warms the camera from decoded frames, logs preferred/actual/send sizes, resizes locally before frame encoding, and hot-changes capture scale without a backend update.
+- [x] Debounced Live hot-change UI updates with a 200 ms timer.
+- [x] Limited backend geometry re-log resets to geometry/codec/detection changes and bumped the Live API version to `live-hot-change-v10`.
+- [x] Updated README, AGENTS, and unreleased notes.
+- [x] Ran `python -m py_compile .\windows_app\live_webcam.py .\windows_app\live_options.py .\windows_app\live_preview.py .\colab_api.py` using `.venv_build`.
+
+## Deferred Validation
+
+- [ ] Final tests and smoke tests deferred to user.
+- [ ] Manual webcam checks from the original plan deferred to user.
+

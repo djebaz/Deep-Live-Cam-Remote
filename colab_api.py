@@ -44,7 +44,7 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-hot-change-v9"
+API_VERSION = "live-hot-change-v10"
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 LIVE_FRAME_CODECS = {"jpeg", "webp"}
@@ -63,6 +63,13 @@ LIVE_HOT_CHANGE_KEYS = {
     "frame_quality",
     "detector_size",
     "detect_every_n",
+}
+LIVE_GEOMETRY_LOG_KEYS = {
+    "max_width",
+    "detector_size",
+    "detect_every_n",
+    "frame_codec",
+    "output_codec",
 }
 
 
@@ -931,7 +938,8 @@ async def live_socket(websocket: WebSocket) -> None:
                         raise ValueError("live_config_update requires config object")
                     with ENGINE_LOCK:
                         config = apply_live_hot_change(engine, config, update, live_state)
-                    geometry_logged = False
+                    if LIVE_GEOMETRY_LOG_KEYS.intersection(update):
+                        geometry_logged = False
                     await websocket.send_json({
                         "status": "live_config_updated",
                         "detector_size": live_detection_size(config),

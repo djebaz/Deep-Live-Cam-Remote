@@ -27,6 +27,17 @@ PROCESSING_OPTION_KEYS = (
 
 DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
+DEFAULT_LIVE_CAPTURE_SCALE = "1/2x"
+LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x")
+LIVE_CAPTURE_SCALE_FACTORS = {
+    "auto": None,
+    "1x": 1.0,
+    "3/4x": 3 / 4,
+    "2/3x": 2 / 3,
+    "1/2x": 1 / 2,
+    "1/3x": 1 / 3,
+    "1/4x": 1 / 4,
+}
 DEFAULT_LIVE_FPS = 30
 DEFAULT_LIVE_PIPELINE_FRAMES = 16
 DEFAULT_LIVE_JPEG_QUALITY = 80
@@ -57,6 +68,7 @@ LIVE_OPTION_KEYS = (
     "jpeg_quality",
     "detector_size",
     "detect_every_n",
+    "capture_scale",
     "face_model_pack",
     "swapper_precision",
     "cache_source_face",
@@ -173,6 +185,7 @@ def _default_live_options() -> dict[str, Any]:
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
+        "capture_scale": DEFAULT_LIVE_CAPTURE_SCALE,
         "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
         "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
         "cache_source_face": True,
@@ -206,6 +219,9 @@ def coerce_live_options(value: object) -> dict[str, Any]:
     options["detector_size"] = max(160, min(640, int(options["detector_size"])))
     options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
     options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
+    options["capture_scale"] = str(options["capture_scale"]).lower()
+    if options["capture_scale"] not in LIVE_CAPTURE_SCALES:
+        options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
     options["face_model_pack"] = str(options["face_model_pack"])
     if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
         options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
