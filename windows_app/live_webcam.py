@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import configparser
+import csv
+import datetime as dt
 import json
 import os
 import queue
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -87,6 +90,68 @@ LIVE_HOT_CHANGE_KEYS = (
 LIVE_LOCAL_HOT_CHANGE_KEYS = (
     "capture_scale",
     "live_pipeline_frames",
+)
+LIVE_PERF_CASE_SECONDS = 12.0
+LIVE_PERF_WARMUP_SECONDS = 3.0
+LIVE_PERF_CSV_COLUMNS = (
+    "timestamp",
+    "case_id",
+    "case_total",
+    "case_elapsed_s",
+    "warmup",
+    "status",
+    "api_version",
+    "capture_scale",
+    "frame_codec",
+    "output_codec",
+    "encoded_codec",
+    "jpeg_quality",
+    "frame_quality",
+    "detector_size",
+    "detect_every_n",
+    "face_model_pack",
+    "swapper_precision",
+    "swapper_loaded_precision",
+    "cache_source_face",
+    "pipeline_frames",
+    "max_width",
+    "input",
+    "processing",
+    "server_fps",
+    "wait_ms",
+    "decode_ms",
+    "resize_ms",
+    "process_ms",
+    "detect_ms",
+    "landmarks_ms",
+    "swap_ms",
+    "post_ms",
+    "enhance_ms",
+    "encode_ms",
+    "in_kb",
+    "out_kb",
+    "detect_reuse_pct",
+    "faces",
+    "client_fps",
+    "capture_read_ms",
+    "client_resize_ms",
+    "client_encode_ms",
+    "send_ms",
+    "backpressure_ms",
+    "sent_kb",
+    "client_frame_width",
+    "client_frame_height",
+    "client_in_flight",
+    "client_pipeline_frames",
+    "client_frame_codec",
+    "client_jpeg_quality",
+    "client_capture_scale",
+    "receiver_fps",
+    "receiver_decode_ms",
+    "virtual_send_ms",
+    "backend_json",
+    "client_json",
+    "receiver_json",
 )
 
 
@@ -366,6 +431,9 @@ def _set_live_controls_running(window: MainWindow, running: bool) -> None:
     stop_button = getattr(window, "live_stop_btn", None)
     if stop_button is not None:
         stop_button.setEnabled(running)
+    perf_button = getattr(window, "live_perf_test_btn", None)
+    if perf_button is not None:
+        perf_button.setEnabled(running)
     note = getattr(window, "live_restart_note", None)
     if note is not None:
         note.setVisible(running)
@@ -379,6 +447,275 @@ def _update_capture_custom_controls(window: MainWindow) -> None:
         widget = getattr(window, widget_name, None)
         if widget is not None:
             widget.setEnabled(enabled)
+
+
+def _set_combo_text(widget: QComboBox, value: str) -> None:
+    index = widget.findText(value)
+    if index >= 0:
+        widget.setCurrentIndex(index)
+
+
+def _live_perf_cases() -> list[dict[str, Any]]:
+    cases = []
+    for capture_scale in ("auto", "3/4x", "1/2x", "1/3x"):
+        for frame_codec in ("jpeg", "webp"):
+            for output_codec in ("jpeg", "webp"):
+                for jpeg_quality in (30, 45, 70):
+                    for detector_size in (160, 256):
+                        for detect_every_n in (1, 3, 7):
+                            cases.append(
+                                {
+                                    "capture_scale": capture_scale,
+                                    "frame_codec": frame_codec,
+                                    "output_codec": output_codec,
+                                    "jpeg_quality": jpeg_quality,
+                                    "detector_size": detector_size,
+                                    "detect_every_n": detect_every_n,
+                                }
+                            )
+    return cases
+
+
+def _live_perf_output_path() -> Path:
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path.home() / f"deep_live_cam_remote_live_perf_{stamp}.csv"
+
+
+def _set_live_perf_button(window: MainWindow, running: bool) -> None:
+    button = getattr(window, "live_perf_test_btn", None)
+    if button is not None:
+        button.setText("Stop perf test" if running else "Run perf test")
+
+
+def _set_live_perf_case_widgets(window: MainWindow, case: dict[str, Any]) -> None:
+    widgets = (
+        window.live_capture_scale,
+        window.live_frame_codec,
+        window.live_output_codec,
+        window.live_jpeg_quality,
+        window.live_detector_size,
+        window.live_detect_every_n,
+    )
+    for widget in widgets:
+        widget.blockSignals(True)
+    try:
+        _set_combo_text(window.live_capture_scale, str(case["capture_scale"]))
+        _set_combo_text(window.live_frame_codec, str(case["frame_codec"]))
+        _set_combo_text(window.live_output_codec, str(case["output_codec"]))
+        window.live_jpeg_quality.setValue(int(case["jpeg_quality"]))
+        window.live_detector_size.setValue(int(case["detector_size"]))
+        window.live_detect_every_n.setValue(int(case["detect_every_n"]))
+    finally:
+        for widget in widgets:
+            widget.blockSignals(False)
+    _apply_live_hot_change(window)
+
+
+def _start_live_perf_test(window: MainWindow) -> None:
+    worker = getattr(window, "live_worker", None)
+    if worker is None or not worker.isRunning():
+        ui_base._set_process_status(window, "live", "Start Live before running the perf test.")
+        window.log("live perf test skipped: Live is not running")
+        return
+    if getattr(window, "_live_perf_test_running", False):
+        return
+    window._live_perf_test_running = True
+    window._live_perf_cases = _live_perf_cases()
+    window._live_perf_case_index = -1
+    window._live_perf_case_started = 0.0
+    window._live_perf_original_options = _read_live_options(window)
+    window._live_perf_output_path = _live_perf_output_path()
+    window._live_perf_csv_initialized = False
+    window._live_latest_client_perf = {}
+    window._live_latest_receiver_perf = {}
+    timer = getattr(window, "_live_perf_test_timer", None)
+    if timer is None:
+        timer = QTimer(window)
+        timer.timeout.connect(lambda: _advance_live_perf_test(window))
+        window._live_perf_test_timer = timer
+    timer.setInterval(int(LIVE_PERF_CASE_SECONDS * 1000))
+    _set_live_perf_button(window, True)
+    window.log(
+        f"live perf test started: {len(window._live_perf_cases)} cases, "
+        f"{LIVE_PERF_CASE_SECONDS:g}s each, csv {window._live_perf_output_path}"
+    )
+    _advance_live_perf_test(window)
+    timer.start()
+
+
+def _stop_live_perf_test(window: MainWindow, restore: bool = True) -> None:
+    timer = getattr(window, "_live_perf_test_timer", None)
+    if timer is not None:
+        timer.stop()
+    if not getattr(window, "_live_perf_test_running", False):
+        _set_live_perf_button(window, False)
+        return
+    window._live_perf_test_running = False
+    if restore and hasattr(window, "_live_perf_original_options"):
+        original = dict(window._live_perf_original_options)
+        restore_case = {
+            "capture_scale": original.get("capture_scale", DEFAULT_LIVE_CAPTURE_SCALE),
+            "frame_codec": original.get("frame_codec", DEFAULT_LIVE_FRAME_CODEC),
+            "output_codec": original.get("output_codec", DEFAULT_LIVE_OUTPUT_CODEC),
+            "jpeg_quality": original.get("jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY),
+            "detector_size": original.get("detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
+            "detect_every_n": original.get("detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
+        }
+        _set_live_perf_case_widgets(window, restore_case)
+    _set_live_perf_button(window, False)
+    output_path = getattr(window, "_live_perf_output_path", None)
+    if output_path:
+        window.log(f"live perf test stopped: {output_path}")
+
+
+def _toggle_live_perf_test(window: MainWindow) -> None:
+    if getattr(window, "_live_perf_test_running", False):
+        _stop_live_perf_test(window)
+    else:
+        _start_live_perf_test(window)
+
+
+def _advance_live_perf_test(window: MainWindow) -> None:
+    if not getattr(window, "_live_perf_test_running", False):
+        return
+    cases = getattr(window, "_live_perf_cases", [])
+    next_index = int(getattr(window, "_live_perf_case_index", -1)) + 1
+    if next_index >= len(cases):
+        window.log(f"live perf test completed: {getattr(window, '_live_perf_output_path', '')}")
+        _stop_live_perf_test(window)
+        return
+    window._live_perf_case_index = next_index
+    window._live_perf_case_started = time.monotonic()
+    case = cases[next_index]
+    _set_live_perf_case_widgets(window, case)
+    ui_base._set_process_status(
+        window,
+        "live",
+        f"Live perf test case {next_index + 1}/{len(cases)}: {case}",
+    )
+
+
+def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str, Any]:
+    case_index = int(getattr(window, "_live_perf_case_index", -1))
+    case_total = len(getattr(window, "_live_perf_cases", []))
+    started = float(getattr(window, "_live_perf_case_started", 0.0) or 0.0)
+    elapsed = max(0.0, time.monotonic() - started) if started else 0.0
+    options = _read_live_options(window)
+    client_payload = getattr(window, "_live_latest_client_perf", {})
+    if not isinstance(client_payload, dict):
+        client_payload = {}
+    receiver_payload = getattr(window, "_live_latest_receiver_perf", {})
+    if not isinstance(receiver_payload, dict):
+        receiver_payload = {}
+    row: dict[str, Any] = {column: "" for column in LIVE_PERF_CSV_COLUMNS}
+    row.update(
+        {
+            "timestamp": dt.datetime.now().isoformat(timespec="milliseconds"),
+            "case_id": case_index + 1 if case_index >= 0 else "",
+            "case_total": case_total or "",
+            "case_elapsed_s": f"{elapsed:.3f}",
+            "warmup": elapsed < LIVE_PERF_WARMUP_SECONDS,
+            "status": payload.get("status", ""),
+            "api_version": payload.get("api_version", ""),
+            "capture_scale": options.get("capture_scale", ""),
+            "frame_codec": payload.get("frame_codec", options.get("frame_codec", "")),
+            "output_codec": payload.get("output_codec", options.get("output_codec", "")),
+            "encoded_codec": payload.get("encoded_codec", ""),
+            "jpeg_quality": payload.get("jpeg_quality", options.get("jpeg_quality", "")),
+            "frame_quality": payload.get("frame_quality", ""),
+            "detector_size": payload.get("detector_size", options.get("detector_size", "")),
+            "detect_every_n": payload.get("detect_every_n", options.get("detect_every_n", "")),
+            "face_model_pack": payload.get("face_model_pack", ""),
+            "swapper_precision": payload.get("swapper_precision", ""),
+            "swapper_loaded_precision": payload.get("swapper_loaded_precision", ""),
+            "cache_source_face": payload.get("cache_source_face", ""),
+            "pipeline_frames": int(window.live_pipeline_frames.value()) if hasattr(window, "live_pipeline_frames") else "",
+            "max_width": options.get("max_width", ""),
+            "input": payload.get("input", ""),
+            "processing": payload.get("processing", ""),
+            "backend_json": json.dumps(payload, sort_keys=True),
+            "client_json": json.dumps(client_payload, sort_keys=True) if client_payload else "",
+            "receiver_json": json.dumps(receiver_payload, sort_keys=True) if receiver_payload else "",
+        }
+    )
+    backend_keys = (
+        "server_fps",
+        "wait_ms",
+        "decode_ms",
+        "resize_ms",
+        "process_ms",
+        "detect_ms",
+        "landmarks_ms",
+        "swap_ms",
+        "post_ms",
+        "enhance_ms",
+        "encode_ms",
+        "in_kb",
+        "out_kb",
+        "detect_reuse_pct",
+        "faces",
+    )
+    for key in backend_keys:
+        if key in payload:
+            row[key] = payload[key]
+    client_map = {
+        "client_fps": "client_fps",
+        "capture_read_ms": "capture_read_ms",
+        "resize_ms": "client_resize_ms",
+        "encode_ms": "client_encode_ms",
+        "send_ms": "send_ms",
+        "backpressure_ms": "backpressure_ms",
+        "sent_kb": "sent_kb",
+        "frame_width": "client_frame_width",
+        "frame_height": "client_frame_height",
+        "in_flight": "client_in_flight",
+        "pipeline_frames": "client_pipeline_frames",
+        "frame_codec": "client_frame_codec",
+        "jpeg_quality": "client_jpeg_quality",
+        "capture_scale": "client_capture_scale",
+    }
+    for source, target in client_map.items():
+        if source in client_payload:
+            row[target] = client_payload[source]
+    receiver_map = {
+        "receiver_fps": "receiver_fps",
+        "decode_ms": "receiver_decode_ms",
+        "virtual_send_ms": "virtual_send_ms",
+    }
+    for source, target in receiver_map.items():
+        if source in receiver_payload:
+            row[target] = receiver_payload[source]
+    return row
+
+
+def _record_live_perf_sample(window: MainWindow, payload: dict[str, Any]) -> None:
+    if not getattr(window, "_live_perf_test_running", False):
+        return
+    output_path = getattr(window, "_live_perf_output_path", None)
+    if not output_path:
+        return
+    row = _live_perf_csv_row(window, payload)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not bool(getattr(window, "_live_perf_csv_initialized", False)) or not output_path.exists()
+    with output_path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(LIVE_PERF_CSV_COLUMNS))
+        if write_header:
+            writer.writeheader()
+            window._live_perf_csv_initialized = True
+        writer.writerow(row)
+
+
+def _handle_live_worker_message(window: MainWindow, text: str) -> None:
+    ui_base._poll_message(window, "live", text)
+    payload = _json_payload(text)
+    status = payload.get("status")
+    if status == "live_perf":
+        _record_live_perf_sample(window, payload)
+    elif status == "live_client_perf":
+        window._live_latest_client_perf = payload
+    elif status == "live_receiver_perf":
+        window._live_latest_receiver_perf = payload
 
 
 def _apply_live_hot_change(self: MainWindow) -> None:
@@ -629,8 +966,12 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_start_btn.clicked.connect(self.start_live)
     self.live_stop_btn.clicked.connect(self.stop_live)
     self.live_stop_btn.setEnabled(False)
+    self.live_perf_test_btn = QPushButton("Run perf test")
+    self.live_perf_test_btn.clicked.connect(lambda: _toggle_live_perf_test(self))
+    self.live_perf_test_btn.setEnabled(False)
     row.addWidget(self.live_start_btn)
     row.addWidget(self.live_stop_btn)
+    row.addWidget(self.live_perf_test_btn)
     row.addStretch(1)
     controls_layout.addLayout(row)
 
@@ -874,9 +1215,63 @@ class LiveWorker(BaseLiveWorker):
         clock = asyncio.get_running_loop().time
         stats_started = clock()
         stats_frames = 0
+        receiver_decode_ms = 0.0
+        virtual_send_ms = 0.0
         in_flight = 0
         condition = asyncio.Condition()
         next_frame = first_frame
+        client_stats: dict[str, Any] = {
+            "started": clock(),
+            "frames": 0,
+            "capture_read_ms": 0.0,
+            "resize_ms": 0.0,
+            "encode_ms": 0.0,
+            "send_ms": 0.0,
+            "backpressure_ms": 0.0,
+            "sent_kb": 0.0,
+            "frame_width": send_width,
+            "frame_height": send_height,
+            "frame_codec": frame_codec,
+            "jpeg_quality": frame_quality,
+            "capture_scale": capture_scale,
+        }
+
+        def add_client_stat(name: str, value: float) -> None:
+            client_stats[name] = float(client_stats.get(name, 0.0)) + float(value)
+
+        def emit_client_perf(now: float, current_pipeline_frames: int, current_in_flight: int) -> None:
+            elapsed = max(0.001, now - float(client_stats["started"]))
+            frames = max(1, int(client_stats["frames"]))
+            payload = {
+                "status": "live_client_perf",
+                "client_fps": round(float(client_stats["frames"]) / elapsed, 2),
+                "capture_read_ms": round(float(client_stats["capture_read_ms"]) / frames, 2),
+                "resize_ms": round(float(client_stats["resize_ms"]) / frames, 2),
+                "encode_ms": round(float(client_stats["encode_ms"]) / frames, 2),
+                "send_ms": round(float(client_stats["send_ms"]) / frames, 2),
+                "backpressure_ms": round(float(client_stats["backpressure_ms"]) / frames, 2),
+                "sent_kb": round(float(client_stats["sent_kb"]) / frames, 2),
+                "frame_width": int(client_stats.get("frame_width") or 0),
+                "frame_height": int(client_stats.get("frame_height") or 0),
+                "frame_codec": client_stats.get("frame_codec", ""),
+                "jpeg_quality": int(client_stats.get("jpeg_quality") or 0),
+                "capture_scale": client_stats.get("capture_scale", ""),
+                "pipeline_frames": int(current_pipeline_frames),
+                "in_flight": int(current_in_flight),
+            }
+            self.message.emit(json.dumps(payload))
+            client_stats.update(
+                {
+                    "started": now,
+                    "frames": 0,
+                    "capture_read_ms": 0.0,
+                    "resize_ms": 0.0,
+                    "encode_ms": 0.0,
+                    "send_ms": 0.0,
+                    "backpressure_ms": 0.0,
+                    "sent_kb": 0.0,
+                }
+            )
 
         async def sender(websocket: Any) -> None:
             nonlocal in_flight, next_frame
@@ -885,6 +1280,7 @@ class LiveWorker(BaseLiveWorker):
                     server_update = {key: update[key] for key in LIVE_HOT_CHANGE_KEYS if key in update}
                     if server_update:
                         await websocket.send(json.dumps({"type": "live_config_update", "config": server_update}))
+                backpressure_started = clock()
                 async with condition:
                     current_pipeline_frames = max(1, int(self._runtime_value("live_pipeline_frames", pipeline_frames)))
                     while in_flight >= current_pipeline_frames and not self._stop:
@@ -896,42 +1292,65 @@ class LiveWorker(BaseLiveWorker):
                     if self._stop:
                         break
                     in_flight += 1
+                add_client_stat("backpressure_ms", (clock() - backpressure_started) * 1000.0)
                 try:
                     if next_frame is not None:
                         frame = next_frame
                         next_frame = None
+                        capture_read_ms = 0.0
                     else:
+                        read_started = clock()
                         ok, frame = cap.read()
+                        capture_read_ms = (clock() - read_started) * 1000.0
                         if not ok:
                             async with condition:
                                 in_flight = max(0, in_flight - 1)
                                 condition.notify_all()
                             await asyncio.sleep(0.03)
                             continue
+                    add_client_stat("capture_read_ms", capture_read_ms)
                     with self._runtime_config_lock:
                         capture_config = dict(self._runtime_config)
                     current_capture_scale = str(capture_config.get("capture_scale", capture_scale)).lower()
                     if current_capture_scale not in LIVE_CAPTURE_SCALES:
                         capture_config["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
+                    resize_started = clock()
                     frame = _resize_for_capture_config(frame, capture_config, cv2)
+                    add_client_stat("resize_ms", (clock() - resize_started) * 1000.0)
                     current_frame_codec = str(self._runtime_value("frame_codec", frame_codec)).lower()
                     if current_frame_codec not in LIVE_FRAME_CODECS:
                         current_frame_codec = DEFAULT_LIVE_FRAME_CODEC
                     current_frame_quality = int(self._runtime_value("jpeg_quality", frame_quality))
                     encode_ext = ".webp" if current_frame_codec == "webp" else ".jpg"
                     encode_flag = int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY)) if current_frame_codec == "webp" else int(cv2.IMWRITE_JPEG_QUALITY)
+                    encode_started = clock()
                     try:
                         ok, encoded = cv2.imencode(encode_ext, frame, [encode_flag, current_frame_quality])
                     except Exception:
                         if current_frame_codec != "webp":
                             raise
                         ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), current_frame_quality])
+                    add_client_stat("encode_ms", (clock() - encode_started) * 1000.0)
                     if not ok:
                         async with condition:
                             in_flight = max(0, in_flight - 1)
                             condition.notify_all()
                         continue
-                    await websocket.send(encoded.tobytes())
+                    frame_height, frame_width = frame.shape[:2]
+                    payload_bytes = encoded.tobytes()
+                    send_started = clock()
+                    await websocket.send(payload_bytes)
+                    add_client_stat("send_ms", (clock() - send_started) * 1000.0)
+                    client_stats["frames"] = int(client_stats["frames"]) + 1
+                    add_client_stat("sent_kb", len(payload_bytes) / 1024.0)
+                    client_stats["frame_width"] = frame_width
+                    client_stats["frame_height"] = frame_height
+                    client_stats["frame_codec"] = current_frame_codec
+                    client_stats["jpeg_quality"] = current_frame_quality
+                    client_stats["capture_scale"] = current_capture_scale
+                    now = clock()
+                    if now - float(client_stats["started"]) >= 5.0:
+                        emit_client_perf(now, current_pipeline_frames, in_flight)
                 except Exception:
                     async with condition:
                         in_flight = max(0, in_flight - 1)
@@ -939,7 +1358,7 @@ class LiveWorker(BaseLiveWorker):
                     raise
 
         async def receiver(websocket: Any) -> None:
-            nonlocal in_flight, stats_started, stats_frames, virtual_cam, virtual_cam_size
+            nonlocal in_flight, stats_started, stats_frames, receiver_decode_ms, virtual_send_ms, virtual_cam, virtual_cam_size
             while not self._stop:
                 reply = await websocket.recv()
                 if isinstance(reply, str):
@@ -958,36 +1377,56 @@ class LiveWorker(BaseLiveWorker):
                 stats_frames += 1
                 now = clock()
                 if now - stats_started >= 5.0:
-                    self.message.emit(f"live throughput: {stats_frames / (now - stats_started):.1f} fps")
+                    elapsed = max(0.001, now - stats_started)
+                    receiver_fps = stats_frames / elapsed
+                    frames = max(1, stats_frames)
+                    self.message.emit(f"live throughput: {receiver_fps:.1f} fps")
+                    self.message.emit(
+                        json.dumps(
+                            {
+                                "status": "live_receiver_perf",
+                                "receiver_fps": round(receiver_fps, 2),
+                                "decode_ms": round(receiver_decode_ms / frames, 2),
+                                "virtual_send_ms": round(virtual_send_ms / frames, 2),
+                            }
+                        )
+                    )
                     stats_started = now
                     stats_frames = 0
-                import numpy as np
+                    receiver_decode_ms = 0.0
+                    virtual_send_ms = 0.0
+                if virtual_cam is not False:
+                    import numpy as np
 
-                decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
-                h, w = decoded.shape[:2]
-                if virtual_cam and virtual_cam_size != (w, h):
-                    try:
-                        virtual_cam.close()
-                    except Exception:
-                        pass
-                    self.message.emit(f"virtual camera frame size changed: reopening at {w}x{h}")
-                    virtual_cam = None
-                    virtual_cam_size = None
-                if virtual_cam is None:
-                    try:
-                        import pyvirtualcam
-
-                        virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=requested_fps, device=self.settings.virtual_camera or None)
-                        virtual_cam_size = (w, h)
-                        self.message.emit(f"virtual camera opened: {virtual_cam.device} at {w}x{h} {requested_fps} fps")
-                    except Exception as exc:
-                        self.message.emit(f"virtual camera unavailable: {exc}")
-                        virtual_cam = False
+                    decode_started = clock()
+                    decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    receiver_decode_ms += (clock() - decode_started) * 1000.0
+                    h, w = decoded.shape[:2]
+                    if virtual_cam and virtual_cam_size != (w, h):
+                        try:
+                            virtual_cam.close()
+                        except Exception:
+                            pass
+                        self.message.emit(f"virtual camera frame size changed: reopening at {w}x{h}")
+                        virtual_cam = None
                         virtual_cam_size = None
-                if virtual_cam:
-                    rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
-                    virtual_cam.send(rgb)
-                    virtual_cam.sleep_until_next_frame()
+                    if virtual_cam is None:
+                        try:
+                            import pyvirtualcam
+
+                            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=requested_fps, device=self.settings.virtual_camera or None)
+                            virtual_cam_size = (w, h)
+                            self.message.emit(f"virtual camera opened: {virtual_cam.device} at {w}x{h} {requested_fps} fps")
+                        except Exception as exc:
+                            self.message.emit(f"virtual camera unavailable: {exc}")
+                            virtual_cam = False
+                            virtual_cam_size = None
+                    if virtual_cam:
+                        virtual_started = clock()
+                        rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+                        virtual_cam.send(rgb)
+                        virtual_cam.sleep_until_next_frame()
+                        virtual_send_ms += (clock() - virtual_started) * 1000.0
 
         try:
             async with websockets.connect(uri, max_size=8 * 1024 * 1024) as websocket:
@@ -1084,9 +1523,9 @@ def start_live(self: MainWindow) -> None:
             _set_live_controls_running(self, False)
             return
         self.live_worker = LiveWorker(live_settings)
-        self.live_worker.message.connect(lambda text: ui_base._poll_message(self, "live", text))
+        self.live_worker.message.connect(lambda text: _handle_live_worker_message(self, text))
         self.live_worker.frame.connect(self.enqueue_live_preview_frame)
-        self.live_worker.finished.connect(lambda: _set_live_controls_running(self, False))
+        self.live_worker.finished.connect(lambda: (_stop_live_perf_test(self, restore=False), _set_live_controls_running(self, False)))
         live_preview.start_live_preview_timer(self, live_settings)
         self.live_worker.start()
         ui_base._set_process_status(self, "live", f"Starting live on camera index {live_settings.camera_index}...")
@@ -1111,6 +1550,7 @@ def start_live(self: MainWindow) -> None:
 def stop_live(self: MainWindow) -> None:
     self._live_prepare_token = None
     self.output_live_task_id = ""
+    _stop_live_perf_test(self, restore=False)
     live_preview.stop_live_preview_timer(self)
     if self.live_worker:
         self.live_worker.stop()
