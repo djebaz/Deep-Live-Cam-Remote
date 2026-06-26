@@ -384,6 +384,20 @@ def float_config(config: dict[str, Any], name: str, default: float, minimum: flo
     return max(minimum, min(maximum, value))
 
 
+def strict_float_config(config: dict[str, Any], name: str, minimum: float, maximum: float) -> float:
+    if name not in config:
+        raise ValueError(f"{name} is required")
+    try:
+        value = float(config[name])
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return value
+
+
 def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple[int, int]:
     height, width = frame.shape[:2]
     configured = config.get("max_width")
@@ -474,7 +488,7 @@ def live_hot_change_config(current: dict[str, Any], update: dict[str, Any]) -> d
         ("interpolation_weight", 0.0, 0.0, 1.0),
     ):
         if name in update:
-            merged[name] = float_config(update, name, default, minimum, maximum)
+            merged[name] = strict_float_config(update, name, minimum, maximum)
     for name in ("poisson_blend", "color_correction"):
         if name in update:
             merged[name] = bool_config(update, name, bool(current.get(name, False)))

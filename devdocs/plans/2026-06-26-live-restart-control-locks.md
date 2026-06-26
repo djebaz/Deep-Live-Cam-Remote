@@ -21,6 +21,7 @@
 - [x] Commit and push the feature branch. Downstream PR is deferred until requested.
 
 ## Decisions and Design Changes
+- 2026-06-26 Strict hot-update numeric validation now rejects invalid, non-finite, or out-of-range float values instead of coercing them into the active live config.
 - 2026-06-26 Review fixes keep hot-change rejection non-fatal, make Stop during preparation invalidate stale callbacks, validate finite float ranges, and use a short sender wait timeout so local pipeline-frame increases take effect promptly.
 - 2026-06-26 Hot changes prioritize responsiveness over exact frame ordering; a change may take effect over the next few frames.
 - 2026-06-26 Invalid hot-change payloads should return a websocket JSON error and leave the current Live config unchanged.
