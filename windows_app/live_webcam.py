@@ -32,6 +32,7 @@ from windows_app import processing_options as processing_options_base
 from windows_app.api_client import ApiClient, is_local_path
 from windows_app.settings import APP_STATE, AppSettings
 from windows_app.live_options import (
+    DEFAULT_LIVE_CAPTURE_BACKEND,
     DEFAULT_LIVE_CAPTURE_MODE,
     DEFAULT_LIVE_CAPTURE_SCALE,
     DEFAULT_LIVE_CAPTURE_HEIGHT,
@@ -49,6 +50,7 @@ from windows_app.live_options import (
     DEFAULT_LIVE_PREVIEW_SCALE,
     DEFAULT_LIVE_SWAPPER_PRECISION,
     DEFAULT_LIVE_WIDTH,
+    LIVE_CAPTURE_BACKENDS,
     LIVE_CAPTURE_MODES,
     LIVE_CAPTURE_SCALE_FACTORS,
     LIVE_CAPTURE_SCALES,
@@ -144,6 +146,15 @@ def _read_warm_camera_frame(cap: Any, attempts: int = 10) -> Any:
     return last
 
 
+def _open_video_capture(cv2_module: Any, camera_index: int, backend: str) -> Any:
+    normalized = str(backend or DEFAULT_LIVE_CAPTURE_BACKEND).lower()
+    if normalized == "directshow":
+        return cv2_module.VideoCapture(camera_index, cv2_module.CAP_DSHOW)
+    if normalized == "msmf":
+        return cv2_module.VideoCapture(camera_index, cv2_module.CAP_MSMF)
+    return cv2_module.VideoCapture(camera_index)
+
+
 def _source_fields(window: MainWindow) -> list[Any]:
     fields = []
     for name in ("source_face", "video_source_face", "live_source_face"):
@@ -193,6 +204,7 @@ def _read_live_options(window: MainWindow) -> dict[str, Any]:
             "jpeg_quality": int(window.live_jpeg_quality.value()),
             "detector_size": int(window.live_detector_size.value()),
             "detect_every_n": int(window.live_detect_every_n.value()),
+            "capture_backend": window.live_capture_backend.currentText(),
             "capture_mode": window.live_capture_mode.currentText(),
             "capture_scale": window.live_capture_scale.currentText(),
             "capture_width": int(window.live_capture_width.value()),
@@ -224,6 +236,7 @@ def _apply_live_options_to_widgets(window: MainWindow) -> None:
     window.live_jpeg_quality.setValue(int(options["jpeg_quality"]))
     window.live_detector_size.setValue(int(options["detector_size"]))
     window.live_detect_every_n.setValue(int(options["detect_every_n"]))
+    window.live_capture_backend.setCurrentText(str(options["capture_backend"]))
     window.live_capture_mode.setCurrentText(str(options["capture_mode"]))
     window.live_capture_scale.setCurrentText(str(options["capture_scale"]))
     window.live_capture_width.setValue(int(options["capture_width"]))
@@ -260,6 +273,7 @@ def _live_restart_only_widgets(window: MainWindow) -> list[Any]:
             getattr(window, "virtual_camera", None),
             getattr(window, "live_source_face", None),
             getattr(window, "live_source_browse", None),
+            getattr(window, "live_capture_backend", None),
             getattr(window, "live_capture_mode", None),
             getattr(window, "live_capture_width", None),
             getattr(window, "live_capture_height", None),
@@ -410,6 +424,11 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_source_browse = QPushButton("Browse...")
     self.live_source_browse.clicked.connect(lambda: self._browse_file(self.live_source_face, "Select source face image"))
     live_source_row.addWidget(self.live_source_browse)
+    self.live_capture_backend = QComboBox()
+    self.live_capture_backend.addItems(list(LIVE_CAPTURE_BACKENDS))
+    self.live_capture_backend.setToolTip(
+        "OpenCV capture backend. DirectShow is recommended for OBS Virtual Camera custom resolutions on Windows."
+    )
     self.live_capture_mode = QComboBox()
     self.live_capture_mode.addItems(list(LIVE_CAPTURE_MODES))
     self.live_capture_mode.setToolTip(
@@ -436,6 +455,7 @@ def _build_live_tab(self: MainWindow) -> None:
     form.addRow("Camera index", self.camera_index)
     form.addRow("Virtual camera", self.virtual_camera)
     form.addRow("Source face path", live_source_row)
+    form.addRow("Capture backend", self.live_capture_backend)
     form.addRow("Capture mode", self.live_capture_mode)
     form.addRow("Custom capture width", self.live_capture_width)
     form.addRow("Custom capture height", self.live_capture_height)
@@ -545,7 +565,7 @@ def _build_live_tab(self: MainWindow) -> None:
     )
     controls_layout.addWidget(self.live_note)
     self.live_restart_note = _status_label(
-        "Live is running: camera, source, capture FPS, enhancer, InsightFace pack, swapper precision, "
+        "Live is running: camera, source, capture backend/size/FPS, enhancer, InsightFace pack, swapper precision, "
         "and source-cache controls are restart-only and temporarily disabled."
     )
     self.live_restart_note.setVisible(False)
@@ -665,6 +685,7 @@ class LiveWorker(BaseLiveWorker):
         live_options = _live_options(settings)
         self._runtime_config = {
             **_live_hot_change_payload_from_settings(settings),
+            "capture_backend": live_options["capture_backend"],
             "capture_mode": live_options["capture_mode"],
             "capture_width": live_options["capture_width"],
             "capture_height": live_options["capture_height"],
@@ -699,9 +720,12 @@ class LiveWorker(BaseLiveWorker):
 
         uri = self.settings.base_url.replace("http://", "ws://") + "/ws/live"
         self.message.emit(f"connecting live websocket: {uri}")
-        cap = cv2.VideoCapture(self.settings.camera_index)
+        capture_backend = str(self._runtime_value("capture_backend", DEFAULT_LIVE_CAPTURE_BACKEND)).lower()
+        if capture_backend not in LIVE_CAPTURE_BACKENDS:
+            capture_backend = DEFAULT_LIVE_CAPTURE_BACKEND
+        cap = _open_video_capture(cv2, self.settings.camera_index, capture_backend)
         if not cap.isOpened():
-            raise RuntimeError(f"could not open camera index {self.settings.camera_index}")
+            raise RuntimeError(f"could not open camera index {self.settings.camera_index} with backend {capture_backend}")
         requested_width = int(self._runtime_value("capture_width", DEFAULT_LIVE_CAPTURE_WIDTH))
         requested_height = int(self._runtime_value("capture_height", DEFAULT_LIVE_CAPTURE_HEIGHT))
         capture_mode = str(self._runtime_value("capture_mode", DEFAULT_LIVE_CAPTURE_MODE)).lower()
@@ -717,15 +741,20 @@ class LiveWorker(BaseLiveWorker):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
         cap.set(cv2.CAP_PROP_FPS, requested_fps)
-        first_frame = _read_warm_camera_frame(cap)
+        first_frame = _read_warm_camera_frame(cap, attempts=20)
         actual_height, actual_width = first_frame.shape[:2]
+        if capture_mode == "custom" and (actual_width, actual_height) != (requested_width, requested_height):
+            self.message.emit(
+                f"warning: requested OBS capture {requested_width}x{requested_height} with {capture_backend}, "
+                f"but OpenCV received {actual_width}x{actual_height}; try DirectShow backend or check OBS output/canvas"
+            )
         actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
         with self._runtime_config_lock:
             initial_capture_config = dict(self._runtime_config)
         send_width, send_height = _capture_target_size(first_frame, initial_capture_config)
         preferred = f"{requested_width}x{requested_height}" if capture_mode == "custom" else "auto"
         self.message.emit(
-            f"webcam capture: preferred {preferred}@{requested_fps}, "
+            f"webcam capture: backend {capture_backend}, preferred {preferred}@{requested_fps}, "
             f"actual {actual_width}x{actual_height}@{actual_fps:.1f}, "
             f"send {send_width}x{send_height} ({capture_scale}), pipeline {pipeline_frames}"
         )

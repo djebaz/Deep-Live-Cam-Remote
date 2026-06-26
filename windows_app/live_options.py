@@ -6,6 +6,8 @@ from windows_app.settings import AppSettings
 
 DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
+DEFAULT_LIVE_CAPTURE_BACKEND = "directshow"
+LIVE_CAPTURE_BACKENDS = ("auto", "directshow", "msmf")
 DEFAULT_LIVE_CAPTURE_MODE = "auto"
 LIVE_CAPTURE_MODES = ("auto", "custom")
 DEFAULT_LIVE_CAPTURE_SCALE = "auto"
@@ -51,6 +53,7 @@ LIVE_OPTION_KEYS = (
     "jpeg_quality",
     "detector_size",
     "detect_every_n",
+    "capture_backend",
     "capture_mode",
     "capture_scale",
     "capture_width",
@@ -88,6 +91,7 @@ def _default_live_options() -> dict[str, Any]:
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
+        "capture_backend": DEFAULT_LIVE_CAPTURE_BACKEND,
         "capture_mode": DEFAULT_LIVE_CAPTURE_MODE,
         "capture_scale": DEFAULT_LIVE_CAPTURE_SCALE,
         "capture_width": DEFAULT_LIVE_CAPTURE_WIDTH,
@@ -125,6 +129,9 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["detector_size"] = max(160, min(640, int(options["detector_size"])))
     options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
     options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
+    options["capture_backend"] = str(options["capture_backend"]).lower()
+    if options["capture_backend"] not in LIVE_CAPTURE_BACKENDS:
+        options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
     options["capture_mode"] = str(options["capture_mode"]).lower()
     if options["capture_mode"] not in LIVE_CAPTURE_MODES:
         options["capture_mode"] = DEFAULT_LIVE_CAPTURE_MODE
