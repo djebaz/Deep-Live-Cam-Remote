@@ -44,7 +44,7 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-hot-change-v10"
+API_VERSION = "live-hot-change-v11"
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 LIVE_FRAME_CODECS = {"jpeg", "webp"}
@@ -405,6 +405,27 @@ def strict_float_config(config: dict[str, Any], name: str, minimum: float, maxim
     return value
 
 
+def strict_int_config(config: dict[str, Any], name: str, minimum: int, maximum: int, step: int | None = None) -> int:
+    if name not in config:
+        raise ValueError(f"{name} is required")
+    raw = config[name]
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(raw, float) and not raw.is_integer():
+        raise ValueError(f"{name} must be an integer")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer") from None
+    if isinstance(raw, str) and raw.strip() != str(value):
+        raise ValueError(f"{name} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    if step and value % step != 0:
+        raise ValueError(f"{name} must be a multiple of {step}")
+    return value
+
+
 def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple[int, int]:
     height, width = frame.shape[:2]
     configured = config.get("max_width")
@@ -500,7 +521,7 @@ def live_hot_change_config(current: dict[str, Any], update: dict[str, Any]) -> d
         if name in update:
             merged[name] = bool_config(update, name, bool(current.get(name, False)))
     if "max_width" in update:
-        merged["max_width"] = int_config(update, "max_width", int(current.get("max_width") or 4096), 64, 4096)
+        merged["max_width"] = strict_int_config(update, "max_width", 64, 4096)
     for name in ("frame_codec", "output_codec"):
         if name in update:
             codec = str(update.get(name) or "jpeg").lower()
@@ -509,13 +530,12 @@ def live_hot_change_config(current: dict[str, Any], update: dict[str, Any]) -> d
             merged[name] = codec
     quality_key = "jpeg_quality" if "jpeg_quality" in update else "frame_quality"
     if quality_key in update:
-        merged["jpeg_quality"] = int_config(update, quality_key, live_jpeg_quality(current), 20, 95)
+        merged["jpeg_quality"] = strict_int_config(update, quality_key, 20, 95)
         merged["frame_quality"] = merged["jpeg_quality"]
     if "detector_size" in update:
-        merged["detector_size"] = int_config(update, "detector_size", live_detection_size(current), 160, 640)
-        merged["detector_size"] = max(32, int(merged["detector_size"]) // 32 * 32)
+        merged["detector_size"] = strict_int_config(update, "detector_size", 160, 640, step=32)
     if "detect_every_n" in update:
-        merged["detect_every_n"] = int_config(update, "detect_every_n", int_config(current, "detect_every_n", 1, 1, 30), 1, 30)
+        merged["detect_every_n"] = strict_int_config(update, "detect_every_n", 1, 30)
     return merged
 
 

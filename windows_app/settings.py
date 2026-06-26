@@ -27,8 +27,10 @@ PROCESSING_OPTION_KEYS = (
 
 DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
-DEFAULT_LIVE_CAPTURE_SCALE = "1/2x"
-LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x", "custom")
+DEFAULT_LIVE_CAPTURE_MODE = "auto"
+LIVE_CAPTURE_MODES = ("auto", "custom")
+DEFAULT_LIVE_CAPTURE_SCALE = "auto"
+LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x")
 LIVE_CAPTURE_SCALE_FACTORS = {
     "auto": None,
     "1x": 1.0,
@@ -37,7 +39,6 @@ LIVE_CAPTURE_SCALE_FACTORS = {
     "1/2x": 1 / 2,
     "1/3x": 1 / 3,
     "1/4x": 1 / 4,
-    "custom": None,
 }
 DEFAULT_LIVE_CAPTURE_WIDTH = 640
 DEFAULT_LIVE_CAPTURE_HEIGHT = 360
@@ -71,6 +72,7 @@ LIVE_OPTION_KEYS = (
     "jpeg_quality",
     "detector_size",
     "detect_every_n",
+    "capture_mode",
     "capture_scale",
     "capture_width",
     "capture_height",
@@ -190,6 +192,7 @@ def _default_live_options() -> dict[str, Any]:
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
+        "capture_mode": DEFAULT_LIVE_CAPTURE_MODE,
         "capture_scale": DEFAULT_LIVE_CAPTURE_SCALE,
         "capture_width": DEFAULT_LIVE_CAPTURE_WIDTH,
         "capture_height": DEFAULT_LIVE_CAPTURE_HEIGHT,
@@ -226,6 +229,9 @@ def coerce_live_options(value: object) -> dict[str, Any]:
     options["detector_size"] = max(160, min(640, int(options["detector_size"])))
     options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
     options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
+    options["capture_mode"] = str(options["capture_mode"]).lower()
+    if options["capture_mode"] not in LIVE_CAPTURE_MODES:
+        options["capture_mode"] = DEFAULT_LIVE_CAPTURE_MODE
     options["capture_scale"] = str(options["capture_scale"]).lower()
     if options["capture_scale"] not in LIVE_CAPTURE_SCALES:
         options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
