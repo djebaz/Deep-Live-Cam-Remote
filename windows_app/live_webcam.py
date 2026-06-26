@@ -386,6 +386,17 @@ def load_settings() -> AppSettings:
     settings.live_fps = int(data.get("live_fps") or DEFAULT_LIVE_FPS)
     settings.live_pipeline_frames = int(data.get("live_pipeline_frames") or DEFAULT_LIVE_PIPELINE_FRAMES)
     settings.live_options = _coerce_live_options(data.get("live_options"))
+    # Migrate the short-lived auto + half-send default that let OBS/OpenCV negotiate
+    # 640x480 and then sent 320x240. OBS users normally need an explicit custom
+    # DirectShow capture request, while Send scale should preserve the received frame.
+    if isinstance(data.get("live_options"), dict):
+        raw_options = data["live_options"]
+        if raw_options.get("capture_mode") == "auto" and raw_options.get("capture_scale") == "1/2x":
+            settings.live_options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
+            settings.live_options["capture_mode"] = DEFAULT_LIVE_CAPTURE_MODE
+            settings.live_options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
+            settings.live_options["capture_width"] = _live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
+            settings.live_options["capture_height"] = _live_setting(settings, "live_height", DEFAULT_LIVE_HEIGHT)
     return settings
 
 
@@ -743,6 +754,11 @@ class LiveWorker(BaseLiveWorker):
         cap.set(cv2.CAP_PROP_FPS, requested_fps)
         first_frame = _read_warm_camera_frame(cap, attempts=20)
         actual_height, actual_width = first_frame.shape[:2]
+        if capture_mode == "auto":
+            self.message.emit(
+                f"capture auto negotiated {actual_width}x{actual_height}; "
+                "for OBS custom canvas sizes, use Capture mode=custom and restart Live"
+            )
         if capture_mode == "custom" and (actual_width, actual_height) != (requested_width, requested_height):
             self.message.emit(
                 f"warning: requested OBS capture {requested_width}x{requested_height} with {capture_backend}, "

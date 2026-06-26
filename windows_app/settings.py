@@ -29,7 +29,7 @@ DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
 DEFAULT_LIVE_CAPTURE_BACKEND = "directshow"
 LIVE_CAPTURE_BACKENDS = ("auto", "directshow", "msmf")
-DEFAULT_LIVE_CAPTURE_MODE = "auto"
+DEFAULT_LIVE_CAPTURE_MODE = "custom"
 LIVE_CAPTURE_MODES = ("auto", "custom")
 DEFAULT_LIVE_CAPTURE_SCALE = "auto"
 LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x")
@@ -42,8 +42,8 @@ LIVE_CAPTURE_SCALE_FACTORS = {
     "1/3x": 1 / 3,
     "1/4x": 1 / 4,
 }
-DEFAULT_LIVE_CAPTURE_WIDTH = 640
-DEFAULT_LIVE_CAPTURE_HEIGHT = 360
+DEFAULT_LIVE_CAPTURE_WIDTH = DEFAULT_LIVE_WIDTH
+DEFAULT_LIVE_CAPTURE_HEIGHT = DEFAULT_LIVE_HEIGHT
 DEFAULT_LIVE_FPS = 30
 DEFAULT_LIVE_PIPELINE_FRAMES = 16
 DEFAULT_LIVE_JPEG_QUALITY = 80
@@ -284,6 +284,14 @@ def load_settings() -> AppSettings:
     settings.live_fps = int(data.get("live_fps") or DEFAULT_LIVE_FPS)
     settings.live_pipeline_frames = int(data.get("live_pipeline_frames") or DEFAULT_LIVE_PIPELINE_FRAMES)
     settings.live_options = coerce_live_options(data.get("live_options"))
+    if isinstance(data.get("live_options"), dict):
+        raw_options = data["live_options"]
+        if raw_options.get("capture_mode") == "auto" and raw_options.get("capture_scale") == "1/2x":
+            settings.live_options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
+            settings.live_options["capture_mode"] = DEFAULT_LIVE_CAPTURE_MODE
+            settings.live_options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
+            settings.live_options["capture_width"] = live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
+            settings.live_options["capture_height"] = live_setting(settings, "live_height", DEFAULT_LIVE_HEIGHT)
     return settings
 
 
