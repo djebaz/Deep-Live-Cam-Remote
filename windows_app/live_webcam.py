@@ -93,6 +93,11 @@ LIVE_LOCAL_HOT_CHANGE_KEYS = (
 )
 LIVE_PERF_CASE_SECONDS = 12.0
 LIVE_PERF_WARMUP_SECONDS = 3.0
+LIVE_PERF_CAPTURE_SCALE = "1/2x"
+LIVE_PERF_JPEG_QUALITY = 70
+LIVE_PERF_DETECT_EVERY_N = 3
+LIVE_PERF_DETECTOR_SIZE = 256
+LIVE_PERF_PIPELINE_FRAMES = 64
 LIVE_PERF_CSV_COLUMNS = (
     "timestamp",
     "case_id",
@@ -134,6 +139,14 @@ LIVE_PERF_CSV_COLUMNS = (
     "faces",
     "client_fps",
     "capture_read_ms",
+    "capture_wait_ms",
+    "capture_grab_ms",
+    "capture_retrieve_ms",
+    "capture_age_ms",
+    "capture_thread_fps",
+    "dropped_capture_frames",
+    "duplicate_sender_frames",
+    "capture_seq",
     "client_resize_ms",
     "client_encode_ms",
     "send_ms",
@@ -457,22 +470,19 @@ def _set_combo_text(widget: QComboBox, value: str) -> None:
 
 def _live_perf_cases() -> list[dict[str, Any]]:
     cases = []
-    for capture_scale in ("auto", "3/4x", "1/2x", "1/3x"):
-        for frame_codec in ("jpeg", "webp"):
-            for output_codec in ("jpeg", "webp"):
-                for jpeg_quality in (30, 45, 70):
-                    for detector_size in (160, 256):
-                        for detect_every_n in (1, 3, 7):
-                            cases.append(
-                                {
-                                    "capture_scale": capture_scale,
-                                    "frame_codec": frame_codec,
-                                    "output_codec": output_codec,
-                                    "jpeg_quality": jpeg_quality,
-                                    "detector_size": detector_size,
-                                    "detect_every_n": detect_every_n,
-                                }
-                            )
+    for frame_codec in ("jpeg", "webp"):
+        for output_codec in ("jpeg", "webp"):
+            cases.append(
+                {
+                    "capture_scale": LIVE_PERF_CAPTURE_SCALE,
+                    "frame_codec": frame_codec,
+                    "output_codec": output_codec,
+                    "jpeg_quality": LIVE_PERF_JPEG_QUALITY,
+                    "detector_size": LIVE_PERF_DETECTOR_SIZE,
+                    "detect_every_n": LIVE_PERF_DETECT_EVERY_N,
+                    "live_pipeline_frames": LIVE_PERF_PIPELINE_FRAMES,
+                }
+            )
     return cases
 
 
@@ -495,6 +505,7 @@ def _set_live_perf_case_widgets(window: MainWindow, case: dict[str, Any]) -> Non
         window.live_jpeg_quality,
         window.live_detector_size,
         window.live_detect_every_n,
+        window.live_pipeline_frames,
     )
     for widget in widgets:
         widget.blockSignals(True)
@@ -505,6 +516,7 @@ def _set_live_perf_case_widgets(window: MainWindow, case: dict[str, Any]) -> Non
         window.live_jpeg_quality.setValue(int(case["jpeg_quality"]))
         window.live_detector_size.setValue(int(case["detector_size"]))
         window.live_detect_every_n.setValue(int(case["detect_every_n"]))
+        window.live_pipeline_frames.setValue(int(case["live_pipeline_frames"]))
     finally:
         for widget in widgets:
             widget.blockSignals(False)
@@ -524,6 +536,7 @@ def _start_live_perf_test(window: MainWindow) -> None:
     window._live_perf_case_index = -1
     window._live_perf_case_started = 0.0
     window._live_perf_original_options = _read_live_options(window)
+    window._live_perf_original_pipeline_frames = int(window.live_pipeline_frames.value())
     window._live_perf_output_path = _live_perf_output_path()
     window._live_perf_csv_initialized = False
     window._live_latest_client_perf = {}
@@ -537,7 +550,10 @@ def _start_live_perf_test(window: MainWindow) -> None:
     _set_live_perf_button(window, True)
     window.log(
         f"live perf test started: {len(window._live_perf_cases)} cases, "
-        f"{LIVE_PERF_CASE_SECONDS:g}s each, csv {window._live_perf_output_path}"
+        f"{LIVE_PERF_CASE_SECONDS:g}s each, fixed quality={LIVE_PERF_JPEG_QUALITY}, "
+        f"scale={LIVE_PERF_CAPTURE_SCALE}, detect_every_n={LIVE_PERF_DETECT_EVERY_N}, "
+        f"detector_size={LIVE_PERF_DETECTOR_SIZE}, pipeline_frames={LIVE_PERF_PIPELINE_FRAMES}, "
+        f"csv {window._live_perf_output_path}"
     )
     _advance_live_perf_test(window)
     timer.start()
@@ -560,6 +576,7 @@ def _stop_live_perf_test(window: MainWindow, restore: bool = True) -> None:
             "jpeg_quality": original.get("jpeg_quality", DEFAULT_LIVE_JPEG_QUALITY),
             "detector_size": original.get("detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
             "detect_every_n": original.get("detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
+            "live_pipeline_frames": getattr(window, "_live_perf_original_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES),
         }
         _set_live_perf_case_widgets(window, restore_case)
     _set_live_perf_button(window, False)
@@ -661,6 +678,14 @@ def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str,
     client_map = {
         "client_fps": "client_fps",
         "capture_read_ms": "capture_read_ms",
+        "capture_wait_ms": "capture_wait_ms",
+        "capture_grab_ms": "capture_grab_ms",
+        "capture_retrieve_ms": "capture_retrieve_ms",
+        "capture_age_ms": "capture_age_ms",
+        "capture_thread_fps": "capture_thread_fps",
+        "dropped_capture_frames": "dropped_capture_frames",
+        "duplicate_sender_frames": "duplicate_sender_frames",
+        "capture_seq": "capture_seq",
         "resize_ms": "client_resize_ms",
         "encode_ms": "client_encode_ms",
         "send_ms": "send_ms",
@@ -1145,6 +1170,12 @@ class LiveWorker(BaseLiveWorker):
         cap = _open_video_capture(cv2, self.settings.camera_index, capture_backend)
         if not cap.isOpened():
             raise RuntimeError(f"could not open camera index {self.settings.camera_index} with backend {capture_backend}")
+        try:
+            buffer_set = bool(cap.set(cv2.CAP_PROP_BUFFERSIZE, 1))
+            buffer_size = cap.get(cv2.CAP_PROP_BUFFERSIZE)
+            self.message.emit(f"capture buffer request: set=1 accepted={buffer_set}, actual={buffer_size:g}")
+        except Exception:
+            pass
         requested_width = int(self._runtime_value("capture_width", DEFAULT_LIVE_CAPTURE_WIDTH))
         requested_height = int(self._runtime_value("capture_height", DEFAULT_LIVE_CAPTURE_HEIGHT))
         capture_mode = str(self._runtime_value("capture_mode", DEFAULT_LIVE_CAPTURE_MODE)).lower()
@@ -1219,11 +1250,34 @@ class LiveWorker(BaseLiveWorker):
         virtual_send_ms = 0.0
         in_flight = 0
         condition = asyncio.Condition()
-        next_frame = first_frame
+        capture_stop = threading.Event()
+        capture_lock = threading.Lock()
+        capture_condition = threading.Condition(capture_lock)
+        capture_error: BaseException | None = None
+        latest_capture: dict[str, Any] = {
+            "frame": first_frame,
+            "seq": 0,
+            "captured_at": time.perf_counter(),
+            "grab_ms": 0.0,
+            "retrieve_ms": 0.0,
+        }
+        capture_stats: dict[str, Any] = {
+            "started": time.perf_counter(),
+            "frames": 0,
+            "grab_ms": 0.0,
+            "retrieve_ms": 0.0,
+        }
         client_stats: dict[str, Any] = {
             "started": clock(),
             "frames": 0,
             "capture_read_ms": 0.0,
+            "capture_wait_ms": 0.0,
+            "capture_grab_ms": 0.0,
+            "capture_retrieve_ms": 0.0,
+            "capture_age_ms": 0.0,
+            "dropped_capture_frames": 0,
+            "duplicate_sender_frames": 0,
+            "capture_seq": 0,
             "resize_ms": 0.0,
             "encode_ms": 0.0,
             "send_ms": 0.0,
@@ -1236,8 +1290,73 @@ class LiveWorker(BaseLiveWorker):
             "capture_scale": capture_scale,
         }
 
+        def capture_loop() -> None:
+            nonlocal capture_error
+            seq = 0
+            while not self._stop and not capture_stop.is_set():
+                try:
+                    grab_started = time.perf_counter()
+                    ok = cap.grab()
+                    grab_ms = (time.perf_counter() - grab_started) * 1000.0
+                    if not ok:
+                        time.sleep(0.005)
+                        continue
+                    retrieve_started = time.perf_counter()
+                    ok, frame = cap.retrieve()
+                    retrieve_ms = (time.perf_counter() - retrieve_started) * 1000.0
+                    if not ok or frame is None:
+                        time.sleep(0.005)
+                        continue
+                    captured_at = time.perf_counter()
+                    with capture_condition:
+                        seq += 1
+                        latest_capture.update(
+                            {
+                                "frame": frame,
+                                "seq": seq,
+                                "captured_at": captured_at,
+                                "grab_ms": grab_ms,
+                                "retrieve_ms": retrieve_ms,
+                            }
+                        )
+                        capture_stats["frames"] = int(capture_stats["frames"]) + 1
+                        capture_stats["grab_ms"] = float(capture_stats["grab_ms"]) + grab_ms
+                        capture_stats["retrieve_ms"] = float(capture_stats["retrieve_ms"]) + retrieve_ms
+                        capture_condition.notify_all()
+                except BaseException as exc:
+                    capture_error = exc
+                    with capture_condition:
+                        capture_condition.notify_all()
+                    return
+
+        capture_thread = threading.Thread(target=capture_loop, name="LiveCaptureReader", daemon=True)
+        capture_thread.start()
+
         def add_client_stat(name: str, value: float) -> None:
             client_stats[name] = float(client_stats.get(name, 0.0)) + float(value)
+
+        def add_client_count(name: str, value: int) -> None:
+            client_stats[name] = int(client_stats.get(name, 0)) + int(value)
+
+        def capture_thread_perf() -> dict[str, Any]:
+            now = time.perf_counter()
+            with capture_condition:
+                elapsed = max(0.001, now - float(capture_stats["started"]))
+                frames = int(capture_stats["frames"])
+                payload = {
+                    "capture_thread_fps": round(frames / elapsed, 2),
+                    "capture_grab_ms": round(float(capture_stats["grab_ms"]) / max(1, frames), 2),
+                    "capture_retrieve_ms": round(float(capture_stats["retrieve_ms"]) / max(1, frames), 2),
+                }
+                capture_stats.update(
+                    {
+                        "started": now,
+                        "frames": 0,
+                        "grab_ms": 0.0,
+                        "retrieve_ms": 0.0,
+                    }
+                )
+                return payload
 
         def emit_client_perf(now: float, current_pipeline_frames: int, current_in_flight: int) -> None:
             elapsed = max(0.001, now - float(client_stats["started"]))
@@ -1246,11 +1365,18 @@ class LiveWorker(BaseLiveWorker):
                 "status": "live_client_perf",
                 "client_fps": round(float(client_stats["frames"]) / elapsed, 2),
                 "capture_read_ms": round(float(client_stats["capture_read_ms"]) / frames, 2),
+                "capture_wait_ms": round(float(client_stats["capture_wait_ms"]) / frames, 2),
+                "capture_grab_ms": round(float(client_stats["capture_grab_ms"]) / frames, 2),
+                "capture_retrieve_ms": round(float(client_stats["capture_retrieve_ms"]) / frames, 2),
+                "capture_age_ms": round(float(client_stats["capture_age_ms"]) / frames, 2),
                 "resize_ms": round(float(client_stats["resize_ms"]) / frames, 2),
                 "encode_ms": round(float(client_stats["encode_ms"]) / frames, 2),
                 "send_ms": round(float(client_stats["send_ms"]) / frames, 2),
                 "backpressure_ms": round(float(client_stats["backpressure_ms"]) / frames, 2),
                 "sent_kb": round(float(client_stats["sent_kb"]) / frames, 2),
+                "dropped_capture_frames": int(client_stats.get("dropped_capture_frames") or 0),
+                "duplicate_sender_frames": int(client_stats.get("duplicate_sender_frames") or 0),
+                "capture_seq": int(client_stats.get("capture_seq") or 0),
                 "frame_width": int(client_stats.get("frame_width") or 0),
                 "frame_height": int(client_stats.get("frame_height") or 0),
                 "frame_codec": client_stats.get("frame_codec", ""),
@@ -1259,12 +1385,19 @@ class LiveWorker(BaseLiveWorker):
                 "pipeline_frames": int(current_pipeline_frames),
                 "in_flight": int(current_in_flight),
             }
+            payload.update(capture_thread_perf())
             self.message.emit(json.dumps(payload))
             client_stats.update(
                 {
                     "started": now,
                     "frames": 0,
                     "capture_read_ms": 0.0,
+                    "capture_wait_ms": 0.0,
+                    "capture_grab_ms": 0.0,
+                    "capture_retrieve_ms": 0.0,
+                    "capture_age_ms": 0.0,
+                    "dropped_capture_frames": 0,
+                    "duplicate_sender_frames": 0,
                     "resize_ms": 0.0,
                     "encode_ms": 0.0,
                     "send_ms": 0.0,
@@ -1274,7 +1407,8 @@ class LiveWorker(BaseLiveWorker):
             )
 
         async def sender(websocket: Any) -> None:
-            nonlocal in_flight, next_frame
+            nonlocal in_flight
+            last_sent_capture_seq = -1
             while not self._stop:
                 for update in self._drain_live_config_updates():
                     server_update = {key: update[key] for key in LIVE_HOT_CHANGE_KEYS if key in update}
@@ -1294,21 +1428,42 @@ class LiveWorker(BaseLiveWorker):
                     in_flight += 1
                 add_client_stat("backpressure_ms", (clock() - backpressure_started) * 1000.0)
                 try:
-                    if next_frame is not None:
-                        frame = next_frame
-                        next_frame = None
-                        capture_read_ms = 0.0
-                    else:
-                        read_started = clock()
-                        ok, frame = cap.read()
-                        capture_read_ms = (clock() - read_started) * 1000.0
-                        if not ok:
-                            async with condition:
-                                in_flight = max(0, in_flight - 1)
-                                condition.notify_all()
-                            await asyncio.sleep(0.03)
-                            continue
-                    add_client_stat("capture_read_ms", capture_read_ms)
+                    capture_wait_started = time.perf_counter()
+                    with capture_condition:
+                        while latest_capture["seq"] == last_sent_capture_seq and not self._stop and capture_error is None:
+                            capture_condition.wait(timeout=0.1)
+                        if capture_error is not None:
+                            raise RuntimeError(f"live capture reader failed: {capture_error}") from capture_error
+                        if self._stop:
+                            break
+                        frame = latest_capture["frame"]
+                        capture_seq = int(latest_capture["seq"])
+                        captured_at = float(latest_capture["captured_at"])
+                        capture_grab_ms = float(latest_capture["grab_ms"])
+                        capture_retrieve_ms = float(latest_capture["retrieve_ms"])
+                    if frame is None:
+                        async with condition:
+                            in_flight = max(0, in_flight - 1)
+                            condition.notify_all()
+                        await asyncio.sleep(0.03)
+                        continue
+                    capture_wait_ms = (time.perf_counter() - capture_wait_started) * 1000.0
+                    duplicate_sender_frames = 1 if capture_seq == last_sent_capture_seq else 0
+                    dropped_capture_frames = (
+                        max(0, capture_seq - last_sent_capture_seq - 1)
+                        if last_sent_capture_seq >= 0 and duplicate_sender_frames == 0
+                        else 0
+                    )
+                    last_sent_capture_seq = capture_seq
+                    capture_age_ms = max(0.0, (time.perf_counter() - captured_at) * 1000.0)
+                    add_client_stat("capture_read_ms", capture_wait_ms)
+                    add_client_stat("capture_wait_ms", capture_wait_ms)
+                    add_client_stat("capture_grab_ms", capture_grab_ms)
+                    add_client_stat("capture_retrieve_ms", capture_retrieve_ms)
+                    add_client_stat("capture_age_ms", capture_age_ms)
+                    add_client_count("dropped_capture_frames", dropped_capture_frames)
+                    add_client_count("duplicate_sender_frames", duplicate_sender_frames)
+                    client_stats["capture_seq"] = capture_seq
                     with self._runtime_config_lock:
                         capture_config = dict(self._runtime_config)
                     current_capture_scale = str(capture_config.get("capture_scale", capture_scale)).lower()
@@ -1475,6 +1630,10 @@ class LiveWorker(BaseLiveWorker):
                     task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
         finally:
+            capture_stop.set()
+            with capture_condition:
+                capture_condition.notify_all()
+            capture_thread.join(timeout=1.0)
             cap.release()
             if virtual_cam and hasattr(virtual_cam, "close"):
                 virtual_cam.close()
