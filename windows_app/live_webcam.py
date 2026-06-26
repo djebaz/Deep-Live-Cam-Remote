@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import configparser
 import json
+import os
 import queue
 import threading
 from pathlib import Path
@@ -153,6 +155,42 @@ def _open_video_capture(cv2_module: Any, camera_index: int, backend: str) -> Any
     if normalized == "msmf":
         return cv2_module.VideoCapture(camera_index, cv2_module.CAP_MSMF)
     return cv2_module.VideoCapture(camera_index)
+
+
+def _detect_obs_profile_resolution() -> tuple[int, int, str] | None:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    profiles_root = Path(appdata) / "obs-studio" / "basic" / "profiles"
+    if not profiles_root.is_dir():
+        return None
+    candidates = sorted(
+        profiles_root.glob("*/basic.ini"),
+        key=lambda path: path.stat().st_mtime if path.is_file() else 0,
+        reverse=True,
+    )
+    for path in candidates:
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(path, encoding="utf-8")
+        except Exception:
+            continue
+        if not parser.has_section("Video"):
+            continue
+        video = parser["Video"]
+        for width_key, height_key, label in (
+            ("BaseCX", "BaseCY", "OBS base canvas"),
+            ("OutputCX", "OutputCY", "OBS output"),
+        ):
+            try:
+                width = int(video.get(width_key, "0"))
+                height = int(video.get(height_key, "0"))
+            except ValueError:
+                continue
+            if width > 0 and height > 0:
+                profile = path.parent.name
+                return width, height, f"{label} from profile {profile}"
+    return None
 
 
 def _source_fields(window: MainWindow) -> list[Any]:
@@ -387,16 +425,13 @@ def load_settings() -> AppSettings:
     settings.live_pipeline_frames = int(data.get("live_pipeline_frames") or DEFAULT_LIVE_PIPELINE_FRAMES)
     settings.live_options = _coerce_live_options(data.get("live_options"))
     # Migrate the short-lived auto + half-send default that let OBS/OpenCV negotiate
-    # 640x480 and then sent 320x240. OBS users normally need an explicit custom
-    # DirectShow capture request, while Send scale should preserve the received frame.
+    # 640x480 and then sent 320x240. Auto now requests the OBS profile size when
+    # it is available, while Send scale should preserve the received frame.
     if isinstance(data.get("live_options"), dict):
         raw_options = data["live_options"]
         if raw_options.get("capture_mode") == "auto" and raw_options.get("capture_scale") == "1/2x":
             settings.live_options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
-            settings.live_options["capture_mode"] = DEFAULT_LIVE_CAPTURE_MODE
             settings.live_options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
-            settings.live_options["capture_width"] = _live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
-            settings.live_options["capture_height"] = _live_setting(settings, "live_height", DEFAULT_LIVE_HEIGHT)
     return settings
 
 
@@ -443,7 +478,7 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_capture_mode = QComboBox()
     self.live_capture_mode.addItems(list(LIVE_CAPTURE_MODES))
     self.live_capture_mode.setToolTip(
-        "Auto uses the camera default mode. Custom requests the width/height from OBS/OpenCV before Live starts."
+        "Auto requests the current OBS profile canvas size when available, then verifies the real decoded frame. Custom forces the width/height below."
     )
     self.live_capture_width = QSpinBox()
     self.live_capture_width.setRange(2, 4096)
@@ -748,16 +783,32 @@ class LiveWorker(BaseLiveWorker):
         if capture_scale not in LIVE_CAPTURE_SCALES:
             capture_scale = DEFAULT_LIVE_CAPTURE_SCALE
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        auto_capture_source = ""
         if capture_mode == "custom":
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
+        elif capture_mode == "auto":
+            detected = _detect_obs_profile_resolution()
+            if detected is not None:
+                requested_width, requested_height, auto_capture_source = detected
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
+                self.message.emit(
+                    f"capture auto requested {requested_width}x{requested_height} from {auto_capture_source}"
+                )
         cap.set(cv2.CAP_PROP_FPS, requested_fps)
         first_frame = _read_warm_camera_frame(cap, attempts=20)
         actual_height, actual_width = first_frame.shape[:2]
-        if capture_mode == "auto":
+        if capture_mode == "auto" and auto_capture_source:
+            if (actual_width, actual_height) != (requested_width, requested_height):
+                self.message.emit(
+                    f"warning: OBS profile says {requested_width}x{requested_height}, "
+                    f"but OpenCV received {actual_width}x{actual_height}; check OBS Virtual Camera backend/settings"
+                )
+        elif capture_mode == "auto":
             self.message.emit(
                 f"capture auto negotiated {actual_width}x{actual_height}; "
-                "for OBS custom canvas sizes, use Capture mode=custom and restart Live"
+                "OBS profile size was not found; use Capture mode=custom if OBS canvas is different"
             )
         if capture_mode == "custom" and (actual_width, actual_height) != (requested_width, requested_height):
             self.message.emit(
@@ -768,7 +819,11 @@ class LiveWorker(BaseLiveWorker):
         with self._runtime_config_lock:
             initial_capture_config = dict(self._runtime_config)
         send_width, send_height = _capture_target_size(first_frame, initial_capture_config)
-        preferred = f"{requested_width}x{requested_height}" if capture_mode == "custom" else "auto"
+        preferred = (
+            f"{requested_width}x{requested_height}"
+            if capture_mode == "custom" or auto_capture_source
+            else "auto"
+        )
         self.message.emit(
             f"webcam capture: backend {capture_backend}, preferred {preferred}@{requested_fps}, "
             f"actual {actual_width}x{actual_height}@{actual_fps:.1f}, "
