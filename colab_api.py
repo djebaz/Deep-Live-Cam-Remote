@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import io
 import json
+import math
 import mimetypes
 import queue
 import subprocess
@@ -373,6 +374,16 @@ def int_config(config: dict[str, Any], name: str, default: int, minimum: int, ma
     return max(minimum, min(maximum, value))
 
 
+def float_config(config: dict[str, Any], name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(config.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple[int, int]:
     height, width = frame.shape[:2]
     configured = config.get("max_width")
@@ -456,14 +467,14 @@ def live_hot_change_config(current: dict[str, Any], update: dict[str, Any]) -> d
     merged = dict(current)
     if "many_faces" in update:
         merged["many_faces"] = bool_config(update, "many_faces", bool(current.get("many_faces", False)))
-    for name, default in (
-        ("opacity", 1.0),
-        ("sharpness", 0.0),
-        ("mouth_mask_size", 0.0),
-        ("interpolation_weight", 0.0),
+    for name, default, minimum, maximum in (
+        ("opacity", 1.0, 0.0, 1.0),
+        ("sharpness", 0.0, 0.0, 1.0),
+        ("mouth_mask_size", 0.0, 0.0, 10.0),
+        ("interpolation_weight", 0.0, 0.0, 1.0),
     ):
         if name in update:
-            merged[name] = float(update.get(name, default))
+            merged[name] = float_config(update, name, default, minimum, maximum)
     for name in ("poisson_blend", "color_correction"):
         if name in update:
             merged[name] = bool_config(update, name, bool(current.get(name, False)))
@@ -835,12 +846,12 @@ async def live_socket(websocket: WebSocket) -> None:
             source_face=Path(config.get("source_face") or SOURCE_DIR / "source.png"),
             map_config=None,
             many_faces=bool(config.get("many_faces", False)),
-            opacity=float(config.get("opacity", 1.0)),
-            sharpness=float(config.get("sharpness", 0.0)),
-            mouth_mask_size=float(config.get("mouth_mask_size", 0.0)),
+            opacity=float_config(config, "opacity", 1.0, 0.0, 1.0),
+            sharpness=float_config(config, "sharpness", 0.0, 0.0, 1.0),
+            mouth_mask_size=float_config(config, "mouth_mask_size", 0.0, 0.0, 10.0),
             poisson_blend=bool(config.get("poisson_blend", False)),
             color_correction=bool(config.get("color_correction", False)),
-            interpolation_weight=float(config.get("interpolation_weight", 0.0)),
+            interpolation_weight=float_config(config, "interpolation_weight", 0.0, 0.0, 1.0),
             enhancer=config.get("enhancer", "none"),
             face_model_pack=live_face_model_pack(config),
             swapper_precision=live_swapper_precision(config),
@@ -918,7 +929,7 @@ async def live_socket(websocket: WebSocket) -> None:
                         "many_faces": bool(config.get("many_faces", False)),
                     })
                 except Exception as exc:
-                    await websocket.send_json({"error": f"live config update failed: {exc}"})
+                    await websocket.send_json({"status": "live_config_update_rejected", "message": str(exc)})
                 continue
             payload = message.get("bytes")
             if payload is None:

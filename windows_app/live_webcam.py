@@ -568,7 +568,10 @@ class LiveWorker(BaseLiveWorker):
         }
 
     def update_live_config(self, payload: dict[str, Any]) -> None:
-        self._live_config_updates.put(dict(payload))
+        next_payload = dict(payload)
+        with self._runtime_config_lock:
+            self._runtime_config.update(next_payload)
+        self._live_config_updates.put(next_payload)
 
     def _runtime_value(self, name: str, default: Any) -> Any:
         with self._runtime_config_lock:
@@ -635,7 +638,11 @@ class LiveWorker(BaseLiveWorker):
                 async with condition:
                     current_pipeline_frames = max(1, int(self._runtime_value("live_pipeline_frames", pipeline_frames)))
                     while in_flight >= current_pipeline_frames and not self._stop:
-                        await condition.wait()
+                        try:
+                            await asyncio.wait_for(condition.wait(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            pass
+                        current_pipeline_frames = max(1, int(self._runtime_value("live_pipeline_frames", pipeline_frames)))
                     if self._stop:
                         break
                     in_flight += 1
@@ -680,6 +687,9 @@ class LiveWorker(BaseLiveWorker):
                     payload = _json_payload(reply)
                     if "error" in payload:
                         raise RuntimeError(str(payload["error"]))
+                    if payload.get("status") == "live_config_update_rejected":
+                        ui_message = payload.get("message", "live config update rejected")
+                        self.message.emit(f"live config update rejected: {ui_message}")
                     continue
                 async with condition:
                     in_flight = max(0, in_flight - 1)
@@ -784,12 +794,14 @@ def start_live(self: MainWindow) -> None:
     _apply_live_options_to_settings(settings)
     self.log("starting live...")
     ui_base._set_process_status(self, "live", "Preparing live...")
+    prepare_token = object()
+    self._live_prepare_token = prepare_token
 
     def task() -> dict[str, Any]:
         return _prepare_live_settings(settings)
 
     def succeeded(task_id: str, result: object) -> None:
-        if task_id != getattr(self, "output_live_task_id", ""):
+        if task_id != getattr(self, "output_live_task_id", "") or getattr(self, "_live_prepare_token", None) is not prepare_token:
             return
         payload = result if isinstance(result, dict) else {}
         for line in payload.get("logs") or []:
@@ -812,7 +824,7 @@ def start_live(self: MainWindow) -> None:
         ui_base._set_process_status(self, "live", f"Starting live on camera index {live_settings.camera_index}...")
 
     def failed(task_id: str, error: str) -> None:
-        if task_id != getattr(self, "output_live_task_id", ""):
+        if task_id != getattr(self, "output_live_task_id", "") or getattr(self, "_live_prepare_token", None) is not prepare_token:
             return
         text = f"live failed before start: {error}"
         self.log(text)
@@ -829,6 +841,8 @@ def start_live(self: MainWindow) -> None:
 
 
 def stop_live(self: MainWindow) -> None:
+    self._live_prepare_token = None
+    self.output_live_task_id = ""
     live_preview.stop_live_preview_timer(self)
     if self.live_worker:
         self.live_worker.stop()
