@@ -9,7 +9,7 @@ DEFAULT_LIVE_HEIGHT = 720
 DEFAULT_LIVE_CAPTURE_BACKEND = "directshow"
 LIVE_CAPTURE_BACKENDS = ("auto", "directshow", "msmf")
 DEFAULT_LIVE_CAPTURE_MODE = "auto"
-LIVE_CAPTURE_MODES = ("auto", "custom")
+LIVE_CAPTURE_MODES = ("auto", "opencv_auto", "custom")
 DEFAULT_LIVE_CAPTURE_SCALE = "auto"
 LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x")
 LIVE_CAPTURE_SCALE_FACTORS = {
@@ -165,4 +165,3 @@ def _apply_live_options_to_settings(settings: AppSettings) -> None:
         if key != "jpeg_quality":
             setattr(settings, key, options[key])
     settings.live_jpeg_quality = options["jpeg_quality"]
-

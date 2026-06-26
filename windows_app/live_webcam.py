@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -150,11 +151,46 @@ def _read_warm_camera_frame(cap: Any, attempts: int = 10) -> Any:
 
 def _open_video_capture(cv2_module: Any, camera_index: int, backend: str) -> Any:
     normalized = str(backend or DEFAULT_LIVE_CAPTURE_BACKEND).lower()
-    if normalized == "directshow":
+    if normalized in {"directshow", "dshow"}:
         return cv2_module.VideoCapture(camera_index, cv2_module.CAP_DSHOW)
     if normalized == "msmf":
         return cv2_module.VideoCapture(camera_index, cv2_module.CAP_MSMF)
     return cv2_module.VideoCapture(camera_index)
+
+
+def _read_ini(path: Path) -> configparser.ConfigParser | None:
+    parser = configparser.ConfigParser()
+    parser.optionxform = str
+    try:
+        read = parser.read(path, encoding="utf-8-sig")
+    except Exception:
+        return None
+    return parser if read else None
+
+
+def _obs_active_profile_paths(profiles_root: Path) -> list[Path]:
+    obs_root = profiles_root.parents[1]
+    paths: list[Path] = []
+    global_ini = obs_root / "global.ini"
+    parser = _read_ini(global_ini)
+    if parser is not None and parser.has_section("Basic"):
+        basic = parser["Basic"]
+        for key in ("ProfileDir", "Profile"):
+            profile = str(basic.get(key, "")).strip()
+            if profile:
+                paths.append(profiles_root / profile / "basic.ini")
+    return [path for path in paths if path.is_file()]
+
+
+def _obs_profile_candidates(profiles_root: Path) -> list[Path]:
+    active = _obs_active_profile_paths(profiles_root)
+    if active:
+        return active
+    return sorted(
+        profiles_root.glob("*/basic.ini"),
+        key=lambda path: path.stat().st_mtime if path.is_file() else 0,
+        reverse=True,
+    )
 
 
 def _detect_obs_profile_resolution() -> tuple[int, int, str] | None:
@@ -164,16 +200,9 @@ def _detect_obs_profile_resolution() -> tuple[int, int, str] | None:
     profiles_root = Path(appdata) / "obs-studio" / "basic" / "profiles"
     if not profiles_root.is_dir():
         return None
-    candidates = sorted(
-        profiles_root.glob("*/basic.ini"),
-        key=lambda path: path.stat().st_mtime if path.is_file() else 0,
-        reverse=True,
-    )
-    for path in candidates:
-        parser = configparser.ConfigParser()
-        try:
-            parser.read(path, encoding="utf-8")
-        except Exception:
+    for path in _obs_profile_candidates(profiles_root):
+        parser = _read_ini(path)
+        if parser is None:
             continue
         if not parser.has_section("Video"):
             continue
@@ -328,6 +357,7 @@ def _live_restart_only_widgets(window: MainWindow) -> list[Any]:
 
 
 def _set_live_controls_running(window: MainWindow, running: bool) -> None:
+    window._live_controls_running = running
     for widget in _live_restart_only_widgets(window):
         widget.setEnabled(not running)
     start_button = getattr(window, "live_start_btn", None)
@@ -339,14 +369,16 @@ def _set_live_controls_running(window: MainWindow, running: bool) -> None:
     note = getattr(window, "live_restart_note", None)
     if note is not None:
         note.setVisible(running)
+    _update_capture_custom_controls(window)
 
 
 def _update_capture_custom_controls(window: MainWindow) -> None:
     is_custom = getattr(window, "live_capture_mode", None) is not None and window.live_capture_mode.currentText() == "custom"
+    enabled = is_custom and not getattr(window, "_live_controls_running", False)
     for widget_name in ("live_capture_width", "live_capture_height"):
         widget = getattr(window, widget_name, None)
         if widget is not None:
-            widget.setEnabled(is_custom)
+            widget.setEnabled(enabled)
 
 
 def _apply_live_hot_change(self: MainWindow) -> None:
@@ -478,7 +510,7 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_capture_mode = QComboBox()
     self.live_capture_mode.addItems(list(LIVE_CAPTURE_MODES))
     self.live_capture_mode.setToolTip(
-        "Auto requests the current OBS profile canvas size when available, then verifies the real decoded frame. Custom forces the width/height below."
+        "Auto requests the current OBS profile canvas size when available, opencv_auto lets OpenCV negotiate, and custom forces the width/height below."
     )
     self.live_capture_width = QSpinBox()
     self.live_capture_width.setRange(2, 4096)
