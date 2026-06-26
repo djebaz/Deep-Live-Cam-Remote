@@ -2,94 +2,52 @@ from __future__ import annotations
 
 from typing import Any
 
-from windows_app import output_tasks as async_base
 from windows_app import main_window_ui as ui_base
-from windows_app import app_base as base
-
-
-PROCESSING_OPTION_KEYS = (
-    "recursive",
-    "overwrite",
-    "skip_processed",
-    "many_faces",
-    "enhancer",
-    "opacity",
-    "sharpness",
-    "mouth_mask_size",
-    "interpolation_weight",
-    "poisson_blend",
-    "color_correction",
+from windows_app import output_tasks as output_tasks_base
+from windows_app.settings import (
+    AppSettings,
+    PROCESSING_OPTION_KEYS,
+    apply_processing_options_to_settings,
+    coerce_processing_options,
+    default_processing_options,
+    legacy_processing_options,
+    load_settings as _load_settings,
+    save_settings as _save_settings,
+    settings_options,
 )
+from windows_app.window_core import WindowCore as MainWindow
+from windows_app.workers import PollWorker
 
 
 def _default_processing_options() -> dict[str, Any]:
-    defaults = base.AppSettings()
-    return {key: getattr(defaults, key) for key in PROCESSING_OPTION_KEYS}
+    return default_processing_options()
 
 
 def _legacy_processing_options(data: dict[str, Any] | None = None) -> dict[str, Any]:
-    options = _default_processing_options()
-    if data:
-        for key in PROCESSING_OPTION_KEYS:
-            if key in data:
-                options[key] = data[key]
-    return options
+    return legacy_processing_options(data)
 
 
 def _coerce_processing_options(value: object, fallback: dict[str, Any]) -> dict[str, Any]:
-    options = dict(fallback)
-    if isinstance(value, dict):
-        for key in PROCESSING_OPTION_KEYS:
-            if key in value:
-                options[key] = value[key]
-    return options
+    return coerce_processing_options(value, fallback)
 
 
-def load_settings() -> base.AppSettings:
-    data: dict[str, Any] = {}
-    if base.APP_STATE.is_file():
-        try:
-            loaded = base.json.loads(base.APP_STATE.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception:
-            data = {}
-
-    defaults = base.asdict(base.AppSettings())
-    valid_fields = set(base.AppSettings.__dataclass_fields__)
-    kwargs = {key: data.get(key, defaults[key]) for key in valid_fields if key in defaults}
-    settings = base.AppSettings(**kwargs)
-
-    legacy = _legacy_processing_options(data)
-    settings.photos_options = _coerce_processing_options(data.get("photos_options"), legacy)
-    settings.videos_options = _coerce_processing_options(data.get("videos_options"), legacy)
-
-    # Keep legacy flat fields aligned with Photos for the initial Photos tab build.
-    _apply_processing_options_to_settings(settings, "photos")
-    return settings
+def load_settings() -> AppSettings:
+    return _load_settings()
 
 
-def save_settings(settings: base.AppSettings) -> None:
-    data = base.asdict(settings)
-    legacy = _legacy_processing_options(data)
-    data["photos_options"] = _coerce_processing_options(getattr(settings, "photos_options", None), legacy)
-    data["videos_options"] = _coerce_processing_options(getattr(settings, "videos_options", None), legacy)
-    base.APP_STATE.write_text(base.json.dumps(data, indent=2) + "\n", encoding="utf-8")
+def save_settings(settings: AppSettings) -> None:
+    _save_settings(settings)
 
 
-def _settings_options(settings: base.AppSettings, kind: str) -> dict[str, Any]:
-    return _coerce_processing_options(
-        getattr(settings, f"{kind}_options", None),
-        _legacy_processing_options(base.asdict(settings)),
-    )
+def _settings_options(settings: AppSettings, kind: str) -> dict[str, Any]:
+    return settings_options(settings, kind)
 
 
-def _apply_processing_options_to_settings(settings: base.AppSettings, kind: str) -> None:
-    for key, value in _settings_options(settings, kind).items():
-        setattr(settings, key, value)
+def _apply_processing_options_to_settings(settings: AppSettings, kind: str) -> None:
+    apply_processing_options_to_settings(settings, kind)
 
 
-def _read_processing_options(window: base.MainWindow, kind: str) -> dict[str, Any]:
+def _read_processing_options(window: MainWindow, kind: str) -> dict[str, Any]:
     if kind == "videos" and hasattr(window, "v_enhancer"):
         return {
             "recursive": window.v_recursive.isChecked(),
@@ -121,7 +79,7 @@ def _read_processing_options(window: base.MainWindow, kind: str) -> dict[str, An
     return _settings_options(window.settings, kind)
 
 
-def _apply_processing_options_to_widgets(window: base.MainWindow, kind: str) -> None:
+def _apply_processing_options_to_widgets(window: MainWindow, kind: str) -> None:
     options = _settings_options(window.settings, kind)
     if kind == "photos" and hasattr(window, "enhancer"):
         window.recursive.setChecked(bool(options["recursive"]))
@@ -135,6 +93,12 @@ def _apply_processing_options_to_widgets(window: base.MainWindow, kind: str) -> 
         window.interpolation_weight.setValue(float(options["interpolation_weight"]))
         window.poisson_blend.setChecked(bool(options["poisson_blend"]))
         window.color_correction.setChecked(bool(options["color_correction"]))
+        if hasattr(window, "photos_max_width"):
+            window.photos_max_width.setValue(int(getattr(window.settings, "photo_max_width", 0)))
+            window.photos_quality.setValue(int(getattr(window.settings, "photo_quality", 95)))
+            window.photos_detector_size.setValue(int(getattr(window.settings, "photo_detector_size", 640)))
+            window.photos_face_model_pack.setCurrentText(str(getattr(window.settings, "photo_face_model_pack", "buffalo_l")))
+            window.photos_swapper_precision.setCurrentText(str(getattr(window.settings, "photo_swapper_precision", "fp32")))
     if kind == "videos" and hasattr(window, "v_enhancer"):
         window.v_recursive.setChecked(bool(options["recursive"]))
         window.v_overwrite.setChecked(bool(options["overwrite"]))
@@ -149,7 +113,18 @@ def _apply_processing_options_to_widgets(window: base.MainWindow, kind: str) -> 
         window.v_color_correction.setChecked(bool(options["color_correction"]))
 
 
-def sync_settings(self: base.MainWindow) -> None:
+def _sync_photo_advanced_settings(self: MainWindow) -> None:
+    if not hasattr(self, "photos_max_width"):
+        return
+    self.settings.photo_max_width = int(self.photos_max_width.value())
+    self.settings.photo_quality = int(self.photos_quality.value())
+    detector_size = int(self.photos_detector_size.value())
+    self.settings.photo_detector_size = max(32, detector_size // 32 * 32)
+    self.settings.photo_face_model_pack = self.photos_face_model_pack.currentText()
+    self.settings.photo_swapper_precision = self.photos_swapper_precision.currentText()
+
+
+def sync_settings(self: MainWindow) -> None:
     self.settings.host = self.host.text().strip()
     self.settings.port = int(self.port.value())
     self.settings.drive_root = self.drive_root.text().strip()
@@ -170,23 +145,26 @@ def sync_settings(self: base.MainWindow) -> None:
     self.settings.quality = int(self.quality.value())
     self.settings.start_pct = float(self.start_pct.value())
     self.settings.end_pct = float(self.end_pct.value())
+    _sync_photo_advanced_settings(self)
     self.settings.camera_index = int(self.camera_index.value())
     self.settings.virtual_camera = self.virtual_camera.text().strip()
-    base.save_settings(self.settings)
+    _save_settings(self.settings)
 
 
-def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
+def _start_batch_with_status(self: MainWindow, kind: str) -> None:
     self.sync_settings()
     _apply_processing_options_to_settings(self.settings, kind)
-    base.save_settings(self.settings)
-    async_base._ensure_output_worker_state(self)
-    settings = async_base._copy_settings(self.settings)
+    if kind == "photos":
+        _sync_photo_advanced_settings(self)
+    _save_settings(self.settings)
+    output_tasks_base._ensure_output_worker_state(self)
+    settings = output_tasks_base._copy_settings(self.settings)
     self.log(f"starting {kind} batch...")
     ui_base._set_process_status(self, kind, f"Starting {kind} batch...")
     ui_base._set_batch_button_running(self, kind)
 
     def task() -> dict[str, Any]:
-        return async_base._prepare_and_start_batch(settings, kind)
+        return output_tasks_base._prepare_and_start_batch(settings, kind)
 
     def on_job_finished(status: str, batch_kind: str) -> None:
         self.log(f"job finished: {status}")
@@ -203,11 +181,16 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
             self.log(line_text)
             ui_base._set_process_status(self, kind, line_text)
         response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+        if response.get("skipped"):
+            skipped_count = int(response.get("skipped_count") or 0)
+            ui_base._set_batch_button_idle(self, kind)
+            ui_base._set_process_status(self, kind, f"{kind} batch skipped: {skipped_count} already processed file(s)")
+            return
         self.active_job_id = response.get("job_id")
         if self.active_job_id:
             if self.poller:
                 self.poller.stop()
-            self.poller = base.PollWorker(self.client, self.active_job_id)
+            self.poller = PollWorker(self.client, self.active_job_id)
             self.poller.message.connect(lambda text, batch_kind=kind: ui_base._poll_message(self, batch_kind, text))
             self.poller.finished_status.connect(lambda status, batch_kind=kind: on_job_finished(status, batch_kind))
             self.poller.start()
@@ -224,7 +207,7 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
         self.log(text)
         ui_base._set_batch_button_idle(self, kind)
 
-    self.output_batch_task_id = async_base._start_output_task(
+    self.output_batch_task_id = output_tasks_base._start_output_task(
         self,
         f"Starting {kind} batch...",
         task,
@@ -233,27 +216,19 @@ def _start_batch_with_status(self: base.MainWindow, kind: str) -> None:
     )
 
 
-def start_photos(self: base.MainWindow) -> None:
+def start_photos(self: MainWindow) -> None:
     _start_batch_with_status(self, "photos")
 
 
-def start_videos(self: base.MainWindow) -> None:
+def start_videos(self: MainWindow) -> None:
     _start_batch_with_status(self, "videos")
 
 
-def _build_photos_tab(self: base.MainWindow) -> None:
+def _build_photos_tab(self: MainWindow) -> None:
     ui_base._build_photos_tab(self)
     _apply_processing_options_to_widgets(self, "photos")
 
 
-def _build_videos_tab(self: base.MainWindow) -> None:
+def _build_videos_tab(self: MainWindow) -> None:
     ui_base._build_videos_tab(self)
     _apply_processing_options_to_widgets(self, "videos")
-
-
-class ProcessingOptionsMixin:
-    _build_photos_tab = _build_photos_tab
-    _build_videos_tab = _build_videos_tab
-    sync_settings = sync_settings
-    start_photos = start_photos
-    start_videos = start_videos

@@ -43,7 +43,7 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v7"
+API_VERSION = "live-fast-detect-v8"
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 LIVE_FRAME_CODECS = {"jpeg", "webp"}
@@ -75,6 +75,7 @@ class JobRequest(BaseModel):
     interpolation_weight: float = 0.0
     max_fps: float = 30.0
     max_width: int = 420
+    output_max_width: int | None = None
     quality: int = 18
     encoder: str = "auto"
     start_pct: float = 0.0
@@ -179,6 +180,24 @@ def ensure_local_layout() -> dict[str, str]:
 def safe_upload_name(filename: str | None, fallback: str) -> str:
     name = Path(filename or fallback).name
     return name or fallback
+
+
+def safe_batch_id(batch_id: str | None) -> str | None:
+    if not batch_id:
+        return None
+    normalized = "".join(char for char in batch_id if char.isalnum() or char in {"-", "_"})
+    if not normalized:
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+    return normalized[:80]
+
+
+def batch_upload_dir(base_dir: Path, batch_id: str | None) -> Path:
+    normalized = safe_batch_id(batch_id)
+    if not normalized:
+        return base_dir
+    destination = base_dir / "batches" / normalized
+    destination.mkdir(parents=True, exist_ok=True)
+    return destination
 
 
 def upload_destination(kind: str, filename: str | None) -> tuple[Path, dict[str, str]]:
@@ -627,25 +646,27 @@ async def upload_source(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 @app.post("/upload/photos")
-async def upload_photos(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def upload_photos(files: list[UploadFile] = File(...), batch_id: str | None = None) -> dict[str, Any]:
     paths = ensure_local_layout()
+    upload_dir = batch_upload_dir(LOCAL_PHOTOS_DIR, batch_id)
     uploaded = []
     for file in files:
-        dest = LOCAL_PHOTOS_DIR / safe_upload_name(file.filename, f"photo_{len(uploaded)}.jpg")
+        dest = upload_dir / safe_upload_name(file.filename, f"photo_{len(uploaded)}.jpg")
         size = await write_upload(file, dest)
         uploaded.append({"path": str(dest), "size": size})
-    return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": paths["photos_dir"], "output_dir": paths["output_photos_dir"]}
+    return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": str(upload_dir), "output_dir": paths["output_photos_dir"], "batch_id": safe_batch_id(batch_id)}
 
 
 @app.post("/upload/videos")
-async def upload_videos(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def upload_videos(files: list[UploadFile] = File(...), batch_id: str | None = None) -> dict[str, Any]:
     paths = ensure_local_layout()
+    upload_dir = batch_upload_dir(LOCAL_VIDEOS_DIR, batch_id)
     uploaded = []
     for file in files:
-        dest = LOCAL_VIDEOS_DIR / safe_upload_name(file.filename, f"video_{len(uploaded)}.mp4")
+        dest = upload_dir / safe_upload_name(file.filename, f"video_{len(uploaded)}.mp4")
         size = await write_upload(file, dest)
         uploaded.append({"path": str(dest), "size": size})
-    return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": paths["videos_dir"], "output_dir": paths["output_videos_dir"]}
+    return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": str(upload_dir), "output_dir": paths["output_videos_dir"], "batch_id": safe_batch_id(batch_id)}
 
 
 @app.delete("/upload/clear")
@@ -664,6 +685,8 @@ def clear_uploads() -> dict[str, Any]:
 def start_photos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
     argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR)]
+    if request.output_max_width is not None:
+        argv.extend(["--output-max-width", str(request.output_max_width)])
     job = start_job("photos", argv)
     return {"job_id": job.job_id, "status": job.status}
 

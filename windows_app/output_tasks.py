@@ -1,175 +1,38 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import uuid
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QImage, QImageReader, QPixmap
-from PySide6.QtWidgets import QFileDialog, QListWidgetItem
+from PySide6.QtGui import QImageReader, QPixmap
+from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem
 
-from windows_app import app_base as base
+from windows_app.api_client import ApiClient, format_size, is_local_path, job_payload, local_files
+from windows_app.task_runner import (
+    OutputTaskWorker,
+    _download_bytes_with_progress,
+    _download_file_fast,
+    _ensure_output_worker_state,
+    _start_output_task,
+    _start_output_task_with_progress,
+)
+from windows_app.settings import AppSettings, PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
+from windows_app.window_core import WindowCore as MainWindow
+from windows_app.workers import PollWorker
 
-DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64KB for smooth progress updates
-
-
-class OutputTaskWorker(QThread):
-    succeeded = Signal(str, object)
-    failed = Signal(str, str)
-    progress = Signal(str, int, int)  # task_id, current, total
-
-    def __init__(self, task_id: str, task: Callable[[], object]):
-        super().__init__()
-        self.task_id = task_id
-        self.task = task
-
-    def run(self) -> None:
-        try:
-            self.succeeded.emit(self.task_id, self.task())
-        except Exception as exc:
-            self.failed.emit(self.task_id, str(exc))
-
-    def report_progress(self, current: int, total: int) -> None:
-        self.progress.emit(self.task_id, current, total)
+MAX_UPLOAD_FILES = 1000
+OUTPUT_SUFFIX = "_face_swapped"
 
 
-def _download_file_fast(
-    client: base.ApiClient,
-    path: str,
-    destination: Path,
-    timeout: float = 900.0,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> Path:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with base.urllib.request.urlopen(client.url(path), timeout=timeout) as response, destination.open("wb") as handle:
-        total_size = int(response.headers.get("Content-Length", 0))
-        downloaded = 0
-        while True:
-            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
-            if not chunk:
-                break
-            handle.write(chunk)
-            downloaded += len(chunk)
-            if progress_callback and total_size > 0:
-                progress_callback(downloaded, total_size)
-    return destination
-
-
-def _download_bytes_with_progress(
-    client: base.ApiClient,
-    path: str,
-    timeout: float = 20.0,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> bytes:
-    with base.urllib.request.urlopen(client.url(path), timeout=timeout) as response:
-        total_size = int(response.headers.get("Content-Length", 0))
-        chunks = []
-        downloaded = 0
-        while True:
-            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            downloaded += len(chunk)
-            if progress_callback:
-                progress_callback(downloaded, total_size)
-        return b"".join(chunks)
-
-
-def _ensure_output_worker_state(window: base.MainWindow) -> None:
-    if not hasattr(window, "output_workers"):
-        window.output_workers = {}
-    if not hasattr(window, "output_refresh_task_id"):
-        window.output_refresh_task_id = ""
-    if not hasattr(window, "output_preview_task_id"):
-        window.output_preview_task_id = ""
-    if not hasattr(window, "output_download_task_id"):
-        window.output_download_task_id = ""
-    if not hasattr(window, "output_health_task_id"):
-        window.output_health_task_id = ""
-    if not hasattr(window, "output_batch_task_id"):
-        window.output_batch_task_id = ""
-
-
-def _start_output_task(
-    window: base.MainWindow,
-    status: str,
-    task: Callable[[], object],
-    on_success: Callable[[str, object], None],
-    on_failure: Callable[[str, str], None],
-    on_progress: Callable[[str, int, int], None] | None = None,
-) -> str:
-    _ensure_output_worker_state(window)
-    task_id = uuid.uuid4().hex
-    worker = OutputTaskWorker(task_id, task)
-    window.output_workers[task_id] = worker
-    window.output_status.setText(status)
-    worker.succeeded.connect(on_success)
-    worker.failed.connect(on_failure)
-    if on_progress:
-        worker.progress.connect(on_progress)
-    worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
-    worker.start()
-    return task_id
-
-
-def _start_output_task_with_progress(
-    window: base.MainWindow,
-    status: str,
-    task_factory: Callable[[Callable[[int, int], None]], object],
-    on_success: Callable[[str, object], None],
-    on_failure: Callable[[str, str], None],
-) -> str:
-    """Start a task that can report progress via a callback."""
-    _ensure_output_worker_state(window)
-    task_id = uuid.uuid4().hex
-
-    def on_progress(_tid: str, current: int, total: int) -> None:
-        if not hasattr(window, "outputs_progress"):
-            return
-        window.outputs_progress.show()
-        if total > 0:
-            pct = int(current / total * 100)
-            window.outputs_progress.setMaximum(100)
-            window.outputs_progress.setValue(pct)
-            window.output_status.setText(f"Loading... {pct}%")
-        else:
-            # Unknown total size - show indeterminate with bytes downloaded
-            window.outputs_progress.setMaximum(0)
-            window.output_status.setText(f"Loading... {base.format_size(current)}")
-        window.outputs_progress.repaint()
-        base.QApplication.processEvents()
-
-    # Create a mutable container for worker reference
-    worker_holder: list[OutputTaskWorker] = []
-
-    def progress_callback(current: int, total: int) -> None:
-        if worker_holder:
-            worker_holder[0].report_progress(current, total)
-
-    def wrapped_task() -> object:
-        return task_factory(progress_callback)
-
-    worker = OutputTaskWorker(task_id, wrapped_task)
-    worker_holder.append(worker)
-    window.output_workers[task_id] = worker
-    window.output_status.setText(status)
-    worker.succeeded.connect(on_success)
-    worker.failed.connect(on_failure)
-    # Use QueuedConnection to ensure signal is processed in main thread
-    worker.progress.connect(on_progress, Qt.QueuedConnection)
-    worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
-    worker.start()
-    return task_id
-
-
-def _copy_settings(settings: base.AppSettings) -> base.AppSettings:
-    return base.AppSettings(**base.asdict(settings))
+def _copy_settings(settings: AppSettings) -> AppSettings:
+    return AppSettings(**asdict(settings))
 
 
 def _source_upload_path(path: Path) -> tuple[Path, str | None]:
-    if path.suffix.lower() not in base.PHOTO_EXTENSIONS:
+    if path.suffix.lower() not in PHOTO_EXTENSIONS:
         return path, None
     reader = QImageReader(str(path))
     reader.setAutoTransform(True)
@@ -184,13 +47,83 @@ def _source_upload_path(path: Path) -> tuple[Path, str | None]:
     return path, None
 
 
-def _prepare_and_start_batch(settings: base.AppSettings, kind: str) -> dict[str, Any]:
-    client = base.ApiClient(settings)
+def _expected_output_names(path: Path) -> set[str]:
+    suffix = path.suffix
+    names = {f"{path.stem}{OUTPUT_SUFFIX}{suffix}"}
+    if suffix.lower() != suffix:
+        names.add(f"{path.stem}{OUTPUT_SUFFIX}{suffix.lower()}")
+    return {name.lower() for name in names}
+
+
+def _remote_output_names(payload: object) -> set[str]:
+    names: set[str] = set()
+    files = (payload if isinstance(payload, dict) else {}).get("files") or []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "relative_path", "download_path"):
+            value = item.get(key)
+            if not value:
+                continue
+            text = str(value).replace("\\", "/")
+            names.add(text.lower())
+            names.add(text.rsplit("/", 1)[-1].lower())
+    return names
+
+
+def _filter_processed_local_files(client: ApiClient, kind: str, files: list[Path], logs: list[str]) -> list[Path]:
+    payload = client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
+    output_names = _remote_output_names(payload)
+    if not output_names:
+        logs.append(f"skip_processed preflight: no existing remote {kind} outputs found")
+        return files
+
+    pending: list[Path] = []
+    skipped: list[Path] = []
+    for file_path in files:
+        expected_names = _expected_output_names(file_path)
+        if expected_names & output_names:
+            skipped.append(file_path)
+        else:
+            pending.append(file_path)
+
+    if skipped:
+        logs.append(
+            f"skip_processed preflight: {len(skipped)} local {kind} file(s) already have matching remote outputs; "
+            f"{len(pending)} remain"
+        )
+        sample = ", ".join(path.name for path in skipped[:5])
+        if sample:
+            suffix = "..." if len(skipped) > 5 else ""
+            logs.append(f"skip_processed sample: {sample}{suffix}")
+    else:
+        logs.append(f"skip_processed preflight: no matching remote outputs for {len(files)} local {kind} file(s)")
+    return pending
+
+
+def _isolated_upload_endpoint(kind: str) -> tuple[str, str]:
+    batch_id = uuid.uuid4().hex
+    return f"/upload/{kind}?batch_id={batch_id}", batch_id
+
+
+def _require_isolated_input_dir(kind: str, batch_id: str, response: dict[str, Any]) -> str:
+    input_dir = str(response.get("input_dir") or "")
+    normalized = input_dir.replace("\\", "/")
+    if f"/{batch_id}" not in normalized and not normalized.endswith(f"/{batch_id}"):
+        raise RuntimeError(
+            f"Colab API did not return an isolated {kind} upload directory for batch {batch_id}. "
+            "Restart/update the Colab API server so /upload/photos and /upload/videos support batch_id."
+        )
+    return input_dir
+
+
+def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]:
+    client = ApiClient(settings)
     logs: list[str] = ["checking Colab API before starting batch"]
     client.request_json("GET", "/health", timeout=5.0)
 
     source_face = settings.source_face
-    if base.is_local_path(source_face):
+    if is_local_path(source_face):
         source_path = Path(source_face)
         if not source_path.is_file():
             raise FileNotFoundError(f"Local source face does not exist: {source_face}")
@@ -206,27 +139,48 @@ def _prepare_and_start_batch(settings: base.AppSettings, kind: str) -> dict[str,
     output_path = settings.photos_output if kind == "photos" else settings.videos_output
     input_dir = input_path
     output_dir = output_path
-    if base.is_local_path(input_path):
-        extensions = base.PHOTO_EXTENSIONS if kind == "photos" else base.VIDEO_EXTENSIONS
-        files = base.local_files(input_path, extensions, settings.recursive)
+    if is_local_path(input_path):
+        extensions = PHOTO_EXTENSIONS if kind == "photos" else VIDEO_EXTENSIONS
+        files = local_files(input_path, extensions, settings.recursive)
         if not files:
             raise FileNotFoundError(f"No supported {kind} files found in local path: {input_path}")
-        logs.append(f"uploading {len(files)} local {kind} file(s)")
-        response = client.upload_files(f"/upload/{kind}", files, timeout=600.0)
-        input_dir = str(response.get("input_dir") or input_path)
-        if base.is_local_path(output_path):
+        original_count = len(files)
+        if settings.skip_processed:
+            files = _filter_processed_local_files(client, kind, files, logs)
+            if not files:
+                logs.append(f"skip_processed preflight: all {original_count} local {kind} file(s) already have matching outputs; no job started")
+                return {
+                    "endpoint": None,
+                    "response": {
+                        "status": "skipped",
+                        "skipped": True,
+                        "skipped_count": original_count,
+                        "remaining_count": 0,
+                    },
+                    "logs": logs,
+                }
+        if len(files) > MAX_UPLOAD_FILES:
+            raise ValueError(
+                f"Too many {kind} files for one upload after skip_processed preflight: {len(files)}. "
+                f"Backend maximum is {MAX_UPLOAD_FILES}; select a smaller folder/subset."
+            )
+        upload_endpoint, batch_id = _isolated_upload_endpoint(kind)
+        logs.append(f"uploading {len(files)} local {kind} file(s) to isolated batch {batch_id}")
+        response = client.upload_files(upload_endpoint, files, timeout=600.0)
+        input_dir = _require_isolated_input_dir(kind, batch_id, response)
+        if is_local_path(output_path):
             output_dir = str(response.get("output_dir") or output_path)
             logs.append(f"local output path is not reachable from Colab; using: {output_dir}")
-        logs.append(f"{kind} uploaded to: {input_dir}")
+        logs.append(f"{kind} uploaded to isolated input dir: {input_dir}")
 
     endpoint = "/jobs/photos" if kind == "photos" else "/jobs/videos"
-    payload = base.job_payload(settings, input_dir, output_dir, source_face)
+    payload = job_payload(settings, input_dir, output_dir, source_face)
     response = client.request_json("POST", endpoint, payload, timeout=10.0)
     logs.append(f"started {endpoint}: {response}")
     return {"endpoint": endpoint, "response": response, "logs": logs}
 
 
-def _start_batch(self: base.MainWindow, kind: str) -> None:
+def _start_batch(self: MainWindow, kind: str) -> None:
     self.sync_settings()
     self.tabs.setCurrentWidget(self.log_box)
     _ensure_output_worker_state(self)
@@ -243,11 +197,14 @@ def _start_batch(self: base.MainWindow, kind: str) -> None:
         for line in payload.get("logs") or []:
             self.log(str(line))
         response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+        if response.get("skipped"):
+            self.output_status.setText(f"{kind} batch skipped: already processed")
+            return
         self.active_job_id = response.get("job_id")
         if self.active_job_id:
             if self.poller:
                 self.poller.stop()
-            self.poller = base.PollWorker(self.client, self.active_job_id)
+            self.poller = PollWorker(self.client, self.active_job_id)
             self.poller.message.connect(self.log)
             self.poller.finished_status.connect(lambda status: self.log(f"job finished: {status}"))
             self.poller.start()
@@ -262,15 +219,15 @@ def _start_batch(self: base.MainWindow, kind: str) -> None:
     self.output_batch_task_id = _start_output_task(self, f"Starting {kind} batch...", task, succeeded, failed)
 
 
-def start_photos(self: base.MainWindow) -> None:
+def start_photos(self: MainWindow) -> None:
     _start_batch(self, "photos")
 
 
-def start_videos(self: base.MainWindow) -> None:
+def start_videos(self: MainWindow) -> None:
     _start_batch(self, "videos")
 
 
-def refresh_outputs(self: base.MainWindow) -> None:
+def refresh_outputs(self: MainWindow) -> None:
     self.sync_settings()
     _ensure_output_worker_state(self)
     kind = self.outputs_kind.currentText()
@@ -286,7 +243,7 @@ def refresh_outputs(self: base.MainWindow) -> None:
         self.outputs_progress.setMaximum(0)
         self.outputs_progress.show()
         self.outputs_progress.repaint()
-        base.QApplication.processEvents()
+        QApplication.processEvents()
 
     def fetch() -> dict[str, Any]:
         return self.client.request_json("GET", f"/outputs/{kind}", timeout=30.0)
@@ -304,7 +261,7 @@ def refresh_outputs(self: base.MainWindow) -> None:
             self.outputs_progress.setValue(0)
             self.outputs_progress.repaint()
         for idx, item in enumerate(self.output_files):
-            label = f"[{item.get('source')}] {item.get('relative_path')} ({base.format_size(item.get('size'))})"
+            label = f"[{item.get('source')}] {item.get('relative_path')} ({format_size(item.get('size'))})"
             self.outputs_list.addItem(QListWidgetItem(label))
             if has_progress:
                 progress = int((idx + 1) / total * 100) if total > 0 else 0
@@ -314,7 +271,7 @@ def refresh_outputs(self: base.MainWindow) -> None:
             if idx % 10 == 0 or idx == total - 1:
                 if has_progress:
                     self.outputs_progress.repaint()
-                base.QApplication.processEvents()
+                QApplication.processEvents()
         if has_progress:
             self.outputs_progress.hide()
         self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
@@ -336,128 +293,45 @@ def refresh_outputs(self: base.MainWindow) -> None:
     self.output_refresh_task_id = _start_output_task(self, "Refreshing outputs...", fetch, succeeded, failed)
 
 
-def show_output_at(self: base.MainWindow, index: int) -> None:
-    if index < 0 or index >= len(self.output_files):
+def cancel_job(self: MainWindow) -> None:
+    self.sync_settings()
+    if not self.active_job_id:
+        self.log("no active job")
+        if hasattr(self, "photos_status"):
+            self.photos_status.setText("No active job")
+        if hasattr(self, "videos_status"):
+            self.videos_status.setText("No active job")
         return
-    self.output_current_loaded = False
-    _ensure_output_worker_state(self)
-    item = dict(self.output_files[index])
-    kind = self.outputs_kind.currentText()
-    path = str(item.get("download_path") or "")
-    file_size = int(item.get("size") or 0)
-    if not path:
-        self.output_status.setText("selected output has no download path")
-        self.output_current_loaded = True
-        return
-    self.stop_output_video()
-    if kind == "photos":
-        self.output_preview.setPixmap(QPixmap())
-        size_str = base.format_size(file_size) if file_size > 0 else ""
-        self.output_preview.setText(f"Loading photo preview... {size_str}")
-        # Show progress bar (starts at 0)
-        if hasattr(self, "outputs_progress"):
-            self.outputs_progress.setMinimum(0)
-            self.outputs_progress.setMaximum(100)
-            self.outputs_progress.setValue(0)
-            self.outputs_progress.show()
-            self.outputs_progress.repaint()
-
-        def fetch_photo(progress_cb: Callable[[int, int], None]) -> bytes:
-            return _download_bytes_with_progress(self.client, path, timeout=20.0, progress_callback=progress_cb)
-
-        def photo_ready(task_id: str, data: object) -> None:
-            if task_id != self.output_preview_task_id:
-                return
-            if hasattr(self, "outputs_progress"):
-                self.outputs_progress.hide()
-            if self.output_video is not None:
-                self.output_video.hide()
-            self.output_preview.show()
-            image = QImage.fromData(data if isinstance(data, bytes) else bytes(data))
-            if image.isNull():
-                self.output_status.setText("preview failed: downloaded image could not be decoded")
-                self.output_current_loaded = True
-                return
-            pixmap = QPixmap.fromImage(image).scaled(self.output_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.output_preview.setPixmap(pixmap)
-            self.output_status.setText(f"Showing {item.get('relative_path')} from {item.get('source')}")
-            self.output_current_loaded = True
-
-        def photo_failed(task_id: str, error: str) -> None:
-            if task_id != self.output_preview_task_id:
-                return
-            if hasattr(self, "outputs_progress"):
-                self.outputs_progress.hide()
-            self.output_status.setText(f"preview failed: {error}")
-            self.log(f"output preview failed: {error}")
-            self.output_current_loaded = True
-
-        self.output_preview_task_id = _start_output_task_with_progress(self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed)
-        return
-
-    self.show_video_output(item)
+    try:
+        payload = self.client.request_json("POST", "/jobs/cancel", {"job_id": self.active_job_id})
+        text = "cancel: " + json.dumps(payload)
+        self.log(text)
+        if hasattr(self, "photos_status"):
+            self.photos_status.setText("Cancel requested")
+        if hasattr(self, "videos_status"):
+            self.videos_status.setText("Cancel requested")
+    except Exception as exc:
+        text = f"cancel failed: {exc}"
+        self.log(text)
+        if hasattr(self, "photos_status"):
+            self.photos_status.setText(text)
+        if hasattr(self, "videos_status"):
+            self.videos_status.setText(text)
 
 
-def show_video_output(self: base.MainWindow, item: dict[str, Any]) -> None:
-    _ensure_output_worker_state(self)
-    path = str(item.get("download_path") or "")
-    file_size = int(item.get("size") or 0)
-    relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
-    safe_relative = relative.replace("/", "_").replace("\\", "_")
-    local_name = f"{item.get('source', 'output')}_{safe_relative}"
-    local_path = self.output_temp_dir / local_name
-    self.output_preview.setPixmap(QPixmap())
-    size_str = base.format_size(file_size) if file_size > 0 else ""
-    self.output_preview.setText(f"Loading video preview:\n{relative}\n{size_str}")
-    # Show progress bar (starts at 0)
-    if hasattr(self, "outputs_progress"):
-        self.outputs_progress.setMinimum(0)
-        self.outputs_progress.setMaximum(100)
-        self.outputs_progress.setValue(0)
-        self.outputs_progress.show()
-        self.outputs_progress.repaint()
+def show_output_at(self: MainWindow, index: int) -> None:
+    from windows_app import output_browser
 
-    def fetch_video(progress_cb: Callable[[int, int], None]) -> dict[str, str]:
-        if not local_path.exists() or local_path.stat().st_size != file_size:
-            _download_file_fast(self.client, path, local_path, timeout=900.0, progress_callback=progress_cb)
-        return {"relative": relative, "local_path": str(local_path)}
-
-    def video_ready(task_id: str, result: object) -> None:
-        if task_id != self.output_preview_task_id:
-            return
-        if hasattr(self, "outputs_progress"):
-            self.outputs_progress.hide()
-        payload = result if isinstance(result, dict) else {}
-        ready_relative = str(payload.get("relative") or relative)
-        ready_path = Path(str(payload.get("local_path") or local_path))
-        if self.output_player is None or self.output_video is None:
-            self.output_preview.show()
-            self.output_preview.setText(
-                f"Video ready to download:\n{ready_relative}\n\nInstall PySide6 multimedia support for inline playback."
-            )
-            self.output_status.setText(f"Selected video {ready_relative}")
-            self.output_current_loaded = True
-            return
-        self.output_preview.hide()
-        self.output_video.show()
-        self.output_player.setSource(QUrl.fromLocalFile(str(ready_path)))
-        self.output_player.play()
-        self.output_status.setText(f"Playing {ready_relative}")
-        self.output_current_loaded = True
-
-    def video_failed(task_id: str, error: str) -> None:
-        if task_id != self.output_preview_task_id:
-            return
-        if hasattr(self, "outputs_progress"):
-            self.outputs_progress.hide()
-        self.output_status.setText(f"preview failed: {error}")
-        self.log(f"output preview failed: {error}")
-        self.output_current_loaded = True
-
-    self.output_preview_task_id = _start_output_task_with_progress(self, f"Loading video preview: {relative}", fetch_video, video_ready, video_failed)
+    return output_browser.show_output_at(self, index)
 
 
-def download_current_output(self: base.MainWindow) -> None:
+def show_video_output(self: MainWindow, item: dict[str, Any]) -> None:
+    from windows_app import output_browser
+
+    return output_browser.show_video_output(self, item)
+
+
+def download_current_output(self: MainWindow) -> None:
     item = self.current_output()
     if not item:
         self.output_status.setText("No output selected")
@@ -486,7 +360,7 @@ def download_current_output(self: base.MainWindow) -> None:
     self.output_download_task_id = _start_output_task(self, f"Downloading {destination.name}...", download, succeeded, failed)
 
 
-def download_all_outputs(self: base.MainWindow) -> None:
+def download_all_outputs(self: MainWindow) -> None:
     if not self.output_files:
         self.output_status.setText("No outputs to download")
         return
@@ -514,7 +388,7 @@ def download_all_outputs(self: base.MainWindow) -> None:
     self.output_download_task_id = _start_output_task(self, f"Downloading {kind} ZIP...", download_all, succeeded, failed)
 
 
-def check_connection(self: base.MainWindow) -> None:
+def check_connection(self: MainWindow) -> None:
     self.sync_settings()
     self.tabs.setCurrentWidget(self.log_box)
     _ensure_output_worker_state(self)
@@ -526,7 +400,7 @@ def check_connection(self: base.MainWindow) -> None:
     def succeeded(task_id: str, payload: object) -> None:
         if task_id != self.output_health_task_id:
             return
-        self.log("health: " + base.json.dumps(payload, indent=2))
+        self.log("health: " + json.dumps(payload, indent=2))
 
     def failed(task_id: str, error: str) -> None:
         if task_id != self.output_health_task_id:
@@ -536,13 +410,7 @@ def check_connection(self: base.MainWindow) -> None:
     self.output_health_task_id = _start_output_task(self, "Checking connection...", fetch_health, succeeded, failed)
 
 
-class OutputTasksMixin:
-    check_connection = check_connection
-    start_photos = start_photos
-    start_videos = start_videos
-    refresh_outputs = refresh_outputs
-    show_output_at = show_output_at
-    show_video_output = show_video_output
-    download_current_output = download_current_output
-    download_all_outputs = download_all_outputs
-main = base.main
+def main() -> int:
+    from windows_app.app import main as app_main
+
+    return app_main()

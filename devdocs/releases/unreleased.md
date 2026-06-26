@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Added
+- Add a guarded GitHub CLI PR helper script to block accidental PR creation against upstream `hacksider/Deep-Live-Cam`.
 - Add an isolated standalone desktop app build workflow with `.venv_build/`, `requirements-build.txt`, and `scripts/build_remote_app.ps1` for PyInstaller packaging.
 - Add a Lite PyInstaller build mode that excludes Live webcam dependencies (`cv2`, `numpy`, `pyvirtualcam`) for a smaller desktop controller executable.
 - Add versioned PyInstaller artifact naming, versioned `dist/<version>/` output folders, Python-version suffixes, final output checks, and build summary logging.
@@ -26,11 +27,12 @@
   - Sample data cleanup and nvtop installation
 
 ## Changed
+- Continue Windows app modularization by extracting settings, API client, Qt worker, and shared window core ownership from the PR #5 compatibility layer, then replacing broad `app_base as base` GUI imports with explicit module imports, removing Live webcam previous-function capture, removing migration mixin composition, and splitting task running, output browsing, live options, and live preview responsibilities into focused modules.
 - Consolidate the Windows remote app runtime patch layers into normal imported modules and a canonical launcher entrypoint.
 - Notebook now clones from GitHub instead of embedding Python source as a bundle
 - Setup cell is idempotent and pulls latest changes on re-run
 
 ## Release audit
 
-- PRs: #1, #2, #3, #4, #5
-- Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers.
+- PRs: #1, #2, #3, #4, #5, #6
+- Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard.

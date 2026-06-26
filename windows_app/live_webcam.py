@@ -1,168 +1,78 @@
 from __future__ import annotations
 
 import asyncio
-import math
-import time
-from collections import deque
+import json
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtWidgets import QScrollArea
-
-from windows_app import processing_options as processing_options_base
-from windows_app import app_base as base
-from windows_app import output_tasks as async_base
-from windows_app import main_window_ui as ui_base
-
-DEFAULT_LIVE_WIDTH = 1280
-DEFAULT_LIVE_HEIGHT = 720
-DEFAULT_LIVE_FPS = 30
-DEFAULT_LIVE_PIPELINE_FRAMES = 16
-DEFAULT_LIVE_JPEG_QUALITY = 80
-DEFAULT_LIVE_FRAME_CODEC = "jpeg"
-DEFAULT_LIVE_OUTPUT_CODEC = "jpeg"
-LIVE_FRAME_CODECS = ("jpeg", "webp")
-DEFAULT_LIVE_DETECTOR_SIZE = 320
-DEFAULT_LIVE_DETECT_EVERY_N = 1
-DEFAULT_LIVE_FACE_MODEL_PACK = "buffalo_l"
-LIVE_FACE_MODEL_PACKS = ("buffalo_l", "buffalo_m", "buffalo_s")
-DEFAULT_LIVE_SWAPPER_PRECISION = "fp32"
-LIVE_SWAPPER_PRECISIONS = ("fp32", "fp16")
-DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS = 1.0
-DEFAULT_LIVE_PREVIEW_SCALE = "fit"
-LIVE_PREVIEW_SCALES = ("fit", "1x", "1.5x", "2x")
-LIVE_OPTION_KEYS = (
-    "many_faces",
-    "enhancer",
-    "opacity",
-    "sharpness",
-    "mouth_mask_size",
-    "interpolation_weight",
-    "poisson_blend",
-    "color_correction",
-    "max_width",
-    "frame_codec",
-    "output_codec",
-    "jpeg_quality",
-    "detector_size",
-    "detect_every_n",
-    "face_model_pack",
-    "swapper_precision",
-    "cache_source_face",
-    "preview_buffer_seconds",
-    "preview_scale",
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-_previous_load_settings = processing_options_base.load_settings
-_previous_save_settings = processing_options_base.save_settings
-_original_sync_settings = processing_options_base.sync_settings
-_original_close_event = base.MainWindow.closeEvent
-_original_stop_live = ui_base.stop_live
-
-
-def _live_setting(settings: base.AppSettings, name: str, default: int) -> int:
-    try:
-        value = int(getattr(settings, name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(1, value)
-
+from windows_app import main_window_ui as ui_base
+from windows_app import live_preview
+from windows_app import output_tasks as output_tasks_base
+from windows_app import processing_options as processing_options_base
+from windows_app.api_client import ApiClient, is_local_path
+from windows_app.settings import APP_STATE, AppSettings
+from windows_app.live_options import (
+    DEFAULT_LIVE_DETECT_EVERY_N,
+    DEFAULT_LIVE_DETECTOR_SIZE,
+    DEFAULT_LIVE_FACE_MODEL_PACK,
+    DEFAULT_LIVE_FPS,
+    DEFAULT_LIVE_FRAME_CODEC,
+    DEFAULT_LIVE_HEIGHT,
+    DEFAULT_LIVE_JPEG_QUALITY,
+    DEFAULT_LIVE_OUTPUT_CODEC,
+    DEFAULT_LIVE_PIPELINE_FRAMES,
+    DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
+    DEFAULT_LIVE_PREVIEW_SCALE,
+    DEFAULT_LIVE_SWAPPER_PRECISION,
+    DEFAULT_LIVE_WIDTH,
+    LIVE_FACE_MODEL_PACKS,
+    LIVE_FRAME_CODECS,
+    LIVE_PREVIEW_SCALES,
+    LIVE_SWAPPER_PRECISIONS,
+    _apply_live_options_to_settings,
+    _coerce_live_options,
+    _live_options,
+    _live_setting,
+)
+from windows_app.window_core import WindowCore as MainWindow
+from windows_app.workers import LiveWorker as BaseLiveWorker
 
 def _json_payload(text: object) -> dict[str, Any]:
     if not isinstance(text, str):
         return {}
     try:
-        payload = base.json.loads(text)
+        payload = json.loads(text)
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
 
 
-def _status_label(text: str = "") -> base.QLabel:
-    label = base.QLabel(text)
+def _status_label(text: str = "") -> QLabel:
+    label = QLabel(text)
     label.setObjectName("statusLabel")
     label.setWordWrap(True)
     return label
 
 
-def _default_live_options() -> dict[str, Any]:
-    defaults = base.AppSettings()
-    return {
-        "many_faces": False,
-        "enhancer": "none",
-        "opacity": 1.0,
-        "sharpness": 0.0,
-        "mouth_mask_size": 0.0,
-        "interpolation_weight": 0.0,
-        "poisson_blend": False,
-        "color_correction": False,
-        "max_width": defaults.max_width,
-        "frame_codec": DEFAULT_LIVE_FRAME_CODEC,
-        "output_codec": DEFAULT_LIVE_OUTPUT_CODEC,
-        "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
-        "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
-        "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
-        "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
-        "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
-        "cache_source_face": True,
-        "preview_buffer_seconds": DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
-        "preview_scale": DEFAULT_LIVE_PREVIEW_SCALE,
-    }
-
-
-def _coerce_live_options(value: object) -> dict[str, Any]:
-    options = _default_live_options()
-    if isinstance(value, dict):
-        for key in LIVE_OPTION_KEYS:
-            if key in value:
-                options[key] = value[key]
-    options["many_faces"] = bool(options["many_faces"])
-    options["enhancer"] = str(options["enhancer"])
-    options["opacity"] = float(options["opacity"])
-    options["sharpness"] = float(options["sharpness"])
-    options["mouth_mask_size"] = float(options["mouth_mask_size"])
-    options["interpolation_weight"] = float(options["interpolation_weight"])
-    options["poisson_blend"] = bool(options["poisson_blend"])
-    options["color_correction"] = bool(options["color_correction"])
-    options["max_width"] = max(64, int(options["max_width"]))
-    options["frame_codec"] = str(options["frame_codec"]).lower()
-    if options["frame_codec"] not in LIVE_FRAME_CODECS:
-        options["frame_codec"] = DEFAULT_LIVE_FRAME_CODEC
-    options["output_codec"] = str(options["output_codec"]).lower()
-    if options["output_codec"] not in LIVE_FRAME_CODECS:
-        options["output_codec"] = DEFAULT_LIVE_OUTPUT_CODEC
-    options["jpeg_quality"] = max(20, min(95, int(options["jpeg_quality"])))
-    options["detector_size"] = max(160, min(640, int(options["detector_size"])))
-    options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
-    options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
-    options["face_model_pack"] = str(options["face_model_pack"])
-    if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
-        options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
-    options["cache_source_face"] = bool(options["cache_source_face"])
-    options["preview_buffer_seconds"] = max(0.0, min(5.0, float(options["preview_buffer_seconds"])))
-    options["preview_scale"] = str(options["preview_scale"]).lower()
-    if options["preview_scale"] not in LIVE_PREVIEW_SCALES:
-        options["preview_scale"] = DEFAULT_LIVE_PREVIEW_SCALE
-    options["swapper_precision"] = str(options["swapper_precision"]).lower()
-    if options["swapper_precision"] not in LIVE_SWAPPER_PRECISIONS:
-        options["swapper_precision"] = DEFAULT_LIVE_SWAPPER_PRECISION
-    return options
-
-
-def _live_options(settings: base.AppSettings) -> dict[str, Any]:
-    return _coerce_live_options(getattr(settings, "live_options", None))
-
-
-def _apply_live_options_to_settings(settings: base.AppSettings) -> None:
-    options = _live_options(settings)
-    settings.live_options = options
-    for key in LIVE_OPTION_KEYS:
-        if key != "jpeg_quality":
-            setattr(settings, key, options[key])
-    settings.live_jpeg_quality = options["jpeg_quality"]
-
-
-def _source_fields(window: base.MainWindow) -> list[Any]:
+def _source_fields(window: MainWindow) -> list[Any]:
     fields = []
     for name in ("source_face", "video_source_face", "live_source_face"):
         field = getattr(window, name, None)
@@ -171,7 +81,7 @@ def _source_fields(window: base.MainWindow) -> list[Any]:
     return fields
 
 
-def _link_live_source_fields(window: base.MainWindow) -> None:
+def _link_live_source_fields(window: MainWindow) -> None:
     if getattr(window, "_live_source_fields_linked", False):
         return
     fields = _source_fields(window)
@@ -192,7 +102,7 @@ def _link_live_source_fields(window: base.MainWindow) -> None:
     window._live_source_fields_linked = True
 
 
-def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
+def _read_live_options(window: MainWindow) -> dict[str, Any]:
     if not hasattr(window, "live_max_width"):
         return _live_options(window.settings)
     return _coerce_live_options(
@@ -220,7 +130,7 @@ def _read_live_options(window: base.MainWindow) -> dict[str, Any]:
     )
 
 
-def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
+def _apply_live_options_to_widgets(window: MainWindow) -> None:
     if not hasattr(window, "live_max_width"):
         return
     options = _live_options(window.settings)
@@ -246,12 +156,12 @@ def _apply_live_options_to_widgets(window: base.MainWindow) -> None:
         window.live_preview_scale.setCurrentText(str(options["preview_scale"]))
 
 
-def load_settings() -> base.AppSettings:
-    settings = _previous_load_settings()
+def load_settings() -> AppSettings:
+    settings = processing_options_base.load_settings()
     data: dict[str, Any] = {}
-    if base.APP_STATE.is_file():
+    if APP_STATE.is_file():
         try:
-            loaded = base.json.loads(base.APP_STATE.read_text(encoding="utf-8"))
+            loaded = json.loads(APP_STATE.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 data = loaded
         except Exception:
@@ -264,10 +174,10 @@ def load_settings() -> base.AppSettings:
     return settings
 
 
-def save_settings(settings: base.AppSettings) -> None:
-    _previous_save_settings(settings)
+def save_settings(settings: AppSettings) -> None:
+    processing_options_base.save_settings(settings)
     try:
-        data = base.json.loads(base.APP_STATE.read_text(encoding="utf-8")) if base.APP_STATE.is_file() else {}
+        data = json.loads(APP_STATE.read_text(encoding="utf-8")) if APP_STATE.is_file() else {}
         if not isinstance(data, dict):
             data = {}
         data["live_width"] = _live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
@@ -275,39 +185,39 @@ def save_settings(settings: base.AppSettings) -> None:
         data["live_fps"] = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
         data["live_pipeline_frames"] = _live_setting(settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES)
         data["live_options"] = _live_options(settings)
-        base.APP_STATE.write_text(base.json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        APP_STATE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
 
 
-def _build_live_tab(self: base.MainWindow) -> None:
-    tab = base.QWidget()
-    layout = base.QVBoxLayout(tab)
-    splitter = ui_base.QSplitter(ui_base.Qt.Horizontal)
+def _build_live_tab(self: MainWindow) -> None:
+    tab = QWidget()
+    layout = QVBoxLayout(tab)
+    splitter = QSplitter(Qt.Horizontal)
 
-    controls_panel = base.QWidget()
-    controls_layout = base.QVBoxLayout(controls_panel)
-    form = base.QFormLayout()
+    controls_panel = QWidget()
+    controls_layout = QVBoxLayout(controls_panel)
+    form = QFormLayout()
 
-    self.camera_index = base.QSpinBox()
+    self.camera_index = QSpinBox()
     self.camera_index.setRange(0, 20)
     self.camera_index.setValue(self.settings.camera_index)
-    self.virtual_camera = base.QLineEdit(self.settings.virtual_camera)
-    self.live_source_face = base.QLineEdit(self.settings.source_face)
+    self.virtual_camera = QLineEdit(self.settings.virtual_camera)
+    self.live_source_face = QLineEdit(self.settings.source_face)
     live_source_row = self._path_row(
         self.live_source_face,
         lambda: self._browse_file(self.live_source_face, "Select source face image"),
     )
-    self.live_width = base.QSpinBox()
+    self.live_width = QSpinBox()
     self.live_width.setRange(160, 4096)
     self.live_width.setValue(_live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH))
-    self.live_height = base.QSpinBox()
+    self.live_height = QSpinBox()
     self.live_height.setRange(120, 2160)
     self.live_height.setValue(_live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT))
-    self.live_fps = base.QSpinBox()
+    self.live_fps = QSpinBox()
     self.live_fps.setRange(1, 120)
     self.live_fps.setValue(_live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS))
-    self.live_pipeline_frames = base.QSpinBox()
+    self.live_pipeline_frames = QSpinBox()
     self.live_pipeline_frames.setRange(8, 512)
     self.live_pipeline_frames.setValue(_live_setting(self.settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES))
 
@@ -321,52 +231,52 @@ def _build_live_tab(self: base.MainWindow) -> None:
     controls_layout.addLayout(form)
     _link_live_source_fields(self)
 
-    options_box = base.QGroupBox("Live processing options")
-    options_form = base.QFormLayout(options_box)
-    self.live_many_faces = base.QCheckBox()
-    self.live_enhancer = base.QComboBox()
+    options_box = QGroupBox("Live processing options")
+    options_form = QFormLayout(options_box)
+    self.live_many_faces = QCheckBox()
+    self.live_enhancer = QComboBox()
     self.live_enhancer.addItems(["none", "gfpgan", "gpen256", "gpen512"])
-    self.live_opacity = base.QDoubleSpinBox()
+    self.live_opacity = QDoubleSpinBox()
     self.live_opacity.setRange(0.0, 1.0)
     self.live_opacity.setSingleStep(0.1)
-    self.live_sharpness = base.QDoubleSpinBox()
+    self.live_sharpness = QDoubleSpinBox()
     self.live_sharpness.setRange(0.0, 1.0)
     self.live_sharpness.setSingleStep(0.1)
-    self.live_mouth_mask_size = base.QDoubleSpinBox()
+    self.live_mouth_mask_size = QDoubleSpinBox()
     self.live_mouth_mask_size.setRange(0.0, 10.0)
     self.live_mouth_mask_size.setSingleStep(0.5)
-    self.live_interpolation_weight = base.QDoubleSpinBox()
+    self.live_interpolation_weight = QDoubleSpinBox()
     self.live_interpolation_weight.setRange(0.0, 1.0)
     self.live_interpolation_weight.setSingleStep(0.1)
-    self.live_poisson_blend = base.QCheckBox()
-    self.live_color_correction = base.QCheckBox()
-    self.live_max_width = base.QSpinBox()
+    self.live_poisson_blend = QCheckBox()
+    self.live_color_correction = QCheckBox()
+    self.live_max_width = QSpinBox()
     self.live_max_width.setRange(64, 4096)
-    self.live_frame_codec = base.QComboBox()
+    self.live_frame_codec = QComboBox()
     self.live_frame_codec.addItems(list(LIVE_FRAME_CODECS))
     self.live_frame_codec.setToolTip("Codec used for webcam frames sent to the Colab live websocket. WebP can reduce in_kb when OpenCV supports it.")
-    self.live_output_codec = base.QComboBox()
+    self.live_output_codec = QComboBox()
     self.live_output_codec.addItems(list(LIVE_FRAME_CODECS))
     self.live_output_codec.setToolTip("Codec used by the Colab server for frames returned to preview/virtual camera. JPEG is safest; WebP may reduce out_kb.")
-    self.live_jpeg_quality = base.QSpinBox()
+    self.live_jpeg_quality = QSpinBox()
     self.live_jpeg_quality.setRange(20, 95)
-    self.live_detector_size = base.QSpinBox()
+    self.live_detector_size = QSpinBox()
     self.live_detector_size.setRange(160, 640)
     self.live_detector_size.setSingleStep(32)
-    self.live_detect_every_n = base.QSpinBox()
+    self.live_detect_every_n = QSpinBox()
     self.live_detect_every_n.setRange(1, 30)
-    self.live_face_model_pack = base.QComboBox()
+    self.live_face_model_pack = QComboBox()
     self.live_face_model_pack.addItems(list(LIVE_FACE_MODEL_PACKS))
     self.live_face_model_pack.setToolTip(
         "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options. "
         "Use Swapper precision to compare fp32 vs fp16 swap_ms."
     )
-    self.live_swapper_precision = base.QComboBox()
+    self.live_swapper_precision = QComboBox()
     self.live_swapper_precision.addItems(list(LIVE_SWAPPER_PRECISIONS))
     self.live_swapper_precision.setToolTip("Use fp32 as baseline; choose fp16 to test T4/RTX swap_ms.")
-    self.live_cache_source_face = base.QCheckBox()
+    self.live_cache_source_face = QCheckBox()
     self.live_cache_source_face.setToolTip("Keep on for speed. Turn off to re-read/re-analyze the source face each frame if a source swap looks stale.")
-    self.live_preview_buffer_seconds = base.QDoubleSpinBox()
+    self.live_preview_buffer_seconds = QDoubleSpinBox()
     self.live_preview_buffer_seconds.setRange(0.0, 5.0)
     self.live_preview_buffer_seconds.setSingleStep(0.25)
     self.live_preview_buffer_seconds.setDecimals(2)
@@ -393,10 +303,10 @@ def _build_live_tab(self: base.MainWindow) -> None:
     _apply_live_options_to_widgets(self)
     controls_layout.addWidget(options_box)
 
-    row = base.QHBoxLayout()
-    start = base.QPushButton("Start live")
+    row = QHBoxLayout()
+    start = QPushButton("Start live")
     start.setObjectName("successButton")
-    stop = base.QPushButton("Stop live")
+    stop = QPushButton("Stop live")
     stop.setObjectName("dangerButton")
     start.clicked.connect(self.start_live)
     stop.clicked.connect(self.stop_live)
@@ -421,20 +331,20 @@ def _build_live_tab(self: base.MainWindow) -> None:
     controls_scroll.setWidget(controls_panel)
     splitter.addWidget(controls_scroll)
 
-    preview_panel = base.QWidget()
-    preview_layout = base.QVBoxLayout(preview_panel)
-    preview_controls = base.QHBoxLayout()
-    preview_controls.addWidget(base.QLabel("Preview size"))
-    self.live_preview_scale = base.QComboBox()
+    preview_panel = QWidget()
+    preview_layout = QVBoxLayout(preview_panel)
+    preview_controls = QHBoxLayout()
+    preview_controls.addWidget(QLabel("Preview size"))
+    self.live_preview_scale = QComboBox()
     self.live_preview_scale.addItems(list(LIVE_PREVIEW_SCALES))
     self.live_preview_scale.setCurrentText(str(_live_options(self.settings)["preview_scale"]))
     self.live_preview_scale.setToolTip("Fit fills the panel. 1x/1.5x/2x use that pixel scale only when it fits; otherwise they fall back to fit.")
-    self.live_preview_scale.currentTextChanged.connect(lambda _text: update_live_preview_from_last_frame(self))
+    self.live_preview_scale.currentTextChanged.connect(lambda _text: self.update_live_preview_from_last_frame())
     preview_controls.addWidget(self.live_preview_scale)
     preview_controls.addStretch(1)
     preview_layout.addLayout(preview_controls)
-    self.live_preview = base.QLabel("Live preview")
-    self.live_preview.setAlignment(base.Qt.AlignCenter)
+    self.live_preview = QLabel("Live preview")
+    self.live_preview.setAlignment(Qt.AlignCenter)
     self.live_preview.setMinimumSize(320, 240)
     self.live_preview.setWordWrap(True)
     preview_layout.addWidget(self.live_preview, 1)
@@ -443,8 +353,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self._live_preview_buffer_seconds = DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS
     self._live_preview_frames = 0
     self._live_preview_last_frame = None
-    self._live_preview_timer = base.QTimer(self)
-    self._live_preview_timer.timeout.connect(lambda: render_live_preview_frame(self))
+    self._live_preview_timer = QTimer(self)
+    self._live_preview_timer.timeout.connect(lambda: live_preview.render_live_preview_frame(self))
     splitter.addWidget(preview_panel)
 
     splitter.setStretchFactor(0, 0)
@@ -454,8 +364,8 @@ def _build_live_tab(self: base.MainWindow) -> None:
     self.tabs.addTab(tab, "Live")
 
 
-def sync_settings(self: base.MainWindow) -> None:
-    _original_sync_settings(self)
+def sync_settings(self: MainWindow) -> None:
+    processing_options_base.sync_settings(self)
     if hasattr(self, "live_source_face"):
         self.settings.source_face = self.live_source_face.text().strip()
     if hasattr(self, "live_width"):
@@ -475,24 +385,24 @@ def sync_settings(self: base.MainWindow) -> None:
     else:
         self.settings.live_pipeline_frames = _live_setting(self.settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES)
     self.settings.live_options = _read_live_options(self)
-    base.save_settings(self.settings)
+    processing_options_base.save_settings(self.settings)
 
 
-def closeEvent(self: base.MainWindow, event: Any) -> None:
+def closeEvent(self: MainWindow, event: Any) -> None:
     try:
         self.sync_settings()
     except Exception as exc:
         self.log(f"settings save on close failed: {exc}")
-    stop_live_preview_timer(self)
-    _original_close_event(self, event)
+    live_preview.stop_live_preview_timer(self)
+    MainWindow.closeEvent(self, event)
 
 
-def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
-    client = base.ApiClient(settings)
+def _prepare_live_settings(settings: AppSettings) -> dict[str, Any]:
+    client = ApiClient(settings)
     logs: list[str] = ["checking Colab API before starting live"]
     client.request_json("GET", "/health", timeout=5.0)
 
-    live_settings = async_base._copy_settings(settings)
+    live_settings = output_tasks_base._copy_settings(settings)
     live_settings.live_width = _live_setting(settings, "live_width", DEFAULT_LIVE_WIDTH)
     live_settings.live_height = _live_setting(settings, "live_height", DEFAULT_LIVE_HEIGHT)
     live_settings.live_fps = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
@@ -501,11 +411,11 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
     _apply_live_options_to_settings(live_settings)
     source_face = live_settings.source_face
     logs.append(f"live source face path: {source_face or '(empty)'}")
-    if base.is_local_path(source_face):
+    if is_local_path(source_face):
         source_path = Path(source_face)
         if not source_path.is_file():
             raise FileNotFoundError(f"Local source face does not exist: {source_face}")
-        upload_path, normalization_log = async_base._source_upload_path(source_path)
+        upload_path, normalization_log = output_tasks_base._source_upload_path(source_path)
         if normalization_log:
             logs.append(normalization_log)
         logs.append(f"uploading local source face for live: {source_path}")
@@ -518,7 +428,7 @@ def _prepare_live_settings(settings: base.AppSettings) -> dict[str, Any]:
     return {"settings": live_settings, "logs": logs}
 
 
-class LiveWorker(base.LiveWorker):
+class LiveWorker(BaseLiveWorker):
     async def _run_live(self) -> None:
         import cv2
         import websockets
@@ -638,7 +548,7 @@ class LiveWorker(base.LiveWorker):
         try:
             async with websockets.connect(uri, max_size=8 * 1024 * 1024) as websocket:
                 await websocket.send(
-                    base.json.dumps(
+                    json.dumps(
                         {
                             "source_face": self.settings.source_face,
                             "many_faces": self.settings.many_faces,
@@ -688,17 +598,17 @@ class LiveWorker(base.LiveWorker):
             self.message.emit("live worker stopped")
 
 
-def start_live(self: base.MainWindow) -> None:
+def start_live(self: MainWindow) -> None:
     self.sync_settings()
     if self.live_worker and self.live_worker.isRunning():
         self.log("live already running")
         ui_base._set_process_status(self, "live", "Live already running")
         return
 
-    async_base._ensure_output_worker_state(self)
+    output_tasks_base._ensure_output_worker_state(self)
     self.settings.live_options = _read_live_options(self)
-    base.save_settings(self.settings)
-    settings = async_base._copy_settings(self.settings)
+    processing_options_base.save_settings(self.settings)
+    settings = output_tasks_base._copy_settings(self.settings)
     settings.live_width = _live_setting(self.settings, "live_width", DEFAULT_LIVE_WIDTH)
     settings.live_height = _live_setting(self.settings, "live_height", DEFAULT_LIVE_HEIGHT)
     settings.live_fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
@@ -720,7 +630,7 @@ def start_live(self: base.MainWindow) -> None:
             self.log(line_text)
             ui_base._set_process_status(self, "live", line_text)
         live_settings = payload.get("settings")
-        if not isinstance(live_settings, base.AppSettings):
+        if not isinstance(live_settings, AppSettings):
             text = "live failed before start: invalid prepared settings"
             self.log(text)
             ui_base._set_process_status(self, "live", text)
@@ -728,7 +638,7 @@ def start_live(self: base.MainWindow) -> None:
         self.live_worker = LiveWorker(live_settings)
         self.live_worker.message.connect(lambda text: ui_base._poll_message(self, "live", text))
         self.live_worker.frame.connect(self.enqueue_live_preview_frame)
-        start_live_preview_timer(self, live_settings)
+        live_preview.start_live_preview_timer(self, live_settings)
         self.live_worker.start()
         ui_base._set_process_status(self, "live", f"Starting live on camera index {live_settings.camera_index}...")
 
@@ -739,7 +649,7 @@ def start_live(self: base.MainWindow) -> None:
         self.log(text)
         ui_base._set_process_status(self, "live", text)
 
-    self.output_live_task_id = async_base._start_output_task(
+    self.output_live_task_id = output_tasks_base._start_output_task(
         self,
         "Preparing live...",
         task,
@@ -748,156 +658,11 @@ def start_live(self: base.MainWindow) -> None:
     )
 
 
-def start_live_preview_timer(self: base.MainWindow, settings: base.AppSettings) -> None:
-    timer = getattr(self, "_live_preview_timer", None)
-    if timer is None:
-        return
-    self._live_latest_jpeg = None
-    self._live_preview_buffer = deque()
-    self._live_preview_buffer_seconds = float(_live_options(settings)["preview_buffer_seconds"])
-    self._live_preview_started = self._live_preview_buffer_seconds <= 0
-    self._live_preview_frames = 0
-    self._live_preview_last_frame = None
-    fps = _live_setting(settings, "live_fps", DEFAULT_LIVE_FPS)
-    interval_ms = max(1, int(round(1000.0 / max(1, fps))))
-    timer.setInterval(interval_ms)
-    timer.start()
+def stop_live(self: MainWindow) -> None:
+    live_preview.stop_live_preview_timer(self)
+    if self.live_worker:
+        self.live_worker.stop()
+        self.log("live stop requested")
+        ui_base._set_process_status(self, "live", "Live stop requested")
 
 
-def stop_live_preview_timer(self: base.MainWindow) -> None:
-    timer = getattr(self, "_live_preview_timer", None)
-    if timer is not None:
-        timer.stop()
-    self._live_latest_jpeg = None
-    self._live_preview_last_frame = None
-    buffer = getattr(self, "_live_preview_buffer", None)
-    if buffer is not None:
-        buffer.clear()
-
-
-def stop_live(self: base.MainWindow) -> None:
-    stop_live_preview_timer(self)
-    _original_stop_live(self)
-
-
-def enqueue_live_preview_frame(self: base.MainWindow, frame_bytes: bytes) -> None:
-    # Buffer by arrival time so the QTimer can render frames at an even cadence
-    # after a small delay. Do not coalesce during normal playback; render one
-    # queued frame per timer tick. Drop only if the backlog exceeds a safety cap.
-    buffer = getattr(self, "_live_preview_buffer", None)
-    if buffer is None:
-        buffer = deque()
-        self._live_preview_buffer = buffer
-    now = time.monotonic()
-    buffer.append((now, bytes(frame_bytes)))
-    buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
-    fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
-    max_frames = max(3, int(math.ceil((buffer_seconds + 2.0) * fps)))
-    while len(buffer) > max_frames:
-        buffer.popleft()
-
-
-def render_live_preview_frame(self: base.MainWindow) -> None:
-    buffer = getattr(self, "_live_preview_buffer", None)
-    if not buffer:
-        return
-    buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
-    if not getattr(self, "_live_preview_started", False):
-        if time.monotonic() - buffer[0][0] < buffer_seconds:
-            return
-        self._live_preview_started = True
-    _timestamp, frame_bytes = buffer.popleft()
-    if buffer_seconds > 0:
-        fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
-        # If the producer outruns the preview for a while, keep the stream near
-        # the target delay by dropping only the oldest excess frames.
-        target_frames = max(1, int(round(buffer_seconds * fps)))
-        max_frames = max(target_frames + fps, target_frames * 2)
-        while len(buffer) > max_frames:
-            buffer.popleft()
-    if not frame_bytes:
-        return
-    update_live_preview(self, frame_bytes)
-
-
-def _preview_scale_factor(scale: str) -> float | None:
-    normalized = str(scale or DEFAULT_LIVE_PREVIEW_SCALE).lower()
-    if normalized == "fit":
-        return None
-    try:
-        return float(normalized.rstrip("x"))
-    except ValueError:
-        return None
-
-
-def _preview_target_size(self: base.MainWindow, image: base.QImage) -> tuple[int, int]:
-    panel_size = self.live_preview.size()
-    panel_width = max(1, int(panel_size.width()))
-    panel_height = max(1, int(panel_size.height()))
-    factor = _preview_scale_factor(getattr(getattr(self, "live_preview_scale", None), "currentText", lambda: DEFAULT_LIVE_PREVIEW_SCALE)())
-    if factor is not None:
-        target_width = max(1, int(round(image.width() * factor)))
-        target_height = max(1, int(round(image.height() * factor)))
-        if target_width <= panel_width and target_height <= panel_height:
-            return target_width, target_height
-    image_ratio = image.width() / max(1, image.height())
-    panel_ratio = panel_width / max(1, panel_height)
-    if image_ratio >= panel_ratio:
-        return panel_width, max(1, int(round(panel_width / image_ratio)))
-    return max(1, int(round(panel_height * image_ratio))), panel_height
-
-
-def update_live_preview_from_last_frame(self: base.MainWindow) -> None:
-    frame = getattr(self, "_live_preview_last_frame", None)
-    if frame:
-        update_live_preview(self, frame, remember=False)
-
-
-def update_live_preview(self: base.MainWindow, frame_bytes: bytes, remember: bool = True) -> None:
-    image = base.QImage.fromData(frame_bytes)
-    if image.isNull():
-        try:
-            import cv2
-            import numpy as np
-
-            decoded = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if decoded is None:
-                return
-            rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
-            height, width, channels = rgb.shape
-            image = base.QImage(rgb.data, width, height, channels * width, base.QImage.Format_RGB888).copy()
-        except Exception:
-            return
-    if remember:
-        self._live_preview_last_frame = bytes(frame_bytes)
-    target_width, target_height = _preview_target_size(self, image)
-    pixmap = base.QPixmap.fromImage(image).scaled(
-        target_width,
-        target_height,
-        base.Qt.KeepAspectRatio,
-        base.Qt.FastTransformation,
-    )
-    self.live_preview.setPixmap(pixmap)
-    self._live_preview_frames = int(getattr(self, "_live_preview_frames", 0)) + 1
-    if self._live_preview_frames == 1 or self._live_preview_frames % max(1, _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)) == 0:
-        ui_base._set_process_status(
-            self,
-            "live",
-            (
-                f"Live buffered preview ({image.width()}x{image.height()} -> {pixmap.width()}x{pixmap.height()}, "
-                f"size {getattr(getattr(self, 'live_preview_scale', None), 'currentText', lambda: DEFAULT_LIVE_PREVIEW_SCALE)()}, "
-                f"buffer {float(getattr(self, '_live_preview_buffer_seconds', DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS)):.2f}s, "
-                f"rendered {self._live_preview_frames})"
-            ),
-        )
-
-
-class LiveWebcamMixin:
-    _build_live_tab = _build_live_tab
-    sync_settings = sync_settings
-    closeEvent = closeEvent
-    start_live = start_live
-    stop_live = stop_live
-    enqueue_live_preview_frame = enqueue_live_preview_frame
-    update_live_preview = update_live_preview
-    update_live_preview_from_last_frame = update_live_preview_from_last_frame

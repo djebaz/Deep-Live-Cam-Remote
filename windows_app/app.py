@@ -1,45 +1,90 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from windows_app import app_base as base
-from windows_app.live_webcam import LiveWebcamMixin, load_settings, save_settings
-from windows_app.main_window_ui import MainWindowUiMixin
-from windows_app.output_tasks import OutputTasksMixin
-from windows_app.processing_options import ProcessingOptionsMixin
+from PySide6.QtWidgets import QApplication as QtApplication
 
-# Keep app_base settings functions aligned for helpers that call base.save_settings().
-base.load_settings = load_settings
-base.save_settings = save_settings
+from windows_app import live_preview, live_webcam, main_window_ui, output_browser, output_tasks, processing_options
+from windows_app.window_core import WindowCore
 
 # Re-export common application symbols for lightweight compatibility with callers.
-AppSettings = base.AppSettings
-ApiClient = base.ApiClient
-PollWorker = base.PollWorker
-LiveWorker = base.LiveWorker
-DEFAULT_DRIVE_ROOT = base.DEFAULT_DRIVE_ROOT
-APP_STATE = base.APP_STATE
-PHOTO_EXTENSIONS = base.PHOTO_EXTENSIONS
-VIDEO_EXTENSIONS = base.VIDEO_EXTENSIONS
-QApplication = base.QApplication
+QApplication = QtApplication
+
+# Keep preview buffer construction owned by live_preview while live_webcam still
+# owns Live tab construction during the responsibility split.
+live_webcam.deque = live_preview.create_live_preview_buffer
 
 
-class MainWindow(LiveWebcamMixin, ProcessingOptionsMixin, MainWindowUiMixin, OutputTasksMixin, base.MainWindow):
-    """Canonical Windows remote controller window.
+class MainWindow(WindowCore):
+    """Canonical Windows remote controller window with explicit feature delegates."""
 
-    The mixins replace the former runtime patch stack with normal class
-    composition while preserving the same method resolution order as the old
-    import chain: async outputs -> UI -> processing options -> live webcam.
-    """
+    def _build_setup_tab(self) -> None:
+        return main_window_ui._build_setup_tab(self)
 
+    def _build_photos_tab(self) -> None:
+        return processing_options._build_photos_tab(self)
 
-# Ensure workers/helpers that instantiate base.MainWindow-compatible behavior
-# see the canonical class when they intentionally reference this module.
-base.MainWindow = MainWindow
+    def _build_videos_tab(self) -> None:
+        return processing_options._build_videos_tab(self)
+
+    def _build_outputs_tab(self) -> None:
+        return main_window_ui._build_outputs_tab(self)
+
+    def _build_live_tab(self) -> None:
+        return live_webcam._build_live_tab(self)
+
+    def check_connection(self) -> None:
+        return output_tasks.check_connection(self)
+
+    def sync_settings(self) -> None:
+        return live_webcam.sync_settings(self)
+
+    def start_photos(self) -> None:
+        return processing_options.start_photos(self)
+
+    def start_videos(self) -> None:
+        return processing_options.start_videos(self)
+
+    def cancel_job(self) -> None:
+        return output_tasks.cancel_job(self)
+
+    def refresh_outputs(self) -> None:
+        return output_tasks.refresh_outputs(self)
+
+    def show_output_at(self, index: int) -> None:
+        return output_browser.show_output_at(self, index)
+
+    def show_video_output(self, item: dict[str, Any]) -> None:
+        return output_browser.show_video_output(self, item)
+
+    def download_current_output(self) -> None:
+        return output_tasks.download_current_output(self)
+
+    def download_all_outputs(self) -> None:
+        return output_tasks.download_all_outputs(self)
+
+    def start_live(self) -> None:
+        return live_webcam.start_live(self)
+
+    def stop_live(self) -> None:
+        return live_webcam.stop_live(self)
+
+    def enqueue_live_preview_frame(self, frame_bytes: bytes) -> None:
+        return live_preview.enqueue_live_preview_frame(self, frame_bytes)
+
+    def update_live_preview(self, frame_bytes: bytes, remember: bool = True) -> None:
+        return live_preview.update_live_preview(self, frame_bytes, remember)
+
+    def update_live_preview_from_last_frame(self) -> None:
+        return live_preview.update_live_preview_from_last_frame(self)
+
+    def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        return live_webcam.closeEvent(self, event)
 
 
 def main() -> int:
-    app = base.QApplication([])
+    app = QtApplication([])
 
     qss_path = Path(__file__).parent / "dark_theme.qss"
     if qss_path.exists():
