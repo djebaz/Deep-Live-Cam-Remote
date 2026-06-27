@@ -1031,9 +1031,17 @@ async def live_socket(websocket: WebSocket) -> None:
                 receive_wall_time = time.time()
                 meta = pending_frame_meta if isinstance(pending_frame_meta, dict) else {}
                 pending_frame_meta = None
+                drop_notice: dict[str, Any] | None = None
                 async with latest_condition:
                     if latest_frame is not None:
                         latest_drop_count += 1
+                        dropped_meta = latest_frame.get("meta") or {}
+                        drop_notice = {
+                            "status": "live_frame_dropped",
+                            "dropped": 1,
+                            "frame_seq": dropped_meta.get("seq", ""),
+                            "latest_drop_count": latest_drop_count,
+                        }
                     latest_frame = {
                         "payload": payload,
                         "meta": dict(meta),
@@ -1042,6 +1050,8 @@ async def live_socket(websocket: WebSocket) -> None:
                         "drop_count": latest_drop_count,
                     }
                     latest_condition.notify()
+                if drop_notice is not None:
+                    await locked_send_json(drop_notice)
         except BaseException as exc:
             reader_error = exc
             reader_done = True

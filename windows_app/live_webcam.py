@@ -1558,8 +1558,17 @@ class LiveWorker(BaseLiveWorker):
             while not self._stop:
                 reply = await websocket.recv()
                 if isinstance(reply, str):
-                    self.message.emit(reply)
                     payload = _json_payload(reply)
+                    if payload.get("status") == "live_frame_dropped":
+                        try:
+                            dropped = max(1, int(payload.get("dropped", 1)))
+                        except (TypeError, ValueError):
+                            dropped = 1
+                        async with condition:
+                            in_flight = max(0, in_flight - dropped)
+                            condition.notify_all()
+                        continue
+                    self.message.emit(reply)
                     if "error" in payload:
                         raise RuntimeError(str(payload["error"]))
                     if payload.get("status") == "live_config_update_rejected":
