@@ -106,6 +106,10 @@ LIVE_TRANSPORT_PACKET_MAGIC = b"DLCR"
 LIVE_TRANSPORT_PACKET_VERSION = 1
 LIVE_TRANSPORT_PACKET_HEADER = struct.Struct("!4sHH")
 LIVE_TRANSPORT_FRAME_HEADER = struct.Struct("!II")
+LIVE_TRANSPORT_MAX_FRAMES_PER_PACKET = 256
+LIVE_TRANSPORT_MAX_HEADER_BYTES = 1_000_000
+LIVE_TRANSPORT_MAX_FRAME_BYTES = 50_000_000
+LIVE_TRANSPORT_BATCH_MAX_WAIT_SECONDS = 0.050
 LIVE_PERF_CSV_COLUMNS = (
     "timestamp",
     "case_id",
@@ -239,6 +243,8 @@ def _unpack_live_frame_batch(payload: bytes) -> tuple[list[tuple[dict[str, Any],
         raise ValueError("invalid live frame packet magic")
     if version != LIVE_TRANSPORT_PACKET_VERSION:
         raise ValueError(f"unsupported live frame packet version {version}")
+    if frame_count < 1 or frame_count > LIVE_TRANSPORT_MAX_FRAMES_PER_PACKET:
+        raise ValueError(f"invalid live frame packet frame count: {frame_count}")
     offset = LIVE_TRANSPORT_PACKET_HEADER.size
     frames: list[tuple[dict[str, Any], bytes]] = []
     for _ in range(frame_count):
@@ -246,7 +252,11 @@ def _unpack_live_frame_batch(payload: bytes) -> tuple[list[tuple[dict[str, Any],
             raise ValueError("live frame packet frame header is truncated")
         header_len, payload_len = LIVE_TRANSPORT_FRAME_HEADER.unpack_from(payload, offset)
         offset += LIVE_TRANSPORT_FRAME_HEADER.size
-        if header_len < 0 or payload_len < 0 or offset + header_len + payload_len > len(payload):
+        if header_len > LIVE_TRANSPORT_MAX_HEADER_BYTES:
+            raise ValueError(f"invalid live frame packet header length: {header_len}")
+        if payload_len > LIVE_TRANSPORT_MAX_FRAME_BYTES:
+            raise ValueError(f"invalid live frame packet payload length: {payload_len}")
+        if offset + header_len + payload_len > len(payload):
             raise ValueError("live frame packet has invalid frame lengths")
         header_bytes = payload[offset : offset + header_len]
         offset += header_len
@@ -1644,13 +1654,22 @@ class LiveWorker(BaseLiveWorker):
                 )
                 batch_limit = max(1, min(current_transport_batch_size, available_pipeline_slots))
                 batch_frames: list[tuple[dict[str, Any], bytes]] = []
+                batch_deadline = 0.0
                 reserved_in_flight = 0
                 try:
                     for _ in range(batch_limit):
                         capture_wait_started = time.perf_counter()
                         with capture_condition:
                             while latest_capture["seq"] == last_sent_capture_seq and not self._stop and capture_error is None:
-                                capture_condition.wait(timeout=0.1)
+                                wait_timeout = 0.1
+                                if batch_frames:
+                                    remaining = batch_deadline - clock()
+                                    if remaining <= 0:
+                                        break
+                                    wait_timeout = min(wait_timeout, max(0.001, remaining))
+                                capture_condition.wait(timeout=wait_timeout)
+                            if batch_frames and latest_capture["seq"] == last_sent_capture_seq:
+                                break
                             if capture_error is not None:
                                 raise RuntimeError(f"live capture reader failed: {capture_error}") from capture_error
                             if self._stop:
@@ -1731,6 +1750,8 @@ class LiveWorker(BaseLiveWorker):
                         client_stats["frame_codec"] = current_frame_codec
                         client_stats["jpeg_quality"] = current_frame_quality
                         client_stats["capture_scale"] = current_capture_scale
+                        if len(batch_frames) == 1:
+                            batch_deadline = clock() + LIVE_TRANSPORT_BATCH_MAX_WAIT_SECONDS
                     if not batch_frames:
                         continue
                     packet_send_time = time.time()
@@ -1789,8 +1810,10 @@ class LiveWorker(BaseLiveWorker):
                 try:
                     output_frames, unpack_ms = _unpack_live_frame_batch(reply)
                 except Exception as exc:
-                    self.message.emit(f"invalid live output packet: {exc}")
-                    continue
+                    async with condition:
+                        in_flight = max(0, in_flight - 1)
+                        condition.notify_all()
+                    raise RuntimeError(f"invalid live output packet: {exc}") from exc
                 async with condition:
                     in_flight = max(0, in_flight - len(output_frames))
                     condition.notify_all()

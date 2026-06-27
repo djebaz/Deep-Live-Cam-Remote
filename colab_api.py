@@ -51,6 +51,9 @@ LIVE_TRANSPORT_PACKET_MAGIC = b"DLCR"
 LIVE_TRANSPORT_PACKET_VERSION = 1
 LIVE_TRANSPORT_PACKET_HEADER = struct.Struct("!4sHH")
 LIVE_TRANSPORT_FRAME_HEADER = struct.Struct("!II")
+LIVE_TRANSPORT_MAX_FRAMES_PER_PACKET = 256
+LIVE_TRANSPORT_MAX_HEADER_BYTES = 1_000_000
+LIVE_TRANSPORT_MAX_FRAME_BYTES = 50_000_000
 LIVE_PENDING_FRAME_QUEUE_LIMIT = 8
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
@@ -509,6 +512,8 @@ def unpack_live_frame_packet(payload: bytes, fallback_meta: dict[str, Any] | Non
         raise ValueError("invalid live frame packet magic")
     if version != LIVE_TRANSPORT_PACKET_VERSION:
         raise ValueError(f"unsupported live frame packet version {version}")
+    if frame_count < 1 or frame_count > LIVE_TRANSPORT_MAX_FRAMES_PER_PACKET:
+        raise ValueError(f"invalid live frame packet frame count: {frame_count}")
     offset = LIVE_TRANSPORT_PACKET_HEADER.size
     frames: list[dict[str, Any]] = []
     for _index in range(frame_count):
@@ -516,7 +521,11 @@ def unpack_live_frame_packet(payload: bytes, fallback_meta: dict[str, Any] | Non
             raise ValueError("live frame packet frame header is truncated")
         header_len, payload_len = LIVE_TRANSPORT_FRAME_HEADER.unpack_from(payload, offset)
         offset += LIVE_TRANSPORT_FRAME_HEADER.size
-        if header_len < 0 or payload_len < 0 or offset + header_len + payload_len > len(payload):
+        if header_len > LIVE_TRANSPORT_MAX_HEADER_BYTES:
+            raise ValueError(f"invalid live frame packet header length: {header_len}")
+        if payload_len > LIVE_TRANSPORT_MAX_FRAME_BYTES:
+            raise ValueError(f"invalid live frame packet payload length: {payload_len}")
+        if offset + header_len + payload_len > len(payload):
             raise ValueError("live frame packet has invalid frame lengths")
         header_bytes = payload[offset: offset + header_len]
         offset += header_len

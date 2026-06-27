@@ -106,7 +106,7 @@ def render_live_preview_frame(self: MainWindow) -> None:
     if getattr(self, "_live_preview_clock_started_at", None) is None:
         first = buffer[0]
         self._live_preview_first_seq = int(first["seq"])
-        self._live_preview_clock_started_at = float(first["received_at"]) + max(0.0, buffer_seconds)
+        self._live_preview_clock_started_at = now + max(0.0, buffer_seconds)
         self._live_preview_started = False
 
     clock_started_at = float(getattr(self, "_live_preview_clock_started_at", now) or now)
