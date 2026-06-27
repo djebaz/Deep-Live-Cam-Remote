@@ -96,10 +96,43 @@ def enqueue_live_preview_frame_packet(self: MainWindow, meta: dict[str, object],
         buffer.popleft()
 
 
+def _update_buffer_gauge(self: MainWindow, buffer: deque) -> None:
+    gauge = getattr(self, "live_buffer_gauge", None)
+    if gauge is None:
+        return
+
+    buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", 0.0))
+    dropped = int(getattr(self, "_live_preview_dropped_frames", 0))
+    frame_count = len(buffer)
+
+    # Estimate current buffer duration
+    fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
+    current_seconds = frame_count / max(1, fps)
+
+    # Color code based on buffer health
+    fill_ratio = current_seconds / max(0.1, buffer_seconds) if buffer_seconds > 0 else 0
+    if fill_ratio < 0.3:
+        color = "#ff6b6b"  # Red - underrun risk
+    elif fill_ratio < 0.7:
+        color = "#ffd93d"  # Yellow - building up
+    else:
+        color = "#6bcf7f"  # Green - healthy
+
+    gauge.setStyleSheet(f"color: {color};")
+    gauge.setText(
+        f"Preview buffer: {current_seconds:.1f}s / {buffer_seconds:.1f}s "
+        f"({frame_count} frames, {dropped} dropped)"
+    )
+
+
 def render_live_preview_frame(self: MainWindow) -> None:
     buffer = getattr(self, "_live_preview_buffer", None)
     if not buffer:
         return
+
+    # Update buffer gauge
+    _update_buffer_gauge(self, buffer)
+
     now = time.monotonic()
     buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
     fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)

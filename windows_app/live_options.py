@@ -11,15 +11,18 @@ LIVE_CAPTURE_BACKENDS = ("auto", "directshow", "msmf")
 DEFAULT_LIVE_CAPTURE_MODE = "auto"
 LIVE_CAPTURE_MODES = ("auto", "opencv_auto", "custom")
 DEFAULT_LIVE_CAPTURE_SCALE = "auto"
-LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x")
+LIVE_CAPTURE_SCALES = ("auto", "100%", "95%", "90%", "80%", "75%", "70%", "50%", "30%", "25%")
 LIVE_CAPTURE_SCALE_FACTORS = {
     "auto": None,
-    "1x": 1.0,
-    "3/4x": 3 / 4,
-    "2/3x": 2 / 3,
-    "1/2x": 1 / 2,
-    "1/3x": 1 / 3,
-    "1/4x": 1 / 4,
+    "100%": 1.0,
+    "95%": 0.95,
+    "90%": 0.90,
+    "80%": 0.80,
+    "75%": 0.75,
+    "70%": 0.70,
+    "50%": 0.50,
+    "30%": 0.30,
+    "25%": 0.25,
 }
 DEFAULT_LIVE_CAPTURE_WIDTH = DEFAULT_LIVE_WIDTH
 DEFAULT_LIVE_CAPTURE_HEIGHT = DEFAULT_LIVE_HEIGHT

@@ -96,7 +96,7 @@ LIVE_LOCAL_HOT_CHANGE_KEYS = (
 )
 LIVE_PERF_CASE_SECONDS = 12.0
 LIVE_PERF_WARMUP_SECONDS = 3.0
-LIVE_PERF_CAPTURE_SCALE = "1/2x"
+LIVE_PERF_CAPTURE_SCALE = "50%"
 LIVE_PERF_JPEG_QUALITY = 70
 LIVE_PERF_DETECT_EVERY_N = 3
 LIVE_PERF_DETECTOR_SIZE = 256
@@ -1006,7 +1006,19 @@ def load_settings() -> AppSettings:
     # it is available, while Send scale should preserve the received frame.
     if isinstance(data.get("live_options"), dict):
         raw_options = data["live_options"]
-        if raw_options.get("capture_mode") == "auto" and raw_options.get("capture_scale") == "1/2x":
+        # Migrate old capture scale format to new percentage format
+        old_to_new_scale = {
+            "1x": "100%",
+            "3/4x": "75%",
+            "2/3x": "70%",
+            "1/2x": "50%",
+            "1/3x": "30%",
+            "1/4x": "25%",
+        }
+        old_scale = raw_options.get("capture_scale")
+        if old_scale in old_to_new_scale:
+            settings.live_options["capture_scale"] = old_to_new_scale[old_scale]
+        if raw_options.get("capture_mode") == "auto" and old_scale == "1/2x":
             settings.live_options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
             settings.live_options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
     return settings
@@ -1066,7 +1078,7 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_capture_scale = QComboBox()
     self.live_capture_scale.addItems(list(LIVE_CAPTURE_SCALES))
     self.live_capture_scale.setToolTip(
-        "Resize the actual decoded webcam frame before sending it. Auto/1x send the actual frame size."
+        "Resize the actual decoded webcam frame before sending it. Auto/100% send the actual frame size."
     )
     self.live_fps = QSpinBox()
     self.live_fps.setRange(1, 120)
@@ -1193,6 +1205,9 @@ def _build_live_tab(self: MainWindow) -> None:
 
     self.live_status = _status_label("FPS client -- | server -- | preview --    wait -- ms | queue --/--")
     controls_layout.addWidget(self.live_status)
+    self.live_buffer_gauge = _status_label("")
+    self.live_buffer_gauge.setVisible(False)
+    controls_layout.addWidget(self.live_buffer_gauge)
     self._live_latest_backend_perf = {}
     self._live_latest_client_perf = {}
     self._live_latest_receiver_perf = {}
@@ -1992,6 +2007,8 @@ def start_live(self: MainWindow) -> None:
         self.live_worker.finished.connect(lambda: (_stop_live_perf_test(self, restore=False), _set_live_controls_running(self, False)))
         live_preview.start_live_preview_timer(self, live_settings)
         self.live_worker.start()
+        if hasattr(self, "live_buffer_gauge"):
+            self.live_buffer_gauge.setVisible(True)
         _update_live_fps_indicators(self)
 
     def failed(task_id: str, error: str) -> None:
@@ -2017,6 +2034,8 @@ def stop_live(self: MainWindow) -> None:
     self.output_live_task_id = ""
     _stop_live_perf_test(self, restore=False)
     live_preview.stop_live_preview_timer(self)
+    if hasattr(self, "live_buffer_gauge"):
+        self.live_buffer_gauge.setVisible(False)
     if self.live_worker:
         self.live_worker.stop()
         self.log("live stop requested")
