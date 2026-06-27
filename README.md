@@ -109,13 +109,13 @@ py -3.11 -m venv .venv
 The app currently provides:
 
 - Photos and Videos tabs with shared processing options.
-- Recursive input scanning, overwrite/skip behavior, and graceful cancel.
+- Recursive input scanning, overwrite/skip behavior, and quicker cooperative cancel checks during the active photo/video item.
 - Video percentage range selection.
 - Live webcam InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) with `buffalo_l` as the safest default, plus fp32/fp16 swapper precision selection for `swap_ms` comparison.
-- Live webcam uses configurable buffered, fixed-cadence preview rendering so bursty backend frames are delayed briefly, evenly paced, and coalesced instead of repainting stale frame backlogs.
+- Live webcam uses configurable buffered, fixed-cadence preview rendering so bursty backend frames are delayed briefly, evenly paced, and coalesced instead of repainting stale frame backlogs. Transport batching is capped by packet bytes so large frames flush before oversized multi-frame websocket messages are built. Stop cancels the paired websocket sender/receiver tasks promptly instead of waiting for the backend to send another packet.
 - Live preview size can be switched between fit, real pixels, 1.5x, and 2x; scaled modes automatically fall back to fit when larger than the panel.
-- Live webcam uses DirectShow by default for OBS on Windows; Auto capture mode requests the current OBS profile canvas size when available, while Custom mode can force a configured OBS/OpenCV capture size at startup before applying a hot-change Send scale (auto, 1x, 3/4x, 2/3x, 1/2x, 1/3x, 1/4x) before sending JPEG/WebP frames with codec and quality values reported in backend diagnostics/perf logs. Low-risk Live tuning controls (send scale, codec/quality, process width, detection cadence, blending/mask options, many-faces, pipeline frames, and preview buffer/size) can be adjusted while Live is running; camera/source/capture-backend/capture-size/FPS/model controls remain restart-only and are disabled during a run.
-- Output browser with preview/player support.
+- Live webcam uses DirectShow by default for OBS on Windows; Auto capture mode requests the current OBS profile canvas size when available, while Custom mode can force a configured OBS/OpenCV capture size at startup before applying a hot-change Send scale (Auto, 100%, 95%, 90%, 80%, 75%, 70%, 50%, 30%, 25%) before sending JPEG/WebP frames with codec and quality values reported in backend diagnostics/perf logs. Low-risk Live tuning controls (send scale, codec/quality, process width, detection cadence, blending/mask options, many-faces, pipeline frames, and preview buffer/size) can be adjusted while Live is running; camera/source/capture-backend/capture-size/FPS/model controls remain restart-only and are disabled during a run.
+- Output browser with preview/player support, photo preview zoom choices (fit, 0.5x, 0.8x, 1x, 1.5x, 2x), photo auto-play visible-duration control, and configurable photo prefetching while auto-play is enabled.
 - Local source/input upload to the Colab API.
 - Settings sync between photo and video workflows.
 

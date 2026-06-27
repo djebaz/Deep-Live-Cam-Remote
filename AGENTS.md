@@ -78,10 +78,10 @@ When working in Windows/PowerShell:
 - Dark title bar on Windows 10/11 via DWM API; custom app icon in title bar/taskbar.
 - Photos and Videos tabs both expose full processing options: recursive, overwrite, skip processed, many faces, enhancer, opacity, sharpness, mouth mask, interpolation, poisson blend, color correction.
 - Video percentage range: start/end % spinboxes to process only a portion of videos.
-- Start/Stop toggle: batch start buttons switch to red Stop when running; cancel is graceful.
-- Outputs tab: resizable split view with list panel and preview/player; autoplay with prefetch.
+- Start/Stop toggle: batch start buttons switch to red Stop when running; cancel is graceful and checks for cancellation during the active photo/video item where practical.
+- Outputs tab: resizable split view with list panel and preview/player; photo previews support fit/0.5x/0.8x/1x/1.5x/2x zoom, photo autoplay waits the configured visible seconds after each image loads, and autoplay prefetches a configurable number of upcoming photos.
 - Local file upload: source faces and input folders can be local desktop paths; the app uploads to Colab before starting jobs.
-- Live webcam exposes an InsightFace pack selector (`buffalo_l`, `buffalo_m`, `buffalo_s`) and swapper precision selector (`fp32`, `fp16`); keep `buffalo_l`/`fp32` as the safest baseline for `inswapper_128`, and treat `buffalo_m`/`buffalo_s` plus `fp16` as experimental speed options. Live defaults to DirectShow for OBS Virtual Camera on Windows; Auto capture mode requests the current OBS profile canvas size when available, while Custom mode requests a configured OBS/OpenCV capture size at startup, and the app offers a hot-change Send scale selector; camera/source/capture-backend/capture-size/FPS/model controls are restart-only and should stay disabled during a run.
+- Live webcam exposes an InsightFace pack selector (`buffalo_l`, `buffalo_m`, `buffalo_s`) and swapper precision selector (`fp32`, `fp16`); keep `buffalo_l`/`fp32` as the safest baseline for `inswapper_128`, and treat `buffalo_m`/`buffalo_s` plus `fp16` as experimental speed options. Live defaults to DirectShow for OBS Virtual Camera on Windows; Auto capture mode requests the current OBS profile canvas size when available, while Custom mode requests a configured OBS/OpenCV capture size at startup, and the app offers a hot-change Send scale selector; camera/source/capture-backend/capture-size/FPS/model controls are restart-only and should stay disabled during a run. Stop should cancel the paired live websocket sender/receiver tasks promptly instead of waiting for another backend packet.
 - Settings sync: changes in one tab sync to the other when saving or starting jobs.
 
 ### Colab Notebook Features

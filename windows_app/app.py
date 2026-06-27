@@ -73,6 +73,9 @@ class MainWindow(WindowCore):
     def enqueue_live_preview_frame(self, frame_bytes: bytes) -> None:
         return live_preview.enqueue_live_preview_frame(self, frame_bytes)
 
+    def enqueue_live_preview_frame_packet(self, meta: dict[str, object], frame_bytes: bytes) -> None:
+        return live_preview.enqueue_live_preview_frame_packet(self, meta, frame_bytes)
+
     def update_live_preview(self, frame_bytes: bytes, remember: bool = True) -> None:
         return live_preview.update_live_preview(self, frame_bytes, remember)
 

@@ -32,6 +32,10 @@ REPORT_NAME = "batch_report.json"
 ENGINE_VERSION = "deep-live-cam-remote-v1"
 
 
+class BatchCancelled(Exception):
+    """Raised when a remote batch cancel request should stop current work."""
+
+
 @dataclass(frozen=True)
 class ProcessConfig:
     input_dir: Path
@@ -397,7 +401,14 @@ def _start_decoder(path: Path, config: ProcessConfig, start: float, clip: float 
     return subprocess.Popen(decoder_command(path, cuda, start, clip, fps, width, height), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
 
 
-def process_one(path: Path, output: Path, relative: str, config: ProcessConfig, engine: ModernEngine) -> dict[str, Any]:
+def process_one(
+    path: Path,
+    output: Path,
+    relative: str,
+    config: ProcessConfig,
+    engine: ModernEngine,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
     info = probe_video(path)
     width, height, fps = processing_geometry(info["width"], info["height"], info["fps"], config.max_width, config.max_fps)
     start, clip = effective_segment(info, config, path)
@@ -435,6 +446,9 @@ def process_one(path: Path, output: Path, relative: str, config: ProcessConfig, 
     sentinel = object()
     stop = threading.Event()
 
+    def cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     def decoder_worker() -> None:
         try:
             raw = first
@@ -460,7 +474,12 @@ def process_one(path: Path, output: Path, relative: str, config: ProcessConfig, 
     def encoder_worker() -> None:
         try:
             while True:
-                raw = encoded.get()
+                try:
+                    raw = encoded.get(timeout=0.1)
+                except queue.Empty:
+                    if stop.is_set():
+                        return
+                    continue
                 if raw is sentinel:
                     return
                 encoder.stdin.write(raw)
@@ -472,12 +491,21 @@ def process_one(path: Path, output: Path, relative: str, config: ProcessConfig, 
     decode_thread.start(); encode_thread.start()
     frames = fallbacks = 0
     started = time.monotonic()
+    cancelled = False
     try:
         while True:
+            if cancel_requested():
+                cancelled = True
+                print("  cancel requested; stopping current video")
+                stop.set()
+                break
             if not errors.empty():
                 stage, exc = errors.get()
                 raise RuntimeError(f"{stage} pipeline failed: {exc}") from exc
-            raw = decoded.get(timeout=30)
+            try:
+                raw = decoded.get(timeout=0.2)
+            except queue.Empty:
+                continue
             if raw is sentinel:
                 break
             # Frames backed directly by immutable pipe bytes are read-only.
@@ -494,7 +522,18 @@ def process_one(path: Path, output: Path, relative: str, config: ProcessConfig, 
                     print(f"  ! frame fallback: {exc}")
             if result.shape[:2] != (height, width):
                 result = cv2.resize(result, (width, height))
-            encoded.put(np.ascontiguousarray(result).tobytes())
+            while not stop.is_set():
+                try:
+                    encoded.put(np.ascontiguousarray(result).tobytes(), timeout=0.1)
+                    break
+                except queue.Full:
+                    if cancel_requested():
+                        cancelled = True
+                        print("  cancel requested; stopping current video")
+                        stop.set()
+                        break
+            if cancelled:
+                break
             frames += 1
             if frames % 30 == 0 or frames == expected:
                 suffix = f"/{expected}" if expected else ""
@@ -502,7 +541,16 @@ def process_one(path: Path, output: Path, relative: str, config: ProcessConfig, 
             if expected and frames >= expected:
                 stop.set(); break
         print()
-        encoded.put(sentinel)
+        if cancelled:
+            output.unlink(missing_ok=True)
+            raise BatchCancelled("cancel requested")
+        while True:
+            try:
+                encoded.put(sentinel, timeout=0.1)
+                break
+            except queue.Full:
+                if cancelled:
+                    break
         encode_thread.join(timeout=60)
         encoder.stdin.close(); encoder.stdin = None
         if stop.is_set() and decoder.poll() is None:
@@ -625,12 +673,16 @@ def process_batch(args: argparse.Namespace) -> int:
             print("  skipped: matching input + source/model/config manifest entry")
             report["skipped"].append(relative); continue
         try:
-            result = process_one(video, output, relative, config, engine)
+            result = process_one(video, output, relative, config, engine, cancel_event)
             record = {"input": relative, "output": str(output), **result}
             report["completed"].append(record)
             items[key] = {**record, "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             atomic_json(manifest_path, manifest)
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
+        except BatchCancelled:
+            output.unlink(missing_ok=True)
+            print("  cancelled")
+            break
         except Exception as exc:
             output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
@@ -646,15 +698,28 @@ def process_batch(args: argparse.Namespace) -> int:
     return 1 if report["failed"] else 0
 
 
-def process_image_one(path: Path, output: Path, relative: str, config: ProcessConfig, engine: ModernEngine) -> dict[str, Any]:
+def process_image_one(
+    path: Path,
+    output: Path,
+    relative: str,
+    config: ProcessConfig,
+    engine: ModernEngine,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    if cancel_event is not None and cancel_event.is_set():
+        raise BatchCancelled("cancel requested")
     frame = cv2.imread(str(path))
     if frame is None:
         raise RuntimeError(f"Could not read image: {path}")
+    if cancel_event is not None and cancel_event.is_set():
+        raise BatchCancelled("cancel requested")
     engine.reset_video_state()
     started = time.monotonic()
     result = engine.process(frame.copy(), relative)
     if result is None:
         result = frame
+    if cancel_event is not None and cancel_event.is_set():
+        raise BatchCancelled("cancel requested")
     if config.output_max_width is not None and result.shape[1] > config.output_max_width:
         scale = config.output_max_width / result.shape[1]
         new_width = config.output_max_width
@@ -703,12 +768,16 @@ def process_photos(args: argparse.Namespace) -> int:
             print("  skipped: matching input + source/model/config manifest entry")
             report["skipped"].append(relative); continue
         try:
-            result = process_image_one(image, output, relative, config, engine)
+            result = process_image_one(image, output, relative, config, engine, cancel_event)
             record = {"input": relative, "output": str(output), **result}
             report["completed"].append(record)
             items[key] = {**record, "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             atomic_json(manifest_path, manifest)
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
+        except BatchCancelled:
+            output.unlink(missing_ok=True)
+            print("  cancelled")
+            break
         except Exception as exc:
             output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
