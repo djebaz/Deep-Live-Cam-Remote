@@ -963,6 +963,12 @@ def _handle_live_worker_message(window: MainWindow, text: str) -> None:
     elif status == "live_receiver_perf":
         window._live_latest_receiver_perf = payload
         _update_live_fps_indicators(window)
+    elif status == "live_detected_fps":
+        # Update the FPS spinbox when auto-detected
+        detected_fps = payload.get("fps")
+        if detected_fps and hasattr(window, "live_fps"):
+            window.live_fps.setValue(int(detected_fps))
+            window.settings.live_fps = int(detected_fps)
     elif "error" in payload:
         ui_base._set_process_status(window, "live", f"Live error: {payload['error']}")
 
@@ -1459,6 +1465,7 @@ class LiveWorker(BaseLiveWorker):
             if detected_fps is not None:
                 requested_fps = detected_fps
                 self.message.emit(f"capture auto detected OBS FPS: {requested_fps}")
+                self.message.emit(json.dumps({"status": "live_detected_fps", "fps": requested_fps}))
         cap.set(cv2.CAP_PROP_FPS, requested_fps)
         first_frame = _read_warm_camera_frame(cap, attempts=20)
         actual_height, actual_width = first_frame.shape[:2]
