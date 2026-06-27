@@ -431,6 +431,38 @@ def _detect_obs_profile_resolution() -> tuple[int, int, str] | None:
     return None
 
 
+def _detect_obs_profile_fps() -> int | None:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    profiles_root = Path(appdata) / "obs-studio" / "basic" / "profiles"
+    if not profiles_root.is_dir():
+        return None
+    for path in _obs_profile_candidates(profiles_root):
+        parser = _read_ini(path)
+        if parser is None:
+            continue
+        if not parser.has_section("Video"):
+            continue
+        video = parser["Video"]
+        # Try FPSCommon first (e.g., "30")
+        fps_common = video.get("FPSCommon", "").strip()
+        if fps_common:
+            try:
+                return int(float(fps_common))
+            except ValueError:
+                pass
+        # Try fractional FPS (FPSNum / FPSDen)
+        try:
+            fps_num = int(video.get("FPSNum", "0"))
+            fps_den = int(video.get("FPSDen", "1"))
+            if fps_num > 0 and fps_den > 0:
+                return int(fps_num / fps_den)
+        except ValueError:
+            pass
+    return None
+
+
 def _source_fields(window: MainWindow) -> list[Any]:
     fields = []
     for name in ("source_face", "video_source_face", "live_source_face"):
@@ -1391,6 +1423,7 @@ class LiveWorker(BaseLiveWorker):
             capture_scale = DEFAULT_LIVE_CAPTURE_SCALE
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         auto_capture_source = ""
+        detected_fps = None
         if capture_mode == "custom":
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
@@ -1403,6 +1436,10 @@ class LiveWorker(BaseLiveWorker):
                 self.message.emit(
                     f"capture auto requested {requested_width}x{requested_height} from {auto_capture_source}"
                 )
+            detected_fps = _detect_obs_profile_fps()
+            if detected_fps is not None:
+                requested_fps = detected_fps
+                self.message.emit(f"capture auto detected OBS FPS: {requested_fps}")
         cap.set(cv2.CAP_PROP_FPS, requested_fps)
         first_frame = _read_warm_camera_frame(cap, attempts=20)
         actual_height, actual_width = first_frame.shape[:2]
@@ -1423,6 +1460,12 @@ class LiveWorker(BaseLiveWorker):
                 f"but OpenCV received {actual_width}x{actual_height}; try DirectShow backend or check OBS output/canvas"
             )
         actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if capture_mode == "auto" and detected_fps is not None:
+            if abs(actual_fps - detected_fps) > 1.0:
+                self.message.emit(
+                    f"note: OBS profile FPS is {detected_fps}, but OpenCV reports {actual_fps:.1f}; "
+                    f"actual rate will be measured in capture_thread_fps"
+                )
         with self._runtime_config_lock:
             initial_capture_config = dict(self._runtime_config)
         send_width, send_height = _capture_target_size(first_frame, initial_capture_config)
