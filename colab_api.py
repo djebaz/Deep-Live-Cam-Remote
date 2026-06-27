@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 import zipfile
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,11 +46,12 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-batch-transport-v12"
+API_VERSION = "live-backend-queue-v13"
 LIVE_TRANSPORT_PACKET_MAGIC = b"DLCR"
 LIVE_TRANSPORT_PACKET_VERSION = 1
 LIVE_TRANSPORT_PACKET_HEADER = struct.Struct("!4sHH")
 LIVE_TRANSPORT_FRAME_HEADER = struct.Struct("!II")
+LIVE_PENDING_FRAME_QUEUE_LIMIT = 8
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 LIVE_FRAME_CODECS = {"jpeg", "webp"}
@@ -1007,12 +1009,18 @@ async def live_socket(websocket: WebSocket) -> None:
     perf_transport_batch_frames = 0
     perf_transport_batch_bytes = 0
     perf_transport_messages = 0
+    perf_reader_receive = 0.0
+    perf_reader_messages = 0
+    perf_drop_ack_send = 0.0
+    perf_drop_ack_messages = 0
+    perf_pending_queue_depth = 0
+    perf_pending_queue_samples = 0
     perf_frames_with_send_time = 0
     perf_frames_with_capture_time = 0
     perf_dropped_before_process = 0
     latest_drop_count = 0
     processed_drop_cursor = 0
-    latest_frame: dict[str, Any] | None = None
+    pending_frames: deque[dict[str, Any]] = deque()
     pending_frame_meta: dict[str, Any] | None = None
     reader_done = False
     reader_error: BaseException | None = None
@@ -1028,12 +1036,17 @@ async def live_socket(websocket: WebSocket) -> None:
             await websocket.send_bytes(payload)
 
     async def receive_latest_frames() -> None:
-        nonlocal config, geometry_logged, latest_drop_count, latest_frame
+        nonlocal config, geometry_logged, latest_drop_count
         nonlocal pending_frame_meta, reader_done, reader_error
         nonlocal perf_transport_unpack, perf_transport_batch_frames, perf_transport_batch_bytes, perf_transport_messages
+        nonlocal perf_reader_receive, perf_reader_messages, perf_drop_ack_send, perf_drop_ack_messages
+        nonlocal perf_pending_queue_depth, perf_pending_queue_samples
         try:
             while True:
+                receive_started = time.monotonic()
                 message = await websocket.receive()
+                perf_reader_receive += time.monotonic() - receive_started
+                perf_reader_messages += 1
                 if message.get("type") == "websocket.disconnect":
                     reader_done = True
                     async with latest_condition:
@@ -1091,30 +1104,36 @@ async def live_socket(websocket: WebSocket) -> None:
                 perf_transport_batch_frames += len(frame_packets)
                 perf_transport_batch_bytes += len(payload)
                 perf_transport_messages += 1
-                drop_notices: list[dict[str, Any]] = []
+                dropped_count = 0
+                last_dropped_seq: Any = ""
                 async with latest_condition:
                     for frame_packet in frame_packets:
-                        if latest_frame is not None:
+                        while len(pending_frames) >= LIVE_PENDING_FRAME_QUEUE_LIMIT:
+                            dropped_frame = pending_frames.popleft()
                             latest_drop_count += 1
-                            dropped_meta = latest_frame.get("meta") or {}
-                            drop_notices.append(
-                                {
-                                    "status": "live_frame_dropped",
-                                    "dropped": 1,
-                                    "frame_seq": dropped_meta.get("seq", ""),
-                                    "latest_drop_count": latest_drop_count,
-                                }
-                            )
-                        latest_frame = {
+                            dropped_count += 1
+                            dropped_meta = dropped_frame.get("meta") or {}
+                            last_dropped_seq = dropped_meta.get("seq", "")
+                        pending_frames.append({
                             "payload": frame_packet["payload"],
                             "meta": dict(frame_packet.get("meta") or {}),
                             "received_at": received_at,
                             "receive_wall_time": receive_wall_time,
                             "drop_count": latest_drop_count,
-                        }
-                    latest_condition.notify()
-                for drop_notice in drop_notices:
-                    await locked_send_json(drop_notice)
+                        })
+                    perf_pending_queue_depth += len(pending_frames)
+                    perf_pending_queue_samples += 1
+                    latest_condition.notify_all()
+                if dropped_count:
+                    drop_ack_started = time.monotonic()
+                    await locked_send_json({
+                        "status": "live_frame_dropped",
+                        "dropped": dropped_count,
+                        "frame_seq": last_dropped_seq,
+                        "latest_drop_count": latest_drop_count,
+                    })
+                    perf_drop_ack_send += time.monotonic() - drop_ack_started
+                    perf_drop_ack_messages += 1
         except BaseException as exc:
             reader_error = exc
             reader_done = True
@@ -1126,14 +1145,13 @@ async def live_socket(websocket: WebSocket) -> None:
         while True:
             frame_wait_started = time.monotonic()
             async with latest_condition:
-                while latest_frame is None and not reader_done:
+                while not pending_frames and not reader_done:
                     await latest_condition.wait()
-                if latest_frame is None:
+                if not pending_frames:
                     if reader_error is not None:
                         raise reader_error
                     return
-                frame_item = latest_frame
-                latest_frame = None
+                frame_item = pending_frames.popleft()
             frame_started = time.monotonic()
             payload = frame_item["payload"]
             metadata = frame_item.get("meta") or {}
@@ -1274,6 +1292,11 @@ async def live_socket(websocket: WebSocket) -> None:
                         "transport_pack_ms": "",
                         "transport_unpack_ms": round((perf_transport_unpack / max(1, perf_transport_messages)) * 1000.0, 2),
                         "frames_per_ws_message": round(perf_transport_batch_frames / max(1, perf_transport_messages), 2),
+                        "reader_receive_ms": round((perf_reader_receive / max(1, perf_reader_messages)) * 1000.0, 2),
+                        "drop_ack_send_ms": round((perf_drop_ack_send / max(1, perf_drop_ack_messages)) * 1000.0, 2) if perf_drop_ack_messages else 0.0,
+                        "drop_ack_messages": perf_drop_ack_messages,
+                        "pending_frame_queue": round(perf_pending_queue_depth / max(1, perf_pending_queue_samples), 2),
+                        "pending_frame_queue_limit": LIVE_PENDING_FRAME_QUEUE_LIMIT,
                     })
                     perf_started = encoded_at
                     perf_frames = 0
@@ -1303,6 +1326,12 @@ async def live_socket(websocket: WebSocket) -> None:
                     perf_transport_batch_frames = 0
                     perf_transport_batch_bytes = 0
                     perf_transport_messages = 0
+                    perf_reader_receive = 0.0
+                    perf_reader_messages = 0
+                    perf_drop_ack_send = 0.0
+                    perf_drop_ack_messages = 0
+                    perf_pending_queue_depth = 0
+                    perf_pending_queue_samples = 0
                     perf_frames_with_send_time = 0
                     perf_frames_with_capture_time = 0
                     perf_dropped_before_process = 0
