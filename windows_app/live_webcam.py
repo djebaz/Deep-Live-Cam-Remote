@@ -1485,7 +1485,6 @@ class LiveWorker(BaseLiveWorker):
             "capture_age_ms": 0.0,
             "dropped_capture_frames": 0,
             "duplicate_sender_frames": 0,
-            "throttled_frames": 0,
             "capture_seq": 0,
             "resize_ms": 0.0,
             "encode_ms": 0.0,
@@ -1609,7 +1608,6 @@ class LiveWorker(BaseLiveWorker):
                 ),
                 "dropped_capture_frames": int(client_stats.get("dropped_capture_frames") or 0),
                 "duplicate_sender_frames": int(client_stats.get("duplicate_sender_frames") or 0),
-                "throttled_frames": int(client_stats.get("throttled_frames") or 0),
                 "capture_seq": int(client_stats.get("capture_seq") or 0),
                 "frame_width": int(client_stats.get("frame_width") or 0),
                 "frame_height": int(client_stats.get("frame_height") or 0),
@@ -1632,7 +1630,6 @@ class LiveWorker(BaseLiveWorker):
                     "capture_age_ms": 0.0,
                     "dropped_capture_frames": 0,
                     "duplicate_sender_frames": 0,
-                    "throttled_frames": 0,
                     "resize_ms": 0.0,
                     "encode_ms": 0.0,
                     "send_ms": 0.0,
@@ -1648,9 +1645,6 @@ class LiveWorker(BaseLiveWorker):
         async def sender(websocket: Any) -> None:
             nonlocal in_flight
             last_sent_capture_seq = -1
-            last_sent_time = 0.0
-            target_frame_interval = 1.0 / max(1, requested_fps)
-            throttled_frames = 0
             while not self._stop:
                 for update in self._drain_live_config_updates():
                     server_update = {key: update[key] for key in LIVE_HOT_CHANGE_KEYS if key in update}
@@ -1704,16 +1698,6 @@ class LiveWorker(BaseLiveWorker):
                         if frame is None:
                             await asyncio.sleep(0.03)
                             break
-
-                        # FPS throttling: skip frames if not enough time has elapsed
-                        now = time.perf_counter()
-                        if last_sent_time > 0 and (now - last_sent_time) < target_frame_interval:
-                            # Not enough time elapsed, skip this frame
-                            throttled_frames += 1
-                            client_stats["throttled_frames"] = throttled_frames
-                            last_sent_capture_seq = capture_seq
-                            continue
-
                         capture_wait_ms = (time.perf_counter() - capture_wait_started) * 1000.0
                         duplicate_sender_frames = 1 if capture_seq == last_sent_capture_seq else 0
                         dropped_capture_frames = (
@@ -1722,7 +1706,6 @@ class LiveWorker(BaseLiveWorker):
                             else 0
                         )
                         last_sent_capture_seq = capture_seq
-                        last_sent_time = now
                         capture_age_ms = max(0.0, (time.perf_counter() - captured_at) * 1000.0)
                         add_client_stat("capture_read_ms", capture_wait_ms)
                         add_client_stat("capture_wait_ms", capture_wait_ms)
@@ -1808,7 +1791,6 @@ class LiveWorker(BaseLiveWorker):
                     now = clock()
                     if now - float(client_stats["started"]) >= 5.0:
                         emit_client_perf(now, current_pipeline_frames, current_in_flight)
-                        throttled_frames = 0
                 except Exception:
                     if reserved_in_flight:
                         async with condition:
