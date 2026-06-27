@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import io
 import json
+import math
 import mimetypes
 import queue
 import subprocess
@@ -43,10 +44,33 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-fast-detect-v8"
+API_VERSION = "live-hot-change-v11"
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 LIVE_FRAME_CODECS = {"jpeg", "webp"}
+LIVE_HOT_CHANGE_KEYS = {
+    "many_faces",
+    "opacity",
+    "sharpness",
+    "mouth_mask_size",
+    "interpolation_weight",
+    "poisson_blend",
+    "color_correction",
+    "max_width",
+    "frame_codec",
+    "output_codec",
+    "jpeg_quality",
+    "frame_quality",
+    "detector_size",
+    "detect_every_n",
+}
+LIVE_GEOMETRY_LOG_KEYS = {
+    "max_width",
+    "detector_size",
+    "detect_every_n",
+    "frame_codec",
+    "output_codec",
+}
 
 
 def bool_config(config: dict[str, Any], name: str, default: bool) -> bool:
@@ -357,6 +381,51 @@ def int_config(config: dict[str, Any], name: str, default: int, minimum: int, ma
     return max(minimum, min(maximum, value))
 
 
+def float_config(config: dict[str, Any], name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(config.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def strict_float_config(config: dict[str, Any], name: str, minimum: float, maximum: float) -> float:
+    if name not in config:
+        raise ValueError(f"{name} is required")
+    try:
+        value = float(config[name])
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return value
+
+
+def strict_int_config(config: dict[str, Any], name: str, minimum: int, maximum: int, step: int | None = None) -> int:
+    if name not in config:
+        raise ValueError(f"{name} is required")
+    raw = config[name]
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(raw, float) and not raw.is_integer():
+        raise ValueError(f"{name} must be an integer")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer") from None
+    if isinstance(raw, str) and raw.strip() != str(value):
+        raise ValueError(f"{name} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    if step and value % step != 0:
+        raise ValueError(f"{name} must be a multiple of {step}")
+    return value
+
+
 def live_processing_geometry(frame: np.ndarray, config: dict[str, Any]) -> tuple[int, int]:
     height, width = frame.shape[:2]
     configured = config.get("max_width")
@@ -431,6 +500,63 @@ def live_swapper_diagnostics(engine: colab_batch.ModernEngine) -> dict[str, str]
     diagnostics.setdefault("loaded_precision", "")
     diagnostics.setdefault("model_path", "")
     return diagnostics
+
+
+def live_hot_change_config(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    unknown = set(update) - LIVE_HOT_CHANGE_KEYS
+    if unknown:
+        raise ValueError(f"restart required for: {', '.join(sorted(unknown))}")
+    merged = dict(current)
+    if "many_faces" in update:
+        merged["many_faces"] = bool_config(update, "many_faces", bool(current.get("many_faces", False)))
+    for name, default, minimum, maximum in (
+        ("opacity", 1.0, 0.0, 1.0),
+        ("sharpness", 0.0, 0.0, 1.0),
+        ("mouth_mask_size", 0.0, 0.0, 10.0),
+        ("interpolation_weight", 0.0, 0.0, 1.0),
+    ):
+        if name in update:
+            merged[name] = strict_float_config(update, name, minimum, maximum)
+    for name in ("poisson_blend", "color_correction"):
+        if name in update:
+            merged[name] = bool_config(update, name, bool(current.get(name, False)))
+    if "max_width" in update:
+        merged["max_width"] = strict_int_config(update, "max_width", 64, 4096)
+    for name in ("frame_codec", "output_codec"):
+        if name in update:
+            codec = str(update.get(name) or "jpeg").lower()
+            if codec not in LIVE_FRAME_CODECS:
+                raise ValueError(f"unsupported {name}: {codec}")
+            merged[name] = codec
+    quality_key = "jpeg_quality" if "jpeg_quality" in update else "frame_quality"
+    if quality_key in update:
+        merged["jpeg_quality"] = strict_int_config(update, quality_key, 20, 95)
+        merged["frame_quality"] = merged["jpeg_quality"]
+    if "detector_size" in update:
+        merged["detector_size"] = strict_int_config(update, "detector_size", 160, 640, step=32)
+    if "detect_every_n" in update:
+        merged["detect_every_n"] = strict_int_config(update, "detect_every_n", 1, 30)
+    return merged
+
+
+def apply_live_hot_change(engine: colab_batch.ModernEngine, current: dict[str, Any], update: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    next_config = live_hot_change_config(current, update)
+    detection_keys = {"many_faces", "detector_size", "detect_every_n"}
+    if any(next_config.get(key) != current.get(key) for key in detection_keys):
+        state.clear()
+        if hasattr(engine.swapper, "FACE_DETECTION_CACHE"):
+            engine.swapper.FACE_DETECTION_CACHE.clear()
+    engine.globals.many_faces = bool(next_config.get("many_faces", False)) and not engine.mapping
+    engine.globals.opacity = float(next_config.get("opacity", 1.0))
+    engine.globals.sharpness = float(next_config.get("sharpness", 0.0))
+    engine.globals.mouth_mask_size = float(next_config.get("mouth_mask_size", 0.0))
+    engine.globals.mouth_mask = engine.globals.mouth_mask_size > 0
+    engine.globals.poisson_blend = bool(next_config.get("poisson_blend", False))
+    engine.globals.color_correction = bool(next_config.get("color_correction", False))
+    interpolation_weight = float(next_config.get("interpolation_weight", 0.0))
+    engine.globals.enable_interpolation = 0 < interpolation_weight < 1
+    engine.globals.interpolation_weight = interpolation_weight
+    return next_config
 
 
 def live_detect_faces(frame: np.ndarray, many_faces: bool, detector_size: int) -> Any:
@@ -761,12 +887,12 @@ async def live_socket(websocket: WebSocket) -> None:
             source_face=Path(config.get("source_face") or SOURCE_DIR / "source.png"),
             map_config=None,
             many_faces=bool(config.get("many_faces", False)),
-            opacity=float(config.get("opacity", 1.0)),
-            sharpness=float(config.get("sharpness", 0.0)),
-            mouth_mask_size=float(config.get("mouth_mask_size", 0.0)),
+            opacity=float_config(config, "opacity", 1.0, 0.0, 1.0),
+            sharpness=float_config(config, "sharpness", 0.0, 0.0, 1.0),
+            mouth_mask_size=float_config(config, "mouth_mask_size", 0.0, 0.0, 10.0),
             poisson_blend=bool(config.get("poisson_blend", False)),
             color_correction=bool(config.get("color_correction", False)),
-            interpolation_weight=float(config.get("interpolation_weight", 0.0)),
+            interpolation_weight=float_config(config, "interpolation_weight", 0.0, 0.0, 1.0),
             enhancer=config.get("enhancer", "none"),
             face_model_pack=live_face_model_pack(config),
             swapper_precision=live_swapper_precision(config),
@@ -818,7 +944,39 @@ async def live_socket(websocket: WebSocket) -> None:
     try:
         while True:
             frame_started = time.monotonic()
-            payload = await websocket.receive_bytes()
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
+            text_payload = message.get("text")
+            if text_payload is not None:
+                try:
+                    control = json.loads(text_payload)
+                    if not isinstance(control, dict) or control.get("type") != "live_config_update":
+                        raise ValueError("unknown live control message")
+                    update = control.get("config")
+                    if not isinstance(update, dict):
+                        raise ValueError("live_config_update requires config object")
+                    with ENGINE_LOCK:
+                        config = apply_live_hot_change(engine, config, update, live_state)
+                    if LIVE_GEOMETRY_LOG_KEYS.intersection(update):
+                        geometry_logged = False
+                    await websocket.send_json({
+                        "status": "live_config_updated",
+                        "detector_size": live_detection_size(config),
+                        "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
+                        "frame_codec": live_frame_codec(config),
+                        "output_codec": live_output_codec(config),
+                        "frame_quality": live_jpeg_quality(config),
+                        "jpeg_quality": live_jpeg_quality(config),
+                        "many_faces": bool(config.get("many_faces", False)),
+                    })
+                except Exception as exc:
+                    await websocket.send_json({"status": "live_config_update_rejected", "message": str(exc)})
+                continue
+            payload = message.get("bytes")
+            if payload is None:
+                await websocket.send_json({"error": "invalid live websocket message"})
+                continue
             received_at = time.monotonic()
             array = np.frombuffer(payload, dtype=np.uint8)
             frame = cv2.imdecode(array, cv2.IMREAD_COLOR)

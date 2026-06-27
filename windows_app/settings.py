@@ -27,6 +27,23 @@ PROCESSING_OPTION_KEYS = (
 
 DEFAULT_LIVE_WIDTH = 1280
 DEFAULT_LIVE_HEIGHT = 720
+DEFAULT_LIVE_CAPTURE_BACKEND = "directshow"
+LIVE_CAPTURE_BACKENDS = ("auto", "directshow", "msmf")
+DEFAULT_LIVE_CAPTURE_MODE = "auto"
+LIVE_CAPTURE_MODES = ("auto", "opencv_auto", "custom")
+DEFAULT_LIVE_CAPTURE_SCALE = "auto"
+LIVE_CAPTURE_SCALES = ("auto", "1x", "3/4x", "2/3x", "1/2x", "1/3x", "1/4x")
+LIVE_CAPTURE_SCALE_FACTORS = {
+    "auto": None,
+    "1x": 1.0,
+    "3/4x": 3 / 4,
+    "2/3x": 2 / 3,
+    "1/2x": 1 / 2,
+    "1/3x": 1 / 3,
+    "1/4x": 1 / 4,
+}
+DEFAULT_LIVE_CAPTURE_WIDTH = DEFAULT_LIVE_WIDTH
+DEFAULT_LIVE_CAPTURE_HEIGHT = DEFAULT_LIVE_HEIGHT
 DEFAULT_LIVE_FPS = 30
 DEFAULT_LIVE_PIPELINE_FRAMES = 16
 DEFAULT_LIVE_JPEG_QUALITY = 80
@@ -57,6 +74,11 @@ LIVE_OPTION_KEYS = (
     "jpeg_quality",
     "detector_size",
     "detect_every_n",
+    "capture_backend",
+    "capture_mode",
+    "capture_scale",
+    "capture_width",
+    "capture_height",
     "face_model_pack",
     "swapper_precision",
     "cache_source_face",
@@ -173,6 +195,11 @@ def _default_live_options() -> dict[str, Any]:
         "jpeg_quality": DEFAULT_LIVE_JPEG_QUALITY,
         "detector_size": DEFAULT_LIVE_DETECTOR_SIZE,
         "detect_every_n": DEFAULT_LIVE_DETECT_EVERY_N,
+        "capture_backend": DEFAULT_LIVE_CAPTURE_BACKEND,
+        "capture_mode": DEFAULT_LIVE_CAPTURE_MODE,
+        "capture_scale": DEFAULT_LIVE_CAPTURE_SCALE,
+        "capture_width": DEFAULT_LIVE_CAPTURE_WIDTH,
+        "capture_height": DEFAULT_LIVE_CAPTURE_HEIGHT,
         "face_model_pack": DEFAULT_LIVE_FACE_MODEL_PACK,
         "swapper_precision": DEFAULT_LIVE_SWAPPER_PRECISION,
         "cache_source_face": True,
@@ -206,6 +233,17 @@ def coerce_live_options(value: object) -> dict[str, Any]:
     options["detector_size"] = max(160, min(640, int(options["detector_size"])))
     options["detector_size"] = max(32, int(options["detector_size"]) // 32 * 32)
     options["detect_every_n"] = max(1, min(30, int(options["detect_every_n"])))
+    options["capture_backend"] = str(options["capture_backend"]).lower()
+    if options["capture_backend"] not in LIVE_CAPTURE_BACKENDS:
+        options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
+    options["capture_mode"] = str(options["capture_mode"]).lower()
+    if options["capture_mode"] not in LIVE_CAPTURE_MODES:
+        options["capture_mode"] = DEFAULT_LIVE_CAPTURE_MODE
+    options["capture_scale"] = str(options["capture_scale"]).lower()
+    if options["capture_scale"] not in LIVE_CAPTURE_SCALES:
+        options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
+    options["capture_width"] = max(2, min(4096, int(options["capture_width"])))
+    options["capture_height"] = max(2, min(4096, int(options["capture_height"])))
     options["face_model_pack"] = str(options["face_model_pack"])
     if options["face_model_pack"] not in LIVE_FACE_MODEL_PACKS:
         options["face_model_pack"] = DEFAULT_LIVE_FACE_MODEL_PACK
@@ -246,6 +284,11 @@ def load_settings() -> AppSettings:
     settings.live_fps = int(data.get("live_fps") or DEFAULT_LIVE_FPS)
     settings.live_pipeline_frames = int(data.get("live_pipeline_frames") or DEFAULT_LIVE_PIPELINE_FRAMES)
     settings.live_options = coerce_live_options(data.get("live_options"))
+    if isinstance(data.get("live_options"), dict):
+        raw_options = data["live_options"]
+        if raw_options.get("capture_mode") == "auto" and raw_options.get("capture_scale") == "1/2x":
+            settings.live_options["capture_backend"] = DEFAULT_LIVE_CAPTURE_BACKEND
+            settings.live_options["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
     return settings
 
 
