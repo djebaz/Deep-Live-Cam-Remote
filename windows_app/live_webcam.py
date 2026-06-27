@@ -122,6 +122,15 @@ LIVE_PERF_CSV_COLUMNS = (
     "max_width",
     "input",
     "processing",
+    "frame_seq",
+    "server_queue_ms",
+    "client_to_server_ms",
+    "capture_to_server_ms",
+    "receive_to_send_ms",
+    "latest_drop_count",
+    "frames_dropped_before_process",
+    "server_decode_to_process_ms",
+    "server_process_to_encode_ms",
     "server_fps",
     "wait_ms",
     "decode_ms",
@@ -130,6 +139,8 @@ LIVE_PERF_CSV_COLUMNS = (
     "detect_ms",
     "landmarks_ms",
     "swap_ms",
+    "source_refresh_ms",
+    "face_swap_ms",
     "post_ms",
     "enhance_ms",
     "encode_ms",
@@ -650,6 +661,15 @@ def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str,
             "max_width": options.get("max_width", ""),
             "input": payload.get("input", ""),
             "processing": payload.get("processing", ""),
+            "frame_seq": payload.get("frame_seq", ""),
+            "server_queue_ms": payload.get("server_queue_ms", ""),
+            "client_to_server_ms": payload.get("client_to_server_ms", ""),
+            "capture_to_server_ms": payload.get("capture_to_server_ms", ""),
+            "receive_to_send_ms": payload.get("receive_to_send_ms", ""),
+            "latest_drop_count": payload.get("latest_drop_count", ""),
+            "frames_dropped_before_process": payload.get("frames_dropped_before_process", ""),
+            "server_decode_to_process_ms": payload.get("server_decode_to_process_ms", ""),
+            "server_process_to_encode_ms": payload.get("server_process_to_encode_ms", ""),
             "backend_json": json.dumps(payload, sort_keys=True),
             "client_json": json.dumps(client_payload, sort_keys=True) if client_payload else "",
             "receiver_json": json.dumps(receiver_payload, sort_keys=True) if receiver_payload else "",
@@ -664,6 +684,8 @@ def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str,
         "detect_ms",
         "landmarks_ms",
         "swap_ms",
+        "source_refresh_ms",
+        "face_swap_ms",
         "post_ms",
         "enhance_ms",
         "encode_ms",
@@ -1258,6 +1280,7 @@ class LiveWorker(BaseLiveWorker):
             "frame": first_frame,
             "seq": 0,
             "captured_at": time.perf_counter(),
+            "captured_wall_time": time.time(),
             "grab_ms": 0.0,
             "retrieve_ms": 0.0,
         }
@@ -1308,6 +1331,7 @@ class LiveWorker(BaseLiveWorker):
                         time.sleep(0.005)
                         continue
                     captured_at = time.perf_counter()
+                    captured_wall_time = time.time()
                     with capture_condition:
                         seq += 1
                         latest_capture.update(
@@ -1315,6 +1339,7 @@ class LiveWorker(BaseLiveWorker):
                                 "frame": frame,
                                 "seq": seq,
                                 "captured_at": captured_at,
+                                "captured_wall_time": captured_wall_time,
                                 "grab_ms": grab_ms,
                                 "retrieve_ms": retrieve_ms,
                             }
@@ -1439,6 +1464,7 @@ class LiveWorker(BaseLiveWorker):
                         frame = latest_capture["frame"]
                         capture_seq = int(latest_capture["seq"])
                         captured_at = float(latest_capture["captured_at"])
+                        captured_wall_time = float(latest_capture.get("captured_wall_time") or 0.0)
                         capture_grab_ms = float(latest_capture["grab_ms"])
                         capture_retrieve_ms = float(latest_capture["retrieve_ms"])
                     if frame is None:
@@ -1493,6 +1519,21 @@ class LiveWorker(BaseLiveWorker):
                         continue
                     frame_height, frame_width = frame.shape[:2]
                     payload_bytes = encoded.tobytes()
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "live_frame_meta",
+                                "seq": capture_seq,
+                                "capture_time": captured_wall_time,
+                                "send_time": time.time(),
+                                "codec": current_frame_codec,
+                                "width": frame_width,
+                                "height": frame_height,
+                                "quality": current_frame_quality,
+                                "payload_bytes": len(payload_bytes),
+                            }
+                        )
+                    )
                     send_started = clock()
                     await websocket.send(payload_bytes)
                     add_client_stat("send_ms", (clock() - send_started) * 1000.0)

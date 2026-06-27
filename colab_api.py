@@ -580,6 +580,8 @@ def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, conf
         "detect": 0.0,
         "landmarks": 0.0,
         "swap": 0.0,
+        "source_refresh": 0.0,
+        "face_swap": 0.0,
         "post": 0.0,
         "enhance": 0.0,
         "detect_reused": False,
@@ -620,13 +622,17 @@ def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, conf
 
     swap_started = time.monotonic()
     if not getattr(engine, "cache_source_face", True):
+        source_refresh_started = time.monotonic()
         engine.refresh_default_source()
+        timings["source_refresh"] += time.monotonic() - source_refresh_started
     bboxes = []
     if many_faces:
         faces = detected or []
         output = frame.copy()
         for face in faces:
+            face_swap_started = time.monotonic()
             output = engine.swapper.swap_face(engine.default_source, face, output)
+            timings["face_swap"] += time.monotonic() - face_swap_started
             if face is not None and hasattr(face, "bbox") and face.bbox is not None:
                 bboxes.append(face.bbox.astype(int))
         detected_for_enhancer = faces
@@ -634,7 +640,9 @@ def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, conf
         face = detected
         output = frame
         if face is not None:
+            face_swap_started = time.monotonic()
             output = engine.swapper.swap_face(engine.default_source, face, output)
+            timings["face_swap"] += time.monotonic() - face_swap_started
             if hasattr(face, "bbox") and face.bbox is not None:
                 bboxes.append(face.bbox.astype(int))
         detected_for_enhancer = [face] if face is not None else []
@@ -934,6 +942,8 @@ async def live_socket(websocket: WebSocket) -> None:
     perf_detect = 0.0
     perf_landmarks = 0.0
     perf_swap = 0.0
+    perf_source_refresh = 0.0
+    perf_face_swap = 0.0
     perf_post = 0.0
     perf_enhance = 0.0
     perf_detect_reused = 0
@@ -941,48 +951,137 @@ async def live_socket(websocket: WebSocket) -> None:
     perf_encode = 0.0
     perf_in_bytes = 0
     perf_out_bytes = 0
+    perf_server_queue = 0.0
+    perf_client_to_server = 0.0
+    perf_capture_to_server = 0.0
+    perf_receive_to_send = 0.0
+    perf_decode_to_process = 0.0
+    perf_process_to_encode = 0.0
+    perf_frames_with_send_time = 0
+    perf_frames_with_capture_time = 0
+    perf_dropped_before_process = 0
+    latest_drop_count = 0
+    processed_drop_cursor = 0
+    latest_frame: dict[str, Any] | None = None
+    pending_frame_meta: dict[str, Any] | None = None
+    reader_done = False
+    reader_error: BaseException | None = None
+    latest_condition = asyncio.Condition()
+    send_lock = asyncio.Lock()
+
+    async def locked_send_json(payload: dict[str, Any]) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    async def locked_send_bytes(payload: bytes) -> None:
+        async with send_lock:
+            await websocket.send_bytes(payload)
+
+    async def receive_latest_frames() -> None:
+        nonlocal config, geometry_logged, latest_drop_count, latest_frame
+        nonlocal pending_frame_meta, reader_done, reader_error
+        try:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    reader_done = True
+                    async with latest_condition:
+                        latest_condition.notify_all()
+                    return
+
+                text_payload = message.get("text")
+                if text_payload is not None:
+                    try:
+                        control = json.loads(text_payload)
+                        if not isinstance(control, dict):
+                            raise ValueError("unknown live control message")
+                        control_type = control.get("type")
+                        if control_type == "live_frame_meta":
+                            pending_frame_meta = control
+                        elif control_type == "live_config_update":
+                            update = control.get("config")
+                            if not isinstance(update, dict):
+                                raise ValueError("live_config_update requires config object")
+                            with ENGINE_LOCK:
+                                config = apply_live_hot_change(engine, config, update, live_state)
+                            if LIVE_GEOMETRY_LOG_KEYS.intersection(update):
+                                geometry_logged = False
+                            await locked_send_json({
+                                "status": "live_config_updated",
+                                "detector_size": live_detection_size(config),
+                                "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
+                                "frame_codec": live_frame_codec(config),
+                                "output_codec": live_output_codec(config),
+                                "frame_quality": live_jpeg_quality(config),
+                                "jpeg_quality": live_jpeg_quality(config),
+                                "many_faces": bool(config.get("many_faces", False)),
+                            })
+                        else:
+                            raise ValueError("unknown live control message")
+                    except Exception as exc:
+                        await locked_send_json({"status": "live_config_update_rejected", "message": str(exc)})
+                    continue
+
+                payload = message.get("bytes")
+                if payload is None:
+                    await locked_send_json({"error": "invalid live websocket message"})
+                    continue
+
+                received_at = time.monotonic()
+                receive_wall_time = time.time()
+                meta = pending_frame_meta if isinstance(pending_frame_meta, dict) else {}
+                pending_frame_meta = None
+                async with latest_condition:
+                    if latest_frame is not None:
+                        latest_drop_count += 1
+                    latest_frame = {
+                        "payload": payload,
+                        "meta": dict(meta),
+                        "received_at": received_at,
+                        "receive_wall_time": receive_wall_time,
+                        "drop_count": latest_drop_count,
+                    }
+                    latest_condition.notify()
+        except BaseException as exc:
+            reader_error = exc
+            reader_done = True
+            async with latest_condition:
+                latest_condition.notify_all()
+
+    reader_task = asyncio.create_task(receive_latest_frames())
     try:
         while True:
+            frame_wait_started = time.monotonic()
+            async with latest_condition:
+                while latest_frame is None and not reader_done:
+                    await latest_condition.wait()
+                if latest_frame is None:
+                    if reader_error is not None:
+                        raise reader_error
+                    return
+                frame_item = latest_frame
+                latest_frame = None
             frame_started = time.monotonic()
-            message = await websocket.receive()
-            if message.get("type") == "websocket.disconnect":
-                return
-            text_payload = message.get("text")
-            if text_payload is not None:
-                try:
-                    control = json.loads(text_payload)
-                    if not isinstance(control, dict) or control.get("type") != "live_config_update":
-                        raise ValueError("unknown live control message")
-                    update = control.get("config")
-                    if not isinstance(update, dict):
-                        raise ValueError("live_config_update requires config object")
-                    with ENGINE_LOCK:
-                        config = apply_live_hot_change(engine, config, update, live_state)
-                    if LIVE_GEOMETRY_LOG_KEYS.intersection(update):
-                        geometry_logged = False
-                    await websocket.send_json({
-                        "status": "live_config_updated",
-                        "detector_size": live_detection_size(config),
-                        "detect_every_n": int_config(config, "detect_every_n", 1, 1, 30),
-                        "frame_codec": live_frame_codec(config),
-                        "output_codec": live_output_codec(config),
-                        "frame_quality": live_jpeg_quality(config),
-                        "jpeg_quality": live_jpeg_quality(config),
-                        "many_faces": bool(config.get("many_faces", False)),
-                    })
-                except Exception as exc:
-                    await websocket.send_json({"status": "live_config_update_rejected", "message": str(exc)})
-                continue
-            payload = message.get("bytes")
-            if payload is None:
-                await websocket.send_json({"error": "invalid live websocket message"})
-                continue
-            received_at = time.monotonic()
+            payload = frame_item["payload"]
+            metadata = frame_item.get("meta") or {}
+            received_at = float(frame_item["received_at"])
+            receive_wall_time = float(frame_item.get("receive_wall_time") or 0.0)
+            frames_dropped_before_process = max(0, int(frame_item.get("drop_count") or 0) - processed_drop_cursor)
+            processed_drop_cursor = int(frame_item.get("drop_count") or processed_drop_cursor)
+            server_queue_ms = max(0.0, (frame_started - received_at) * 1000.0)
+            client_send_time = metadata.get("send_time")
+            client_capture_time = metadata.get("capture_time")
+            client_to_server_ms = None
+            capture_to_server_ms = None
+            if isinstance(client_send_time, (int, float)) and receive_wall_time:
+                client_to_server_ms = max(0.0, (receive_wall_time - float(client_send_time)) * 1000.0)
+            if isinstance(client_capture_time, (int, float)) and receive_wall_time:
+                capture_to_server_ms = max(0.0, (receive_wall_time - float(client_capture_time)) * 1000.0)
             array = np.frombuffer(payload, dtype=np.uint8)
             frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
             decoded_at = time.monotonic()
             if frame is None:
-                await websocket.send_json({"error": "invalid frame"})
+                await locked_send_json({"error": "invalid frame"})
                 continue
             frame_height, frame_width = frame.shape[:2]
             process_width, process_height = live_processing_geometry(frame, config)
@@ -993,7 +1092,7 @@ async def live_socket(websocket: WebSocket) -> None:
                 process_frame = cv2.resize(frame, (process_width, process_height), interpolation=interpolation)
             resized_at = time.monotonic()
             if not geometry_logged:
-                await websocket.send_json({
+                await locked_send_json({
                     "status": "live_geometry",
                     "api_version": API_VERSION,
                     "input": f"{frame_width}x{frame_height}",
@@ -1015,7 +1114,7 @@ async def live_socket(websocket: WebSocket) -> None:
                     output, frame_timings = live_process_frame(engine, process_frame.copy(), config, live_state)
                 processed_at = time.monotonic()
             except Exception as exc:
-                await websocket.send_json({"error": f"live frame failed: {exc}"})
+                await locked_send_json({"error": f"live frame failed: {exc}"})
                 continue
             if output is None:
                 output = process_frame
@@ -1025,14 +1124,17 @@ async def live_socket(websocket: WebSocket) -> None:
             encoded_at = time.monotonic()
             if ok:
                 out_bytes = int(encoded.size)
+                sent_at = time.monotonic()
                 perf_frames += 1
-                perf_wait += received_at - frame_started
+                perf_wait += frame_started - frame_wait_started
                 perf_decode += decoded_at - received_at
                 perf_resize += resized_at - decoded_at
                 perf_process += processed_at - resized_at
                 perf_detect += float(frame_timings.get("detect", 0.0))
                 perf_landmarks += float(frame_timings.get("landmarks", 0.0))
                 perf_swap += float(frame_timings.get("swap", 0.0))
+                perf_source_refresh += float(frame_timings.get("source_refresh", 0.0))
+                perf_face_swap += float(frame_timings.get("face_swap", 0.0))
                 perf_post += float(frame_timings.get("post", 0.0))
                 perf_enhance += float(frame_timings.get("enhance", 0.0))
                 perf_detect_reused += 1 if frame_timings.get("detect_reused") else 0
@@ -1040,9 +1142,20 @@ async def live_socket(websocket: WebSocket) -> None:
                 perf_encode += encoded_at - processed_at
                 perf_in_bytes += len(payload)
                 perf_out_bytes += out_bytes
+                perf_server_queue += server_queue_ms / 1000.0
+                perf_receive_to_send += sent_at - received_at
+                perf_decode_to_process += processed_at - decoded_at
+                perf_process_to_encode += encoded_at - processed_at
+                perf_dropped_before_process += frames_dropped_before_process
+                if client_to_server_ms is not None:
+                    perf_client_to_server += client_to_server_ms / 1000.0
+                    perf_frames_with_send_time += 1
+                if capture_to_server_ms is not None:
+                    perf_capture_to_server += capture_to_server_ms / 1000.0
+                    perf_frames_with_capture_time += 1
                 elapsed = encoded_at - perf_started
                 if elapsed >= 5.0 and perf_frames:
-                    await websocket.send_json({
+                    await locked_send_json({
                         "status": "live_perf",
                         "api_version": API_VERSION,
                         "server_fps": round(perf_frames / elapsed, 2),
@@ -1053,6 +1166,8 @@ async def live_socket(websocket: WebSocket) -> None:
                         "detect_ms": round((perf_detect / perf_frames) * 1000.0, 1),
                         "landmarks_ms": round((perf_landmarks / perf_frames) * 1000.0, 1),
                         "swap_ms": round((perf_swap / perf_frames) * 1000.0, 1),
+                        "source_refresh_ms": round((perf_source_refresh / perf_frames) * 1000.0, 1),
+                        "face_swap_ms": round((perf_face_swap / perf_frames) * 1000.0, 1),
                         "post_ms": round((perf_post / perf_frames) * 1000.0, 1),
                         "enhance_ms": round((perf_enhance / perf_frames) * 1000.0, 1),
                         "detect_reuse_pct": round((perf_detect_reused / perf_frames) * 100.0, 1),
@@ -1071,6 +1186,15 @@ async def live_socket(websocket: WebSocket) -> None:
                         "encode_ms": round((perf_encode / perf_frames) * 1000.0, 1),
                         "in_kb": round((perf_in_bytes / perf_frames) / 1024.0, 1),
                         "out_kb": round((perf_out_bytes / perf_frames) / 1024.0, 1),
+                        "frame_seq": metadata.get("seq", ""),
+                        "server_queue_ms": round((perf_server_queue / perf_frames) * 1000.0, 1),
+                        "client_to_server_ms": round((perf_client_to_server / max(1, perf_frames_with_send_time)) * 1000.0, 1) if perf_frames_with_send_time else "",
+                        "capture_to_server_ms": round((perf_capture_to_server / max(1, perf_frames_with_capture_time)) * 1000.0, 1) if perf_frames_with_capture_time else "",
+                        "receive_to_send_ms": round((perf_receive_to_send / perf_frames) * 1000.0, 1),
+                        "latest_drop_count": latest_drop_count,
+                        "frames_dropped_before_process": perf_dropped_before_process,
+                        "server_decode_to_process_ms": round((perf_decode_to_process / perf_frames) * 1000.0, 1),
+                        "server_process_to_encode_ms": round((perf_process_to_encode / perf_frames) * 1000.0, 1),
                     })
                     perf_started = encoded_at
                     perf_frames = 0
@@ -1081,6 +1205,8 @@ async def live_socket(websocket: WebSocket) -> None:
                     perf_detect = 0.0
                     perf_landmarks = 0.0
                     perf_swap = 0.0
+                    perf_source_refresh = 0.0
+                    perf_face_swap = 0.0
                     perf_post = 0.0
                     perf_enhance = 0.0
                     perf_detect_reused = 0
@@ -1088,9 +1214,21 @@ async def live_socket(websocket: WebSocket) -> None:
                     perf_encode = 0.0
                     perf_in_bytes = 0
                     perf_out_bytes = 0
-                await websocket.send_bytes(encoded.tobytes())
+                    perf_server_queue = 0.0
+                    perf_client_to_server = 0.0
+                    perf_capture_to_server = 0.0
+                    perf_receive_to_send = 0.0
+                    perf_decode_to_process = 0.0
+                    perf_process_to_encode = 0.0
+                    perf_frames_with_send_time = 0
+                    perf_frames_with_capture_time = 0
+                    perf_dropped_before_process = 0
+                await locked_send_bytes(encoded.tobytes())
     except WebSocketDisconnect:
         return
+    finally:
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
 
 
 def main(argv: list[str] | None = None) -> int:
