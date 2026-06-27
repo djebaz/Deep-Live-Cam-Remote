@@ -46,7 +46,7 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-backend-queue-v13"
+API_VERSION = "live-output-packet-v14"
 LIVE_TRANSPORT_PACKET_MAGIC = b"DLCR"
 LIVE_TRANSPORT_PACKET_VERSION = 1
 LIVE_TRANSPORT_PACKET_HEADER = struct.Struct("!4sHH")
@@ -480,6 +480,17 @@ def live_encode_frame(frame: np.ndarray, config: dict[str, Any]) -> tuple[bool, 
             return True, encoded, "webp"
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return bool(ok), encoded, "jpeg"
+
+
+def pack_live_frame_packet(frames: list[tuple[dict[str, Any], bytes]]) -> bytes:
+    packet = bytearray()
+    packet.extend(LIVE_TRANSPORT_PACKET_HEADER.pack(LIVE_TRANSPORT_PACKET_MAGIC, LIVE_TRANSPORT_PACKET_VERSION, len(frames)))
+    for header, payload in frames:
+        header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+        packet.extend(LIVE_TRANSPORT_FRAME_HEADER.pack(len(header_bytes), len(payload)))
+        packet.extend(header_bytes)
+        packet.extend(payload)
+    return bytes(packet)
 
 
 def unpack_live_frame_packet(payload: bytes, fallback_meta: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], float]:
@@ -1335,7 +1346,19 @@ async def live_socket(websocket: WebSocket) -> None:
                     perf_frames_with_send_time = 0
                     perf_frames_with_capture_time = 0
                     perf_dropped_before_process = 0
-                await locked_send_bytes(encoded.tobytes())
+                output_payload = encoded.tobytes()
+                output_meta = {
+                    "seq": metadata.get("seq", ""),
+                    "capture_time": metadata.get("capture_time", ""),
+                    "client_send_time": metadata.get("send_time", ""),
+                    "server_receive_time": receive_wall_time,
+                    "server_send_time": time.time(),
+                    "codec": encoded_codec,
+                    "width": int(output.shape[1]),
+                    "height": int(output.shape[0]),
+                    "payload_bytes": len(output_payload),
+                }
+                await locked_send_bytes(pack_live_frame_packet([(output_meta, output_payload)]))
     except WebSocketDisconnect:
         return
     finally:

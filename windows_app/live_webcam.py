@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -195,7 +195,11 @@ LIVE_PERF_CSV_COLUMNS = (
     "client_transport_pack_ms",
     "client_frames_per_ws_message",
     "receiver_fps",
+    "receiver_frame_seq",
     "receiver_decode_ms",
+    "receiver_transport_unpack_ms",
+    "receiver_transport_frames",
+    "receiver_transport_bytes",
     "virtual_send_ms",
     "backend_json",
     "client_json",
@@ -224,11 +228,82 @@ def _pack_live_frame_batch(frames: list[tuple[dict[str, Any], bytes]]) -> bytes:
     return bytes(packet)
 
 
+def _unpack_live_frame_batch(payload: bytes) -> tuple[list[tuple[dict[str, Any], bytes]], float]:
+    unpack_started = time.monotonic()
+    if not payload.startswith(LIVE_TRANSPORT_PACKET_MAGIC):
+        return [({}, payload)], (time.monotonic() - unpack_started) * 1000.0
+    if len(payload) < LIVE_TRANSPORT_PACKET_HEADER.size:
+        raise ValueError("live frame packet is truncated")
+    magic, version, frame_count = LIVE_TRANSPORT_PACKET_HEADER.unpack_from(payload, 0)
+    if magic != LIVE_TRANSPORT_PACKET_MAGIC:
+        raise ValueError("invalid live frame packet magic")
+    if version != LIVE_TRANSPORT_PACKET_VERSION:
+        raise ValueError(f"unsupported live frame packet version {version}")
+    offset = LIVE_TRANSPORT_PACKET_HEADER.size
+    frames: list[tuple[dict[str, Any], bytes]] = []
+    for _ in range(frame_count):
+        if offset + LIVE_TRANSPORT_FRAME_HEADER.size > len(payload):
+            raise ValueError("live frame packet frame header is truncated")
+        header_len, payload_len = LIVE_TRANSPORT_FRAME_HEADER.unpack_from(payload, offset)
+        offset += LIVE_TRANSPORT_FRAME_HEADER.size
+        if header_len < 0 or payload_len < 0 or offset + header_len + payload_len > len(payload):
+            raise ValueError("live frame packet has invalid frame lengths")
+        header_bytes = payload[offset : offset + header_len]
+        offset += header_len
+        frame_payload = payload[offset : offset + payload_len]
+        offset += payload_len
+        try:
+            header = json.loads(header_bytes.decode("utf-8"))
+        except Exception as exc:
+            raise ValueError(f"invalid live frame packet header: {exc}") from None
+        if not isinstance(header, dict):
+            raise ValueError("live frame packet header must be an object")
+        frames.append((header, frame_payload))
+    if offset != len(payload):
+        raise ValueError("live frame packet has trailing bytes")
+    return frames, (time.monotonic() - unpack_started) * 1000.0
+
+
 def _status_label(text: str = "") -> QLabel:
     label = QLabel(text)
     label.setObjectName("statusLabel")
     label.setWordWrap(True)
     return label
+
+
+def _metric_value(payload: dict[str, Any], name: str) -> str:
+    value = payload.get(name)
+    if value in ("", None):
+        return "--"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _update_live_fps_indicators(window: MainWindow) -> None:
+    label = getattr(window, "live_status", None)
+    if label is None:
+        return
+    backend = getattr(window, "_live_latest_backend_perf", {})
+    if not isinstance(backend, dict):
+        backend = {}
+    client = getattr(window, "_live_latest_client_perf", {})
+    if not isinstance(client, dict):
+        client = {}
+    receiver = getattr(window, "_live_latest_receiver_perf", {})
+    if not isinstance(receiver, dict):
+        receiver = {}
+    queue_value = _metric_value(backend, "pending_frame_queue")
+    queue_limit = _metric_value(backend, "pending_frame_queue_limit")
+    label.setText(
+        "FPS "
+        f"client {_metric_value(client, 'client_fps')} | "
+        f"server {_metric_value(backend, 'server_fps')} | "
+        f"preview {_metric_value(receiver, 'receiver_fps')}    "
+        f"wait {_metric_value(backend, 'wait_ms')} ms | "
+        f"queue {queue_value}/{queue_limit}"
+    )
 
 
 def _even_dimension(value: float | int) -> int:
@@ -579,7 +654,6 @@ def _set_live_perf_case_widgets(window: MainWindow, case: dict[str, Any]) -> Non
 def _start_live_perf_test(window: MainWindow) -> None:
     worker = getattr(window, "live_worker", None)
     if worker is None or not worker.isRunning():
-        ui_base._set_process_status(window, "live", "Start Live before running the perf test.")
         window.log("live perf test skipped: Live is not running")
         return
     if getattr(window, "_live_perf_test_running", False):
@@ -592,6 +666,7 @@ def _start_live_perf_test(window: MainWindow) -> None:
     window._live_perf_original_pipeline_frames = int(window.live_pipeline_frames.value())
     window._live_perf_output_path = _live_perf_output_path()
     window._live_perf_csv_initialized = False
+    window._live_latest_backend_perf = {}
     window._live_latest_client_perf = {}
     window._live_latest_receiver_perf = {}
     timer = getattr(window, "_live_perf_test_timer", None)
@@ -660,11 +735,7 @@ def _advance_live_perf_test(window: MainWindow) -> None:
     window._live_perf_case_started = time.monotonic()
     case = cases[next_index]
     _set_live_perf_case_widgets(window, case)
-    ui_base._set_process_status(
-        window,
-        "live",
-        f"Live perf test case {next_index + 1}/{len(cases)}: {case}",
-    )
+    window.log(f"Live perf test case {next_index + 1}/{len(cases)}: {case}")
 
 
 def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str, Any]:
@@ -786,7 +857,11 @@ def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str,
             row[target] = client_payload[source]
     receiver_map = {
         "receiver_fps": "receiver_fps",
+        "frame_seq": "receiver_frame_seq",
         "decode_ms": "receiver_decode_ms",
+        "transport_unpack_ms": "receiver_transport_unpack_ms",
+        "transport_frames": "receiver_transport_frames",
+        "transport_bytes": "receiver_transport_bytes",
         "virtual_send_ms": "virtual_send_ms",
     }
     for source, target in receiver_map.items():
@@ -814,15 +889,21 @@ def _record_live_perf_sample(window: MainWindow, payload: dict[str, Any]) -> Non
 
 
 def _handle_live_worker_message(window: MainWindow, text: str) -> None:
-    ui_base._poll_message(window, "live", text)
+    window.log(text)
     payload = _json_payload(text)
     status = payload.get("status")
     if status == "live_perf":
+        window._live_latest_backend_perf = payload
         _record_live_perf_sample(window, payload)
+        _update_live_fps_indicators(window)
     elif status == "live_client_perf":
         window._live_latest_client_perf = payload
+        _update_live_fps_indicators(window)
     elif status == "live_receiver_perf":
         window._live_latest_receiver_perf = payload
+        _update_live_fps_indicators(window)
+    elif "error" in payload:
+        ui_base._set_process_status(window, "live", f"Live error: {payload['error']}")
 
 
 def _apply_live_hot_change(self: MainWindow) -> None:
@@ -831,7 +912,16 @@ def _apply_live_hot_change(self: MainWindow) -> None:
     self.settings.live_pipeline_frames = int(self.live_pipeline_frames.value())
     self.settings.live_options = _read_live_options(self)
     processing_options_base.save_settings(self.settings)
+    previous_preview_buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
     self._live_preview_buffer_seconds = float(self.settings.live_options["preview_buffer_seconds"])
+    if abs(previous_preview_buffer_seconds - self._live_preview_buffer_seconds) > 0.001:
+        buffer = getattr(self, "_live_preview_buffer", None)
+        if buffer is not None:
+            buffer.clear()
+        self._live_preview_clock_started_at = None
+        self._live_preview_first_seq = None
+        self._live_preview_current_seq = None
+        self._live_preview_synthetic_seq = 0
     worker = getattr(self, "live_worker", None)
     if worker is None or not worker.isRunning():
         return
@@ -839,7 +929,7 @@ def _apply_live_hot_change(self: MainWindow) -> None:
     updater = getattr(worker, "update_live_config", None)
     if callable(updater):
         updater(payload)
-        ui_base._set_process_status(self, "live", "Live settings update queued")
+        self.log("Live settings update queued")
 
 
 def _connect_live_hot_change_controls(window: MainWindow) -> None:
@@ -1091,20 +1181,11 @@ def _build_live_tab(self: MainWindow) -> None:
     row.addStretch(1)
     controls_layout.addLayout(row)
 
-    self.live_status = _status_label("Idle")
+    self.live_status = _status_label("FPS client -- | server -- | preview --    wait -- ms | queue --/--")
     controls_layout.addWidget(self.live_status)
-    self.live_note = _status_label(
-        "Live sends webcam JPEG/WebP frames to ws://HOST:PORT/ws/live and previews returned frames. "
-        "buffalo_l is safest for inswapper_128; buffalo_m/s are experimental speed options. "
-        "Use Swapper precision to compare fp32 vs fp16 swap_ms."
-    )
-    controls_layout.addWidget(self.live_note)
-    self.live_restart_note = _status_label(
-        "Live is running: camera, source, capture backend/size/FPS, enhancer, InsightFace pack, swapper precision, "
-        "and source-cache controls are restart-only and temporarily disabled."
-    )
-    self.live_restart_note.setVisible(False)
-    controls_layout.addWidget(self.live_restart_note)
+    self._live_latest_backend_perf = {}
+    self._live_latest_client_perf = {}
+    self._live_latest_receiver_perf = {}
     controls_layout.addStretch(1)
 
     controls_scroll = QScrollArea()
@@ -1137,6 +1218,10 @@ def _build_live_tab(self: MainWindow) -> None:
     self._live_preview_buffer_seconds = DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS
     self._live_preview_frames = 0
     self._live_preview_last_frame = None
+    self._live_preview_clock_started_at = None
+    self._live_preview_first_seq = None
+    self._live_preview_current_seq = None
+    self._live_preview_synthetic_seq = 0
     self._live_preview_timer = QTimer(self)
     self._live_preview_timer.timeout.connect(lambda: live_preview.render_live_preview_frame(self))
     splitter.addWidget(preview_panel)
@@ -1213,6 +1298,8 @@ def _prepare_live_settings(settings: AppSettings) -> dict[str, Any]:
 
 
 class LiveWorker(BaseLiveWorker):
+    frame_packet = Signal(dict, bytes)
+
     def __init__(self, settings: AppSettings):
         super().__init__(settings)
         self._live_config_updates: queue.Queue[dict[str, Any]] = queue.Queue()
@@ -1338,6 +1425,10 @@ class LiveWorker(BaseLiveWorker):
         stats_started = clock()
         stats_frames = 0
         receiver_decode_ms = 0.0
+        receiver_transport_unpack_ms = 0.0
+        receiver_transport_frames = 0
+        receiver_transport_bytes = 0
+        receiver_last_frame_seq: Any = ""
         virtual_send_ms = 0.0
         in_flight = 0
         condition = asyncio.Condition()
@@ -1672,7 +1763,9 @@ class LiveWorker(BaseLiveWorker):
                     raise
 
         async def receiver(websocket: Any) -> None:
-            nonlocal in_flight, stats_started, stats_frames, receiver_decode_ms, virtual_send_ms, virtual_cam, virtual_cam_size
+            nonlocal in_flight, stats_started, stats_frames, receiver_decode_ms, receiver_transport_unpack_ms
+            nonlocal receiver_transport_frames, receiver_transport_bytes, receiver_last_frame_seq
+            nonlocal virtual_send_ms, virtual_cam, virtual_cam_size
             while not self._stop:
                 reply = await websocket.recv()
                 if isinstance(reply, str):
@@ -1693,11 +1786,55 @@ class LiveWorker(BaseLiveWorker):
                         ui_message = payload.get("message", "live config update rejected")
                         self.message.emit(f"live config update rejected: {ui_message}")
                     continue
+                try:
+                    output_frames, unpack_ms = _unpack_live_frame_batch(reply)
+                except Exception as exc:
+                    self.message.emit(f"invalid live output packet: {exc}")
+                    continue
                 async with condition:
-                    in_flight = max(0, in_flight - 1)
+                    in_flight = max(0, in_flight - len(output_frames))
                     condition.notify_all()
-                self.frame.emit(reply)
-                stats_frames += 1
+                receiver_transport_unpack_ms += unpack_ms
+                receiver_transport_frames += len(output_frames)
+                receiver_transport_bytes += len(reply)
+                for output_meta, output_bytes in output_frames:
+                    receiver_last_frame_seq = output_meta.get("seq", "")
+                    self.frame_packet.emit(dict(output_meta), output_bytes)
+                    self.frame.emit(output_bytes)
+                    stats_frames += 1
+                    if virtual_cam is not False:
+                        import numpy as np
+
+                        decode_started = clock()
+                        decoded = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        receiver_decode_ms += (clock() - decode_started) * 1000.0
+                        if decoded is not None:
+                            h, w = decoded.shape[:2]
+                            if virtual_cam and virtual_cam_size != (w, h):
+                                try:
+                                    virtual_cam.close()
+                                except Exception:
+                                    pass
+                                self.message.emit(f"virtual camera frame size changed: reopening at {w}x{h}")
+                                virtual_cam = None
+                                virtual_cam_size = None
+                            if virtual_cam is None:
+                                try:
+                                    import pyvirtualcam
+
+                                    virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=requested_fps, device=self.settings.virtual_camera or None)
+                                    virtual_cam_size = (w, h)
+                                    self.message.emit(f"virtual camera opened: {virtual_cam.device} at {w}x{h} {requested_fps} fps")
+                                except Exception as exc:
+                                    self.message.emit(f"virtual camera unavailable: {exc}")
+                                    virtual_cam = False
+                                    virtual_cam_size = None
+                            if virtual_cam:
+                                virtual_started = clock()
+                                rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+                                virtual_cam.send(rgb)
+                                virtual_cam.sleep_until_next_frame()
+                                virtual_send_ms += (clock() - virtual_started) * 1000.0
                 now = clock()
                 if now - stats_started >= 5.0:
                     elapsed = max(0.001, now - stats_started)
@@ -1709,7 +1846,11 @@ class LiveWorker(BaseLiveWorker):
                             {
                                 "status": "live_receiver_perf",
                                 "receiver_fps": round(receiver_fps, 2),
+                                "frame_seq": receiver_last_frame_seq,
                                 "decode_ms": round(receiver_decode_ms / frames, 2),
+                                "transport_unpack_ms": round(receiver_transport_unpack_ms / max(1, receiver_transport_frames), 2),
+                                "transport_frames": receiver_transport_frames,
+                                "transport_bytes": round(receiver_transport_bytes / max(1, receiver_transport_frames), 1),
                                 "virtual_send_ms": round(virtual_send_ms / frames, 2),
                             }
                         )
@@ -1717,39 +1858,10 @@ class LiveWorker(BaseLiveWorker):
                     stats_started = now
                     stats_frames = 0
                     receiver_decode_ms = 0.0
+                    receiver_transport_unpack_ms = 0.0
+                    receiver_transport_frames = 0
+                    receiver_transport_bytes = 0
                     virtual_send_ms = 0.0
-                if virtual_cam is not False:
-                    import numpy as np
-
-                    decode_started = clock()
-                    decoded = cv2.imdecode(np.frombuffer(reply, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    receiver_decode_ms += (clock() - decode_started) * 1000.0
-                    h, w = decoded.shape[:2]
-                    if virtual_cam and virtual_cam_size != (w, h):
-                        try:
-                            virtual_cam.close()
-                        except Exception:
-                            pass
-                        self.message.emit(f"virtual camera frame size changed: reopening at {w}x{h}")
-                        virtual_cam = None
-                        virtual_cam_size = None
-                    if virtual_cam is None:
-                        try:
-                            import pyvirtualcam
-
-                            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=requested_fps, device=self.settings.virtual_camera or None)
-                            virtual_cam_size = (w, h)
-                            self.message.emit(f"virtual camera opened: {virtual_cam.device} at {w}x{h} {requested_fps} fps")
-                        except Exception as exc:
-                            self.message.emit(f"virtual camera unavailable: {exc}")
-                            virtual_cam = False
-                            virtual_cam_size = None
-                    if virtual_cam:
-                        virtual_started = clock()
-                        rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
-                        virtual_cam.send(rgb)
-                        virtual_cam.sleep_until_next_frame()
-                        virtual_send_ms += (clock() - virtual_started) * 1000.0
 
         try:
             async with websockets.connect(uri, max_size=8 * 1024 * 1024) as websocket:
@@ -1812,7 +1924,7 @@ def start_live(self: MainWindow) -> None:
     self.sync_settings()
     if self.live_worker and self.live_worker.isRunning():
         self.log("live already running")
-        ui_base._set_process_status(self, "live", "Live already running")
+        _update_live_fps_indicators(self)
         return
 
     output_tasks_base._ensure_output_worker_state(self)
@@ -1827,7 +1939,10 @@ def start_live(self: MainWindow) -> None:
     settings.live_options = _live_options(self.settings)
     _apply_live_options_to_settings(settings)
     self.log("starting live...")
-    ui_base._set_process_status(self, "live", "Preparing live...")
+    self._live_latest_backend_perf = {}
+    self._live_latest_client_perf = {}
+    self._live_latest_receiver_perf = {}
+    _update_live_fps_indicators(self)
     prepare_token = object()
     self._live_prepare_token = prepare_token
 
@@ -1841,7 +1956,6 @@ def start_live(self: MainWindow) -> None:
         for line in payload.get("logs") or []:
             line_text = str(line)
             self.log(line_text)
-            ui_base._set_process_status(self, "live", line_text)
         live_settings = payload.get("settings")
         if not isinstance(live_settings, AppSettings):
             text = "live failed before start: invalid prepared settings"
@@ -1851,11 +1965,11 @@ def start_live(self: MainWindow) -> None:
             return
         self.live_worker = LiveWorker(live_settings)
         self.live_worker.message.connect(lambda text: _handle_live_worker_message(self, text))
-        self.live_worker.frame.connect(self.enqueue_live_preview_frame)
+        self.live_worker.frame_packet.connect(lambda meta, frame: self.enqueue_live_preview_frame_packet(meta, frame))
         self.live_worker.finished.connect(lambda: (_stop_live_perf_test(self, restore=False), _set_live_controls_running(self, False)))
         live_preview.start_live_preview_timer(self, live_settings)
         self.live_worker.start()
-        ui_base._set_process_status(self, "live", f"Starting live on camera index {live_settings.camera_index}...")
+        _update_live_fps_indicators(self)
 
     def failed(task_id: str, error: str) -> None:
         if task_id != getattr(self, "output_live_task_id", "") or getattr(self, "_live_prepare_token", None) is not prepare_token:
@@ -1872,6 +1986,7 @@ def start_live(self: MainWindow) -> None:
         succeeded,
         failed,
     )
+    _update_live_fps_indicators(self)
 
 
 def stop_live(self: MainWindow) -> None:
@@ -1882,6 +1997,7 @@ def stop_live(self: MainWindow) -> None:
     if self.live_worker:
         self.live_worker.stop()
         self.log("live stop requested")
-        ui_base._set_process_status(self, "live", "Live stop requested")
+        self.live_status.setText("FPS client -- | server -- | preview --    wait -- ms | queue --/--")
     else:
         _set_live_controls_running(self, False)
+        self.live_status.setText("FPS client -- | server -- | preview --    wait -- ms | queue --/--")
