@@ -38,6 +38,7 @@ LIVE_SWAPPER_PRECISIONS = ("fp32", "fp16")
 DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS = 1.0
 DEFAULT_LIVE_PREVIEW_SCALE = "fit"
 LIVE_PREVIEW_SCALES = ("fit", "1x", "1.5x", "2x")
+DEFAULT_LIVE_TRANSPORT_BATCH_SIZE = 1
 LIVE_OPTION_KEYS = (
     "many_faces",
     "enhancer",
@@ -63,6 +64,7 @@ LIVE_OPTION_KEYS = (
     "cache_source_face",
     "preview_buffer_seconds",
     "preview_scale",
+    "transport_batch_size",
 )
 
 
@@ -101,6 +103,7 @@ def _default_live_options() -> dict[str, Any]:
         "cache_source_face": True,
         "preview_buffer_seconds": DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
         "preview_scale": DEFAULT_LIVE_PREVIEW_SCALE,
+        "transport_batch_size": DEFAULT_LIVE_TRANSPORT_BATCH_SIZE,
     }
 
 
@@ -148,6 +151,7 @@ def _coerce_live_options(value: object) -> dict[str, Any]:
     options["preview_scale"] = str(options["preview_scale"]).lower()
     if options["preview_scale"] not in LIVE_PREVIEW_SCALES:
         options["preview_scale"] = DEFAULT_LIVE_PREVIEW_SCALE
+    options["transport_batch_size"] = max(1, min(32, int(options["transport_batch_size"])))
     options["swapper_precision"] = str(options["swapper_precision"]).lower()
     if options["swapper_precision"] not in LIVE_SWAPPER_PRECISIONS:
         options["swapper_precision"] = DEFAULT_LIVE_SWAPPER_PRECISION

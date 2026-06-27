@@ -8,6 +8,7 @@ import json
 import math
 import mimetypes
 import queue
+import struct
 import subprocess
 import threading
 import time
@@ -44,7 +45,11 @@ ARCHIVE_DIR = Path("/content/archive")
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-API_VERSION = "live-hot-change-v11"
+API_VERSION = "live-batch-transport-v12"
+LIVE_TRANSPORT_PACKET_MAGIC = b"DLCR"
+LIVE_TRANSPORT_PACKET_VERSION = 1
+LIVE_TRANSPORT_PACKET_HEADER = struct.Struct("!4sHH")
+LIVE_TRANSPORT_FRAME_HEADER = struct.Struct("!II")
 LIVE_FACE_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 LIVE_SWAPPER_PRECISIONS = {"fp32", "fp16"}
 LIVE_FRAME_CODECS = {"jpeg", "webp"}
@@ -473,6 +478,47 @@ def live_encode_frame(frame: np.ndarray, config: dict[str, Any]) -> tuple[bool, 
             return True, encoded, "webp"
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return bool(ok), encoded, "jpeg"
+
+
+def unpack_live_frame_packet(payload: bytes, fallback_meta: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], float]:
+    unpack_started = time.monotonic()
+    if not payload.startswith(LIVE_TRANSPORT_PACKET_MAGIC):
+        return [
+            {
+                "payload": payload,
+                "meta": dict(fallback_meta or {}),
+            }
+        ], (time.monotonic() - unpack_started) * 1000.0
+    if len(payload) < LIVE_TRANSPORT_PACKET_HEADER.size:
+        raise ValueError("live frame packet is truncated")
+    magic, version, frame_count = LIVE_TRANSPORT_PACKET_HEADER.unpack_from(payload, 0)
+    if magic != LIVE_TRANSPORT_PACKET_MAGIC:
+        raise ValueError("invalid live frame packet magic")
+    if version != LIVE_TRANSPORT_PACKET_VERSION:
+        raise ValueError(f"unsupported live frame packet version {version}")
+    offset = LIVE_TRANSPORT_PACKET_HEADER.size
+    frames: list[dict[str, Any]] = []
+    for _index in range(frame_count):
+        if offset + LIVE_TRANSPORT_FRAME_HEADER.size > len(payload):
+            raise ValueError("live frame packet frame header is truncated")
+        header_len, payload_len = LIVE_TRANSPORT_FRAME_HEADER.unpack_from(payload, offset)
+        offset += LIVE_TRANSPORT_FRAME_HEADER.size
+        if header_len < 0 or payload_len < 0 or offset + header_len + payload_len > len(payload):
+            raise ValueError("live frame packet has invalid frame lengths")
+        header_bytes = payload[offset: offset + header_len]
+        offset += header_len
+        frame_payload = payload[offset: offset + payload_len]
+        offset += payload_len
+        try:
+            header = json.loads(header_bytes.decode("utf-8")) if header_bytes else {}
+        except Exception as exc:
+            raise ValueError(f"invalid live frame packet header: {exc}") from None
+        if not isinstance(header, dict):
+            raise ValueError("live frame packet header must be an object")
+        frames.append({"payload": frame_payload, "meta": header})
+    if offset != len(payload):
+        raise ValueError("live frame packet has trailing bytes")
+    return frames, (time.monotonic() - unpack_started) * 1000.0
 
 
 def live_face_model_pack(config: dict[str, Any]) -> str:
@@ -957,6 +1003,10 @@ async def live_socket(websocket: WebSocket) -> None:
     perf_receive_to_send = 0.0
     perf_decode_to_process = 0.0
     perf_process_to_encode = 0.0
+    perf_transport_unpack = 0.0
+    perf_transport_batch_frames = 0
+    perf_transport_batch_bytes = 0
+    perf_transport_messages = 0
     perf_frames_with_send_time = 0
     perf_frames_with_capture_time = 0
     perf_dropped_before_process = 0
@@ -980,6 +1030,7 @@ async def live_socket(websocket: WebSocket) -> None:
     async def receive_latest_frames() -> None:
         nonlocal config, geometry_logged, latest_drop_count, latest_frame
         nonlocal pending_frame_meta, reader_done, reader_error
+        nonlocal perf_transport_unpack, perf_transport_batch_frames, perf_transport_batch_bytes, perf_transport_messages
         try:
             while True:
                 message = await websocket.receive()
@@ -1031,26 +1082,38 @@ async def live_socket(websocket: WebSocket) -> None:
                 receive_wall_time = time.time()
                 meta = pending_frame_meta if isinstance(pending_frame_meta, dict) else {}
                 pending_frame_meta = None
-                drop_notice: dict[str, Any] | None = None
+                try:
+                    frame_packets, transport_unpack_ms = unpack_live_frame_packet(payload, meta)
+                except Exception as exc:
+                    await locked_send_json({"error": f"invalid live frame packet: {exc}"})
+                    continue
+                perf_transport_unpack += transport_unpack_ms / 1000.0
+                perf_transport_batch_frames += len(frame_packets)
+                perf_transport_batch_bytes += len(payload)
+                perf_transport_messages += 1
+                drop_notices: list[dict[str, Any]] = []
                 async with latest_condition:
-                    if latest_frame is not None:
-                        latest_drop_count += 1
-                        dropped_meta = latest_frame.get("meta") or {}
-                        drop_notice = {
-                            "status": "live_frame_dropped",
-                            "dropped": 1,
-                            "frame_seq": dropped_meta.get("seq", ""),
-                            "latest_drop_count": latest_drop_count,
+                    for frame_packet in frame_packets:
+                        if latest_frame is not None:
+                            latest_drop_count += 1
+                            dropped_meta = latest_frame.get("meta") or {}
+                            drop_notices.append(
+                                {
+                                    "status": "live_frame_dropped",
+                                    "dropped": 1,
+                                    "frame_seq": dropped_meta.get("seq", ""),
+                                    "latest_drop_count": latest_drop_count,
+                                }
+                            )
+                        latest_frame = {
+                            "payload": frame_packet["payload"],
+                            "meta": dict(frame_packet.get("meta") or {}),
+                            "received_at": received_at,
+                            "receive_wall_time": receive_wall_time,
+                            "drop_count": latest_drop_count,
                         }
-                    latest_frame = {
-                        "payload": payload,
-                        "meta": dict(meta),
-                        "received_at": received_at,
-                        "receive_wall_time": receive_wall_time,
-                        "drop_count": latest_drop_count,
-                    }
                     latest_condition.notify()
-                if drop_notice is not None:
+                for drop_notice in drop_notices:
                     await locked_send_json(drop_notice)
         except BaseException as exc:
             reader_error = exc
@@ -1205,6 +1268,12 @@ async def live_socket(websocket: WebSocket) -> None:
                         "frames_dropped_before_process": perf_dropped_before_process,
                         "server_decode_to_process_ms": round((perf_decode_to_process / perf_frames) * 1000.0, 1),
                         "server_process_to_encode_ms": round((perf_process_to_encode / perf_frames) * 1000.0, 1),
+                        "transport_batch_size": round(perf_transport_batch_frames / max(1, perf_transport_messages), 2),
+                        "transport_batch_frames": round(perf_transport_batch_frames / max(1, perf_transport_messages), 2),
+                        "transport_batch_bytes": round(perf_transport_batch_bytes / max(1, perf_transport_messages), 1),
+                        "transport_pack_ms": "",
+                        "transport_unpack_ms": round((perf_transport_unpack / max(1, perf_transport_messages)) * 1000.0, 2),
+                        "frames_per_ws_message": round(perf_transport_batch_frames / max(1, perf_transport_messages), 2),
                     })
                     perf_started = encoded_at
                     perf_frames = 0
@@ -1230,6 +1299,10 @@ async def live_socket(websocket: WebSocket) -> None:
                     perf_receive_to_send = 0.0
                     perf_decode_to_process = 0.0
                     perf_process_to_encode = 0.0
+                    perf_transport_unpack = 0.0
+                    perf_transport_batch_frames = 0
+                    perf_transport_batch_bytes = 0
+                    perf_transport_messages = 0
                     perf_frames_with_send_time = 0
                     perf_frames_with_capture_time = 0
                     perf_dropped_before_process = 0

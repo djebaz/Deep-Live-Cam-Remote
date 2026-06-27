@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import queue
+import struct
 import threading
 import time
 from collections import deque
@@ -55,6 +56,7 @@ from windows_app.live_options import (
     DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
     DEFAULT_LIVE_PREVIEW_SCALE,
     DEFAULT_LIVE_SWAPPER_PRECISION,
+    DEFAULT_LIVE_TRANSPORT_BATCH_SIZE,
     DEFAULT_LIVE_WIDTH,
     LIVE_CAPTURE_BACKENDS,
     LIVE_CAPTURE_MODES,
@@ -89,6 +91,7 @@ LIVE_HOT_CHANGE_KEYS = (
 )
 LIVE_LOCAL_HOT_CHANGE_KEYS = (
     "capture_scale",
+    "transport_batch_size",
     "live_pipeline_frames",
 )
 LIVE_PERF_CASE_SECONDS = 12.0
@@ -98,6 +101,11 @@ LIVE_PERF_JPEG_QUALITY = 70
 LIVE_PERF_DETECT_EVERY_N = 3
 LIVE_PERF_DETECTOR_SIZE = 256
 LIVE_PERF_PIPELINE_FRAMES = 64
+LIVE_PERF_TRANSPORT_BATCH_SIZES = (1, 8, 16, 32)
+LIVE_TRANSPORT_PACKET_MAGIC = b"DLCR"
+LIVE_TRANSPORT_PACKET_VERSION = 1
+LIVE_TRANSPORT_PACKET_HEADER = struct.Struct("!4sHH")
+LIVE_TRANSPORT_FRAME_HEADER = struct.Struct("!II")
 LIVE_PERF_CSV_COLUMNS = (
     "timestamp",
     "case_id",
@@ -170,6 +178,17 @@ LIVE_PERF_CSV_COLUMNS = (
     "client_frame_codec",
     "client_jpeg_quality",
     "client_capture_scale",
+    "transport_batch_size",
+    "transport_batch_frames",
+    "transport_batch_bytes",
+    "transport_pack_ms",
+    "transport_unpack_ms",
+    "frames_per_ws_message",
+    "client_transport_batch_size",
+    "client_transport_batch_frames",
+    "client_transport_batch_bytes",
+    "client_transport_pack_ms",
+    "client_frames_per_ws_message",
     "receiver_fps",
     "receiver_decode_ms",
     "virtual_send_ms",
@@ -187,6 +206,17 @@ def _json_payload(text: object) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _pack_live_frame_batch(frames: list[tuple[dict[str, Any], bytes]]) -> bytes:
+    packet = bytearray()
+    packet.extend(LIVE_TRANSPORT_PACKET_HEADER.pack(LIVE_TRANSPORT_PACKET_MAGIC, LIVE_TRANSPORT_PACKET_VERSION, len(frames)))
+    for header, payload in frames:
+        header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+        packet.extend(LIVE_TRANSPORT_FRAME_HEADER.pack(len(header_bytes), len(payload)))
+        packet.extend(header_bytes)
+        packet.extend(payload)
+    return bytes(packet)
 
 
 def _status_label(text: str = "") -> QLabel:
@@ -370,6 +400,7 @@ def _read_live_options(window: MainWindow) -> dict[str, Any]:
             "cache_source_face": window.live_cache_source_face.isChecked(),
             "preview_buffer_seconds": float(window.live_preview_buffer_seconds.value()),
             "preview_scale": window.live_preview_scale.currentText() if hasattr(window, "live_preview_scale") else DEFAULT_LIVE_PREVIEW_SCALE,
+            "transport_batch_size": int(window.live_transport_batch_size.value()) if hasattr(window, "live_transport_batch_size") else DEFAULT_LIVE_TRANSPORT_BATCH_SIZE,
         }
     )
 
@@ -403,6 +434,8 @@ def _apply_live_options_to_widgets(window: MainWindow) -> None:
     window.live_preview_buffer_seconds.setValue(float(options["preview_buffer_seconds"]))
     if hasattr(window, "live_preview_scale"):
         window.live_preview_scale.setCurrentText(str(options["preview_scale"]))
+    if hasattr(window, "live_transport_batch_size"):
+        window.live_transport_batch_size.setValue(int(options.get("transport_batch_size", DEFAULT_LIVE_TRANSPORT_BATCH_SIZE)))
 
 
 def _live_hot_change_payload(window: MainWindow) -> dict[str, Any]:
@@ -481,19 +514,21 @@ def _set_combo_text(widget: QComboBox, value: str) -> None:
 
 def _live_perf_cases() -> list[dict[str, Any]]:
     cases = []
-    for frame_codec in ("jpeg", "webp"):
-        for output_codec in ("jpeg", "webp"):
-            cases.append(
-                {
-                    "capture_scale": LIVE_PERF_CAPTURE_SCALE,
-                    "frame_codec": frame_codec,
-                    "output_codec": output_codec,
-                    "jpeg_quality": LIVE_PERF_JPEG_QUALITY,
-                    "detector_size": LIVE_PERF_DETECTOR_SIZE,
-                    "detect_every_n": LIVE_PERF_DETECT_EVERY_N,
-                    "live_pipeline_frames": LIVE_PERF_PIPELINE_FRAMES,
-                }
-            )
+    for transport_batch_size in LIVE_PERF_TRANSPORT_BATCH_SIZES:
+        for frame_codec in ("jpeg", "webp"):
+            for output_codec in ("jpeg", "webp"):
+                cases.append(
+                    {
+                        "capture_scale": LIVE_PERF_CAPTURE_SCALE,
+                        "frame_codec": frame_codec,
+                        "output_codec": output_codec,
+                        "jpeg_quality": LIVE_PERF_JPEG_QUALITY,
+                        "detector_size": LIVE_PERF_DETECTOR_SIZE,
+                        "detect_every_n": LIVE_PERF_DETECT_EVERY_N,
+                        "live_pipeline_frames": LIVE_PERF_PIPELINE_FRAMES,
+                        "transport_batch_size": transport_batch_size,
+                    }
+                )
     return cases
 
 
@@ -517,6 +552,7 @@ def _set_live_perf_case_widgets(window: MainWindow, case: dict[str, Any]) -> Non
         window.live_detector_size,
         window.live_detect_every_n,
         window.live_pipeline_frames,
+        window.live_transport_batch_size,
     )
     for widget in widgets:
         widget.blockSignals(True)
@@ -528,6 +564,7 @@ def _set_live_perf_case_widgets(window: MainWindow, case: dict[str, Any]) -> Non
         window.live_detector_size.setValue(int(case["detector_size"]))
         window.live_detect_every_n.setValue(int(case["detect_every_n"]))
         window.live_pipeline_frames.setValue(int(case["live_pipeline_frames"]))
+        window.live_transport_batch_size.setValue(int(case["transport_batch_size"]))
     finally:
         for widget in widgets:
             widget.blockSignals(False)
@@ -564,6 +601,7 @@ def _start_live_perf_test(window: MainWindow) -> None:
         f"{LIVE_PERF_CASE_SECONDS:g}s each, fixed quality={LIVE_PERF_JPEG_QUALITY}, "
         f"scale={LIVE_PERF_CAPTURE_SCALE}, detect_every_n={LIVE_PERF_DETECT_EVERY_N}, "
         f"detector_size={LIVE_PERF_DETECTOR_SIZE}, pipeline_frames={LIVE_PERF_PIPELINE_FRAMES}, "
+        f"transport_batch_sizes={','.join(str(size) for size in LIVE_PERF_TRANSPORT_BATCH_SIZES)}, "
         f"csv {window._live_perf_output_path}"
     )
     _advance_live_perf_test(window)
@@ -588,6 +626,7 @@ def _stop_live_perf_test(window: MainWindow, restore: bool = True) -> None:
             "detector_size": original.get("detector_size", DEFAULT_LIVE_DETECTOR_SIZE),
             "detect_every_n": original.get("detect_every_n", DEFAULT_LIVE_DETECT_EVERY_N),
             "live_pipeline_frames": getattr(window, "_live_perf_original_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES),
+            "transport_batch_size": original.get("transport_batch_size", DEFAULT_LIVE_TRANSPORT_BATCH_SIZE),
         }
         _set_live_perf_case_widgets(window, restore_case)
     _set_live_perf_button(window, False)
@@ -670,6 +709,12 @@ def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str,
             "frames_dropped_before_process": payload.get("frames_dropped_before_process", ""),
             "server_decode_to_process_ms": payload.get("server_decode_to_process_ms", ""),
             "server_process_to_encode_ms": payload.get("server_process_to_encode_ms", ""),
+            "transport_batch_size": options.get("transport_batch_size", ""),
+            "transport_batch_frames": payload.get("transport_batch_frames", ""),
+            "transport_batch_bytes": payload.get("transport_batch_bytes", ""),
+            "transport_pack_ms": payload.get("transport_pack_ms", ""),
+            "transport_unpack_ms": payload.get("transport_unpack_ms", ""),
+            "frames_per_ws_message": payload.get("frames_per_ws_message", ""),
             "backend_json": json.dumps(payload, sort_keys=True),
             "client_json": json.dumps(client_payload, sort_keys=True) if client_payload else "",
             "receiver_json": json.dumps(receiver_payload, sort_keys=True) if receiver_payload else "",
@@ -720,6 +765,11 @@ def _live_perf_csv_row(window: MainWindow, payload: dict[str, Any]) -> dict[str,
         "frame_codec": "client_frame_codec",
         "jpeg_quality": "client_jpeg_quality",
         "capture_scale": "client_capture_scale",
+        "transport_batch_size": "client_transport_batch_size",
+        "transport_batch_frames": "client_transport_batch_frames",
+        "transport_batch_bytes": "client_transport_batch_bytes",
+        "transport_pack_ms": "client_transport_pack_ms",
+        "frames_per_ws_message": "client_frames_per_ws_message",
     }
     for source, target in client_map.items():
         if source in client_payload:
@@ -820,6 +870,7 @@ def _connect_live_hot_change_controls(window: MainWindow) -> None:
         window.live_detect_every_n,
         window.live_preview_buffer_seconds,
         window.live_pipeline_frames,
+        window.live_transport_batch_size,
     ):
         widget.valueChanged.connect(changed)
     window._live_hot_change_controls_connected = True
@@ -913,6 +964,13 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_pipeline_frames = QSpinBox()
     self.live_pipeline_frames.setRange(8, 512)
     self.live_pipeline_frames.setValue(_live_setting(self.settings, "live_pipeline_frames", DEFAULT_LIVE_PIPELINE_FRAMES))
+    self.live_transport_batch_size = QSpinBox()
+    self.live_transport_batch_size.setRange(1, 32)
+    self.live_transport_batch_size.setValue(int(_live_options(self.settings).get("transport_batch_size", DEFAULT_LIVE_TRANSPORT_BATCH_SIZE)))
+    self.live_transport_batch_size.setToolTip(
+        "Pack this many encoded webcam frames into each live websocket binary message. "
+        "The backend still processes frames one at a time."
+    )
 
     form.addRow("Camera index", self.camera_index)
     form.addRow("Virtual camera", self.virtual_camera)
@@ -924,6 +982,7 @@ def _build_live_tab(self: MainWindow) -> None:
     form.addRow("Send scale", self.live_capture_scale)
     form.addRow("Capture FPS", self.live_fps)
     form.addRow("Pipeline frames", self.live_pipeline_frames)
+    form.addRow("Transport batch size", self.live_transport_batch_size)
     controls_layout.addLayout(form)
     _link_live_source_fields(self)
 
@@ -1306,6 +1365,11 @@ class LiveWorker(BaseLiveWorker):
             "send_ms": 0.0,
             "backpressure_ms": 0.0,
             "sent_kb": 0.0,
+            "transport_batch_size": DEFAULT_LIVE_TRANSPORT_BATCH_SIZE,
+            "transport_batch_frames": 0,
+            "transport_batch_bytes": 0.0,
+            "transport_pack_ms": 0.0,
+            "ws_messages": 0,
             "frame_width": send_width,
             "frame_height": send_height,
             "frame_codec": frame_codec,
@@ -1399,6 +1463,23 @@ class LiveWorker(BaseLiveWorker):
                 "send_ms": round(float(client_stats["send_ms"]) / frames, 2),
                 "backpressure_ms": round(float(client_stats["backpressure_ms"]) / frames, 2),
                 "sent_kb": round(float(client_stats["sent_kb"]) / frames, 2),
+                "transport_batch_size": int(client_stats.get("transport_batch_size") or DEFAULT_LIVE_TRANSPORT_BATCH_SIZE),
+                "transport_batch_frames": round(
+                    float(client_stats.get("transport_batch_frames", 0)) / max(1, int(client_stats.get("ws_messages", 0))),
+                    2,
+                ),
+                "transport_batch_bytes": round(
+                    float(client_stats.get("transport_batch_bytes", 0.0)) / max(1, int(client_stats.get("ws_messages", 0))),
+                    1,
+                ),
+                "transport_pack_ms": round(
+                    float(client_stats.get("transport_pack_ms", 0.0)) / max(1, int(client_stats.get("ws_messages", 0))),
+                    2,
+                ),
+                "frames_per_ws_message": round(
+                    float(client_stats.get("transport_batch_frames", 0)) / max(1, int(client_stats.get("ws_messages", 0))),
+                    2,
+                ),
                 "dropped_capture_frames": int(client_stats.get("dropped_capture_frames") or 0),
                 "duplicate_sender_frames": int(client_stats.get("duplicate_sender_frames") or 0),
                 "capture_seq": int(client_stats.get("capture_seq") or 0),
@@ -1428,6 +1509,10 @@ class LiveWorker(BaseLiveWorker):
                     "send_ms": 0.0,
                     "backpressure_ms": 0.0,
                     "sent_kb": 0.0,
+                    "transport_batch_frames": 0,
+                    "transport_batch_bytes": 0.0,
+                    "transport_pack_ms": 0.0,
+                    "ws_messages": 0,
                 }
             )
 
@@ -1450,107 +1535,130 @@ class LiveWorker(BaseLiveWorker):
                         current_pipeline_frames = max(1, int(self._runtime_value("live_pipeline_frames", pipeline_frames)))
                     if self._stop:
                         break
-                    in_flight += 1
+                    available_pipeline_slots = max(1, current_pipeline_frames - in_flight)
                 add_client_stat("backpressure_ms", (clock() - backpressure_started) * 1000.0)
+                current_transport_batch_size = max(
+                    1,
+                    min(32, int(self._runtime_value("transport_batch_size", DEFAULT_LIVE_TRANSPORT_BATCH_SIZE))),
+                )
+                batch_limit = max(1, min(current_transport_batch_size, available_pipeline_slots))
+                batch_frames: list[tuple[dict[str, Any], bytes]] = []
+                reserved_in_flight = 0
                 try:
-                    capture_wait_started = time.perf_counter()
-                    with capture_condition:
-                        while latest_capture["seq"] == last_sent_capture_seq and not self._stop and capture_error is None:
-                            capture_condition.wait(timeout=0.1)
-                        if capture_error is not None:
-                            raise RuntimeError(f"live capture reader failed: {capture_error}") from capture_error
-                        if self._stop:
+                    for _ in range(batch_limit):
+                        capture_wait_started = time.perf_counter()
+                        with capture_condition:
+                            while latest_capture["seq"] == last_sent_capture_seq and not self._stop and capture_error is None:
+                                capture_condition.wait(timeout=0.1)
+                            if capture_error is not None:
+                                raise RuntimeError(f"live capture reader failed: {capture_error}") from capture_error
+                            if self._stop:
+                                break
+                            frame = latest_capture["frame"]
+                            capture_seq = int(latest_capture["seq"])
+                            captured_at = float(latest_capture["captured_at"])
+                            captured_wall_time = float(latest_capture.get("captured_wall_time") or 0.0)
+                            capture_grab_ms = float(latest_capture["grab_ms"])
+                            capture_retrieve_ms = float(latest_capture["retrieve_ms"])
+                        if frame is None:
+                            await asyncio.sleep(0.03)
                             break
-                        frame = latest_capture["frame"]
-                        capture_seq = int(latest_capture["seq"])
-                        captured_at = float(latest_capture["captured_at"])
-                        captured_wall_time = float(latest_capture.get("captured_wall_time") or 0.0)
-                        capture_grab_ms = float(latest_capture["grab_ms"])
-                        capture_retrieve_ms = float(latest_capture["retrieve_ms"])
-                    if frame is None:
-                        async with condition:
-                            in_flight = max(0, in_flight - 1)
-                            condition.notify_all()
-                        await asyncio.sleep(0.03)
-                        continue
-                    capture_wait_ms = (time.perf_counter() - capture_wait_started) * 1000.0
-                    duplicate_sender_frames = 1 if capture_seq == last_sent_capture_seq else 0
-                    dropped_capture_frames = (
-                        max(0, capture_seq - last_sent_capture_seq - 1)
-                        if last_sent_capture_seq >= 0 and duplicate_sender_frames == 0
-                        else 0
-                    )
-                    last_sent_capture_seq = capture_seq
-                    capture_age_ms = max(0.0, (time.perf_counter() - captured_at) * 1000.0)
-                    add_client_stat("capture_read_ms", capture_wait_ms)
-                    add_client_stat("capture_wait_ms", capture_wait_ms)
-                    add_client_stat("capture_grab_ms", capture_grab_ms)
-                    add_client_stat("capture_retrieve_ms", capture_retrieve_ms)
-                    add_client_stat("capture_age_ms", capture_age_ms)
-                    add_client_count("dropped_capture_frames", dropped_capture_frames)
-                    add_client_count("duplicate_sender_frames", duplicate_sender_frames)
-                    client_stats["capture_seq"] = capture_seq
-                    with self._runtime_config_lock:
-                        capture_config = dict(self._runtime_config)
-                    current_capture_scale = str(capture_config.get("capture_scale", capture_scale)).lower()
-                    if current_capture_scale not in LIVE_CAPTURE_SCALES:
-                        capture_config["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
-                    resize_started = clock()
-                    frame = _resize_for_capture_config(frame, capture_config, cv2)
-                    add_client_stat("resize_ms", (clock() - resize_started) * 1000.0)
-                    current_frame_codec = str(self._runtime_value("frame_codec", frame_codec)).lower()
-                    if current_frame_codec not in LIVE_FRAME_CODECS:
-                        current_frame_codec = DEFAULT_LIVE_FRAME_CODEC
-                    current_frame_quality = int(self._runtime_value("jpeg_quality", frame_quality))
-                    encode_ext = ".webp" if current_frame_codec == "webp" else ".jpg"
-                    encode_flag = int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY)) if current_frame_codec == "webp" else int(cv2.IMWRITE_JPEG_QUALITY)
-                    encode_started = clock()
-                    try:
-                        ok, encoded = cv2.imencode(encode_ext, frame, [encode_flag, current_frame_quality])
-                    except Exception:
-                        if current_frame_codec != "webp":
-                            raise
-                        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), current_frame_quality])
-                    add_client_stat("encode_ms", (clock() - encode_started) * 1000.0)
-                    if not ok:
-                        async with condition:
-                            in_flight = max(0, in_flight - 1)
-                            condition.notify_all()
-                        continue
-                    frame_height, frame_width = frame.shape[:2]
-                    payload_bytes = encoded.tobytes()
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                "type": "live_frame_meta",
-                                "seq": capture_seq,
-                                "capture_time": captured_wall_time,
-                                "send_time": time.time(),
-                                "codec": current_frame_codec,
-                                "width": frame_width,
-                                "height": frame_height,
-                                "quality": current_frame_quality,
-                                "payload_bytes": len(payload_bytes),
-                            }
+                        capture_wait_ms = (time.perf_counter() - capture_wait_started) * 1000.0
+                        duplicate_sender_frames = 1 if capture_seq == last_sent_capture_seq else 0
+                        dropped_capture_frames = (
+                            max(0, capture_seq - last_sent_capture_seq - 1)
+                            if last_sent_capture_seq >= 0 and duplicate_sender_frames == 0
+                            else 0
                         )
-                    )
+                        last_sent_capture_seq = capture_seq
+                        capture_age_ms = max(0.0, (time.perf_counter() - captured_at) * 1000.0)
+                        add_client_stat("capture_read_ms", capture_wait_ms)
+                        add_client_stat("capture_wait_ms", capture_wait_ms)
+                        add_client_stat("capture_grab_ms", capture_grab_ms)
+                        add_client_stat("capture_retrieve_ms", capture_retrieve_ms)
+                        add_client_stat("capture_age_ms", capture_age_ms)
+                        add_client_count("dropped_capture_frames", dropped_capture_frames)
+                        add_client_count("duplicate_sender_frames", duplicate_sender_frames)
+                        client_stats["capture_seq"] = capture_seq
+                        with self._runtime_config_lock:
+                            capture_config = dict(self._runtime_config)
+                        current_capture_scale = str(capture_config.get("capture_scale", capture_scale)).lower()
+                        if current_capture_scale not in LIVE_CAPTURE_SCALES:
+                            capture_config["capture_scale"] = DEFAULT_LIVE_CAPTURE_SCALE
+                        resize_started = clock()
+                        frame = _resize_for_capture_config(frame, capture_config, cv2)
+                        add_client_stat("resize_ms", (clock() - resize_started) * 1000.0)
+                        current_frame_codec = str(self._runtime_value("frame_codec", frame_codec)).lower()
+                        if current_frame_codec not in LIVE_FRAME_CODECS:
+                            current_frame_codec = DEFAULT_LIVE_FRAME_CODEC
+                        current_frame_quality = int(self._runtime_value("jpeg_quality", frame_quality))
+                        encode_ext = ".webp" if current_frame_codec == "webp" else ".jpg"
+                        encode_flag = (
+                            int(getattr(cv2, "IMWRITE_WEBP_QUALITY", cv2.IMWRITE_JPEG_QUALITY))
+                            if current_frame_codec == "webp"
+                            else int(cv2.IMWRITE_JPEG_QUALITY)
+                        )
+                        encode_started = clock()
+                        try:
+                            ok, encoded = cv2.imencode(encode_ext, frame, [encode_flag, current_frame_quality])
+                        except Exception:
+                            if current_frame_codec != "webp":
+                                raise
+                            ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), current_frame_quality])
+                        add_client_stat("encode_ms", (clock() - encode_started) * 1000.0)
+                        if not ok:
+                            continue
+                        frame_height, frame_width = frame.shape[:2]
+                        payload_bytes = encoded.tobytes()
+                        batch_frames.append(
+                            (
+                                {
+                                    "seq": capture_seq,
+                                    "capture_time": captured_wall_time,
+                                    "codec": current_frame_codec,
+                                    "width": frame_width,
+                                    "height": frame_height,
+                                    "quality": current_frame_quality,
+                                    "payload_bytes": len(payload_bytes),
+                                },
+                                payload_bytes,
+                            )
+                        )
+                        add_client_stat("sent_kb", len(payload_bytes) / 1024.0)
+                        client_stats["frame_width"] = frame_width
+                        client_stats["frame_height"] = frame_height
+                        client_stats["frame_codec"] = current_frame_codec
+                        client_stats["jpeg_quality"] = current_frame_quality
+                        client_stats["capture_scale"] = current_capture_scale
+                    if not batch_frames:
+                        continue
+                    packet_send_time = time.time()
+                    for header, _payload_bytes in batch_frames:
+                        header["send_time"] = packet_send_time
+                    pack_started = clock()
+                    packet = _pack_live_frame_batch(batch_frames)
+                    pack_ms = (clock() - pack_started) * 1000.0
+                    async with condition:
+                        in_flight += len(batch_frames)
+                        reserved_in_flight = len(batch_frames)
+                        current_in_flight = in_flight
                     send_started = clock()
-                    await websocket.send(payload_bytes)
+                    await websocket.send(packet)
                     add_client_stat("send_ms", (clock() - send_started) * 1000.0)
-                    client_stats["frames"] = int(client_stats["frames"]) + 1
-                    add_client_stat("sent_kb", len(payload_bytes) / 1024.0)
-                    client_stats["frame_width"] = frame_width
-                    client_stats["frame_height"] = frame_height
-                    client_stats["frame_codec"] = current_frame_codec
-                    client_stats["jpeg_quality"] = current_frame_quality
-                    client_stats["capture_scale"] = current_capture_scale
+                    client_stats["frames"] = int(client_stats["frames"]) + len(batch_frames)
+                    client_stats["transport_batch_size"] = current_transport_batch_size
+                    add_client_count("transport_batch_frames", len(batch_frames))
+                    add_client_stat("transport_batch_bytes", len(packet))
+                    add_client_stat("transport_pack_ms", pack_ms)
+                    add_client_count("ws_messages", 1)
                     now = clock()
                     if now - float(client_stats["started"]) >= 5.0:
-                        emit_client_perf(now, current_pipeline_frames, in_flight)
+                        emit_client_perf(now, current_pipeline_frames, current_in_flight)
                 except Exception:
-                    async with condition:
-                        in_flight = max(0, in_flight - 1)
-                        condition.notify_all()
+                    if reserved_in_flight:
+                        async with condition:
+                            in_flight = max(0, in_flight - reserved_in_flight)
+                            condition.notify_all()
                     raise
 
         async def receiver(websocket: Any) -> None:
