@@ -11,6 +11,15 @@ from windows_app import output_tasks as output_tasks_base
 from windows_app.api_client import format_size
 from windows_app.window_core import WindowCore as MainWindow
 
+OUTPUT_PHOTO_ZOOM_FACTORS = {
+    "fit": None,
+    "0.5x": 0.5,
+    "0.8x": 0.8,
+    "1x": 1.0,
+    "1.5x": 1.5,
+    "2x": 2.0,
+}
+
 
 def _ensure_prefetch_state(window: MainWindow) -> None:
     output_tasks_base._ensure_output_worker_state(window)
@@ -38,13 +47,34 @@ def _display_photo(window: MainWindow, item: dict[str, Any], data: bytes) -> Non
     if image.isNull():
         window.output_status.setText("preview failed: downloaded image could not be decoded")
         return
-    pixmap = QPixmap.fromImage(image).scaled(window.output_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    window.output_preview.setPixmap(pixmap)
+    window.output_photo_pixmap = QPixmap.fromImage(image)
+    window.output_photo_item = dict(item)
+    apply_output_photo_zoom(window)
     window.output_status.setText(f"Showing {item.get('relative_path')} from {item.get('source')}")
+
+
+def apply_output_photo_zoom(window: MainWindow) -> None:
+    pixmap = getattr(window, "output_photo_pixmap", None)
+    if not isinstance(pixmap, QPixmap) or pixmap.isNull():
+        return
+    zoom = "fit"
+    if hasattr(window, "outputs_photo_zoom"):
+        zoom = str(window.outputs_photo_zoom.currentText()).lower()
+    factor = OUTPUT_PHOTO_ZOOM_FACTORS.get(zoom)
+    if factor is None:
+        target = window.output_preview.size()
+    else:
+        original = pixmap.size()
+        target = original
+        target.setWidth(max(1, int(round(original.width() * factor))))
+        target.setHeight(max(1, int(round(original.height() * factor))))
+    window.output_preview.setPixmap(pixmap.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
 
 def _display_video(window: MainWindow, item: dict[str, Any], local_path: Path) -> None:
     relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
+    window.output_photo_pixmap = None
+    window.output_photo_item = None
     if window.output_player is None or window.output_video is None:
         window.output_preview.show()
         window.output_preview.setText(
@@ -97,16 +127,21 @@ def _prefetch_output(window: MainWindow, index: int) -> None:
     worker.start()
 
 
-def _prefetch_neighbors(window: MainWindow, index: int) -> None:
+def _prefetch_neighbors(window: MainWindow, index: int, count: int | None = None) -> None:
     if not window.output_files:
         return
-    _prefetch_output(window, (index + 1) % len(window.output_files))
-    _prefetch_output(window, (index + 2) % len(window.output_files))
+    if count is None and window.outputs_kind.currentText() == "photos" and window.outputs_autoplay.isChecked():
+        preload_control = getattr(window, "outputs_photo_preload_count", None)
+        count = int(preload_control.value()) if preload_control is not None else 10
+    count = count if count is not None else 2
+    for offset in range(1, min(count, max(0, len(window.output_files) - 1)) + 1):
+        _prefetch_output(window, (index + offset) % len(window.output_files))
 
 
 def show_output_at(self: MainWindow, index: int) -> None:
     if index < 0 or index >= len(self.output_files):
         return
+    self.output_timer.stop()
     self.output_current_loaded = False
     _ensure_prefetch_state(self)
     item = dict(self.output_files[index])
@@ -116,16 +151,20 @@ def show_output_at(self: MainWindow, index: int) -> None:
     if not key:
         self.output_status.setText("selected output has no download path")
         self.output_current_loaded = True
+        self.schedule_outputs_autoplay()
         return
     self.stop_output_video()
 
     cached = self.output_prefetch_cache.get(key)
     if kind == "photos":
+        self.output_photo_pixmap = None
+        self.output_photo_item = None
         self.output_preview.setPixmap(QPixmap())
         if isinstance(cached, (bytes, bytearray)):
             _display_photo(self, item, bytes(cached))
             _prefetch_neighbors(self, index)
             self.output_current_loaded = True
+            self.schedule_outputs_autoplay()
             return
         size_str = format_size(file_size) if file_size > 0 else ""
         self.output_preview.setText(f"Loading photo preview... {size_str}")
@@ -150,6 +189,7 @@ def show_output_at(self: MainWindow, index: int) -> None:
                 _display_photo(self, item, bytes(data))
                 _prefetch_neighbors(self, index)
             self.output_current_loaded = True
+            self.schedule_outputs_autoplay()
 
         def photo_failed(task_id: str, error: str) -> None:
             if task_id != self.output_preview_task_id:
@@ -159,6 +199,7 @@ def show_output_at(self: MainWindow, index: int) -> None:
             self.output_status.setText(f"preview failed: {error}")
             self.log(f"output preview failed: {error}")
             self.output_current_loaded = True
+            self.schedule_outputs_autoplay()
 
         self.output_preview_task_id = output_tasks_base._start_output_task_with_progress(
             self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed
@@ -169,6 +210,7 @@ def show_output_at(self: MainWindow, index: int) -> None:
         _display_video(self, item, cached)
         _prefetch_neighbors(self, index)
         self.output_current_loaded = True
+        self.schedule_outputs_autoplay()
         return
     self.show_video_output(item)
 
@@ -179,6 +221,8 @@ def show_video_output(self: MainWindow, item: dict[str, Any]) -> None:
     file_size = int(item.get("size") or 0)
     relative = str(item.get("relative_path") or item.get("name") or "output.mp4")
     local_path = _video_cache_path(self, item)
+    self.output_photo_pixmap = None
+    self.output_photo_item = None
     self.output_preview.setPixmap(QPixmap())
     size_str = format_size(file_size) if file_size > 0 else ""
     self.output_preview.setText(f"Loading video preview:\n{relative}\n{size_str}")
@@ -206,6 +250,7 @@ def show_video_output(self: MainWindow, item: dict[str, Any]) -> None:
         _display_video(self, item, ready_path)
         _prefetch_neighbors(self, self.outputs_list.currentRow())
         self.output_current_loaded = True
+        self.schedule_outputs_autoplay()
 
     def video_failed(task_id: str, error: str) -> None:
         if task_id != self.output_preview_task_id:
@@ -215,8 +260,8 @@ def show_video_output(self: MainWindow, item: dict[str, Any]) -> None:
         self.output_status.setText(f"preview failed: {error}")
         self.log(f"output preview failed: {error}")
         self.output_current_loaded = True
+        self.schedule_outputs_autoplay()
 
     self.output_preview_task_id = output_tasks_base._start_output_task_with_progress(
         self, f"Loading video preview: {relative}", fetch_video, video_ready, video_failed
     )
-

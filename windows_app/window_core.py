@@ -73,6 +73,7 @@ class WindowCore(QMainWindow):
         self.output_temp_dir.mkdir(parents=True, exist_ok=True)
 
         self.output_timer = QTimer(self)
+        self.output_timer.setSingleShot(True)
         self.output_timer.timeout.connect(self.next_output)
 
         self.setWindowTitle("Deep-Live-Cam Remote Controller")
@@ -195,10 +196,33 @@ class WindowCore(QMainWindow):
         index = self.outputs_list.currentRow()
         self.outputs_list.setCurrentRow((index + 1) % len(self.output_files))
 
+    def output_autoplay_interval_ms(self) -> int:
+        if self.outputs_kind.currentText() == "videos":
+            return 8000
+        seconds_control = getattr(self, "outputs_photo_seconds", None)
+        seconds = float(seconds_control.value()) if seconds_control is not None else 3.5
+        return max(250, int(round(seconds * 1000.0)))
+
+    def schedule_outputs_autoplay(self) -> None:
+        self.output_timer.stop()
+        if not self.outputs_autoplay.isChecked():
+            return
+        if not self.output_files or not self.output_current_loaded:
+            return
+        self.output_timer.start(self.output_autoplay_interval_ms())
+
     def toggle_outputs_autoplay(self) -> None:
         if self.outputs_autoplay.isChecked():
-            interval = 8000 if self.outputs_kind.currentText() == "videos" else 3500
-            self.output_timer.start(interval)
+            if self.outputs_kind.currentText() == "photos":
+                try:
+                    from windows_app import output_browser
+
+                    preload_control = getattr(self, "outputs_photo_preload_count", None)
+                    count = int(preload_control.value()) if preload_control is not None else 10
+                    output_browser._prefetch_neighbors(self, self.outputs_list.currentRow(), count=count)
+                except Exception as exc:
+                    self.log(f"photo autoplay prefetch failed: {exc}")
+            self.schedule_outputs_autoplay()
         else:
             self.output_timer.stop()
 

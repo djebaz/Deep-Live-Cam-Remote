@@ -109,6 +109,8 @@ LIVE_TRANSPORT_FRAME_HEADER = struct.Struct("!II")
 LIVE_TRANSPORT_MAX_FRAMES_PER_PACKET = 256
 LIVE_TRANSPORT_MAX_HEADER_BYTES = 1_000_000
 LIVE_TRANSPORT_MAX_FRAME_BYTES = 50_000_000
+LIVE_TRANSPORT_MAX_PACKET_BYTES = 4 * 1024 * 1024
+LIVE_TRANSPORT_PACKET_SIZE_MARGIN_BYTES = 64
 LIVE_TRANSPORT_BATCH_MAX_WAIT_SECONDS = 0.050
 LIVE_PERF_CSV_COLUMNS = (
     "timestamp",
@@ -230,6 +232,19 @@ def _pack_live_frame_batch(frames: list[tuple[dict[str, Any], bytes]]) -> bytes:
         packet.extend(header_bytes)
         packet.extend(payload)
     return bytes(packet)
+
+
+def _estimate_live_frame_batch_bytes(frames: list[tuple[dict[str, Any], bytes]]) -> int:
+    total = LIVE_TRANSPORT_PACKET_HEADER.size
+    for header, payload in frames:
+        header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+        total += LIVE_TRANSPORT_FRAME_HEADER.size
+        total += len(header_bytes)
+        total += len(payload)
+        # The sender adds send_time just before packing. Keep a small per-frame
+        # margin so the pre-send estimate remains conservative.
+        total += LIVE_TRANSPORT_PACKET_SIZE_MARGIN_BYTES
+    return total
 
 
 def _unpack_live_frame_batch(payload: bytes) -> tuple[list[tuple[dict[str, Any], bytes]], float]:
@@ -967,8 +982,12 @@ def _handle_live_worker_message(window: MainWindow, text: str) -> None:
         # Update the FPS spinbox when auto-detected
         detected_fps = payload.get("fps")
         if detected_fps and hasattr(window, "live_fps"):
-            window.live_fps.setValue(int(detected_fps))
-            window.settings.live_fps = int(detected_fps)
+            detected_fps_int = int(detected_fps)
+            window.live_fps.setValue(detected_fps_int)
+            window.settings.live_fps = detected_fps_int
+            timer = getattr(window, "_live_preview_timer", None)
+            if timer is not None:
+                timer.setInterval(max(1, int(round(1000.0 / max(1, detected_fps_int)))))
     elif "error" in payload:
         ui_base._set_process_status(window, "live", f"Live error: {payload['error']}")
 
@@ -1774,16 +1793,7 @@ class LiveWorker(BaseLiveWorker):
                             if last_sent_capture_seq >= 0 and duplicate_sender_frames == 0
                             else 0
                         )
-                        last_sent_capture_seq = capture_seq
                         capture_age_ms = max(0.0, (time.perf_counter() - captured_at) * 1000.0)
-                        add_client_stat("capture_read_ms", capture_wait_ms)
-                        add_client_stat("capture_wait_ms", capture_wait_ms)
-                        add_client_stat("capture_grab_ms", capture_grab_ms)
-                        add_client_stat("capture_retrieve_ms", capture_retrieve_ms)
-                        add_client_stat("capture_age_ms", capture_age_ms)
-                        add_client_count("dropped_capture_frames", dropped_capture_frames)
-                        add_client_count("duplicate_sender_frames", duplicate_sender_frames)
-                        client_stats["capture_seq"] = capture_seq
                         with self._runtime_config_lock:
                             capture_config = dict(self._runtime_config)
                         current_capture_scale = str(capture_config.get("capture_scale", capture_scale)).lower()
@@ -1814,20 +1824,33 @@ class LiveWorker(BaseLiveWorker):
                             continue
                         frame_height, frame_width = frame.shape[:2]
                         payload_bytes = encoded.tobytes()
-                        batch_frames.append(
-                            (
-                                {
-                                    "seq": capture_seq,
-                                    "capture_time": captured_wall_time,
-                                    "codec": current_frame_codec,
-                                    "width": frame_width,
-                                    "height": frame_height,
-                                    "quality": current_frame_quality,
-                                    "payload_bytes": len(payload_bytes),
-                                },
-                                payload_bytes,
-                            )
+                        frame_packet = (
+                            {
+                                "seq": capture_seq,
+                                "capture_time": captured_wall_time,
+                                "codec": current_frame_codec,
+                                "width": frame_width,
+                                "height": frame_height,
+                                "quality": current_frame_quality,
+                                "payload_bytes": len(payload_bytes),
+                            },
+                            payload_bytes,
                         )
+                        if (
+                            batch_frames
+                            and _estimate_live_frame_batch_bytes([*batch_frames, frame_packet]) > LIVE_TRANSPORT_MAX_PACKET_BYTES
+                        ):
+                            break
+                        last_sent_capture_seq = capture_seq
+                        add_client_stat("capture_read_ms", capture_wait_ms)
+                        add_client_stat("capture_wait_ms", capture_wait_ms)
+                        add_client_stat("capture_grab_ms", capture_grab_ms)
+                        add_client_stat("capture_retrieve_ms", capture_retrieve_ms)
+                        add_client_stat("capture_age_ms", capture_age_ms)
+                        add_client_count("dropped_capture_frames", dropped_capture_frames)
+                        add_client_count("duplicate_sender_frames", duplicate_sender_frames)
+                        client_stats["capture_seq"] = capture_seq
+                        batch_frames.append(frame_packet)
                         add_client_stat("sent_kb", len(payload_bytes) / 1024.0)
                         client_stats["frame_width"] = frame_width
                         client_stats["frame_height"] = frame_height
@@ -2007,7 +2030,7 @@ class LiveWorker(BaseLiveWorker):
                 receiver_task = asyncio.create_task(receiver(websocket))
                 done, pending = await asyncio.wait(
                     {sender_task, receiver_task},
-                    return_when=asyncio.FIRST_EXCEPTION,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
                 for task in done:
                     error = task.exception()
