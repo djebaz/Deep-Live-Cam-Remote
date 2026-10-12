@@ -53,6 +53,9 @@ The Clone and install cell in both Colab notebooks shows six stages: runtime
 preparation, repository update, Python dependencies, GPU dependencies, model
 download and verification. During pip/git/apt commands, the display updates with
 elapsed time and the latest subprocess output even when the command is quiet.
+Dependency installs also print numbered activities for package resolution, reuse,
+downloads, build preparation, wheel compilation and installation. A persistent
+heartbeat every 10 seconds reports the current activity and time without new output.
 The overall bar counts completed stages; it is not a pip download percentage.
 Model transfers show byte progress when the server provides a total size.
 

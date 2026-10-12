@@ -23,3 +23,7 @@ Both full and mini Clone and install cells. Visible feedback for subprocess step
 - [ ] Verify batch/Live/enhancer processor imports on a fresh Colab runtime without PySide6.
 
 No dependency installation, subprocess runtime tests, GPU tests or Windows build were performed in this session. Open a draft PR pending Colab smoke validation.
+
+## Dependency-install substeps
+
+User feedback: one Install Python dependencies stage can stay active for minutes and needs more console detail. Added numbered activities based on real pip output (including package names and build stages), import-readiness messages and a persistent 10-second heartbeat that reports command duration and time since last output. Pip may revisit activities; substep numbering counts observed activities rather than a fabricated fixed number of packages or completion percentage. Keep these messages visible independently of the HTML display. Runtime quiet-command/build validation remains user-owned.

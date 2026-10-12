@@ -104,3 +104,10 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Remove PySide6 and local camera enumeration from notebook installation by separating processor status reporting from the local GUI import path and explicitly selecting headless mode before Colab processor imports. Preserve GUI status routing and the tested CUDA/cuDNN dependencies. Already-installed packages are not removed.
 - Correct the full notebook source clone branch to the documented main default. Rebuild both artifacts with LF and preserve cell IDs/metadata.
 - Setup-cell syntax, metadata and whitespace checks passed. Colab fresh/re-run, failure and interrupt smoke checks are pending; automated tests were not run under repository guidance.
+
+### Detailed Colab install substeps
+
+- Print numbered dependency activities and package names from actual pip output: resolution, reused packages, downloads/cache hits, metadata/build preparation, wheel compilation and installation.
+- Add visible import-readiness substeps and a persistent heartbeat every 10 seconds with current activity, command elapsed time and time since new output. Updates remain visible even if the HTML display is unavailable or collapsed.
+- Separate model-download update timing from text-fallback timing and avoid duplicate stage/heartbeat messages.
+- Both notebook setup cells parse and artifacts are regenerated with preserved metadata/cell IDs; runtime Colab checks remain pending.

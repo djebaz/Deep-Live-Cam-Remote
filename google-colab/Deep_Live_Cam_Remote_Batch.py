@@ -159,9 +159,42 @@ def _setup_render(detail="", status="running"):
 
 
 def _setup_step(number, label):
-    _setup_state.update(step=number, label=label, updated=0.0)
+    _setup_state.update(step=number, label=label, updated=0.0, substep=0, activity="")
     print(f"[Setup {number}/6] {label}", flush=True)
+    _setup_state["updated"] = time.monotonic()
     _setup_render()
+
+
+
+def _setup_substep(detail):
+    detail = _setup_redact(detail)
+    _setup_state["substep"] = _setup_state.get("substep", 0) + 1
+    _setup_state["activity"] = detail
+    print(f"[Setup {_setup_state['step']}.{_setup_state['substep']}] {detail}", flush=True)
+    _setup_state["updated"] = time.monotonic()
+    _setup_render(detail)
+
+
+def _setup_pip_activity(line):
+    text = line.strip()
+    for prefix, label in (
+        ("Requirement already satisfied:", "Reuse installed package"),
+        ("Collecting ", "Resolve package"),
+        ("Downloading ", "Download"),
+        ("Using cached ", "Use cached download"),
+        ("Installing build dependencies", "Prepare build dependencies"),
+        ("Installing backend dependencies", "Prepare build backend"),
+        ("Getting requirements to build wheel", "Inspect wheel build requirements"),
+        ("Preparing metadata", "Prepare package metadata"),
+        ("Building wheels for collected packages:", "Build package wheels"),
+        ("Building wheel for ", "Build wheel"),
+        ("Successfully built ", "Wheel built"),
+        ("Installing collected packages:", "Install resolved packages"),
+        ("Successfully installed ", "Packages installed"),
+    ):
+        if text.startswith(prefix):
+            return f"{label}: {text[len(prefix):].strip()}"[:300]
+    return None
 
 
 def _run_setup_command(command, check=False, **kwargs):
@@ -187,6 +220,13 @@ def _run_setup_command(command, check=False, **kwargs):
     reader.start()
     last_update = 0.0
     latest = "Command running..."
+    command_started = time.monotonic()
+    last_heartbeat = command_started
+    last_output = command_started
+    is_pip = command[1:4] == ["-m", "pip", "install"]
+    previous_activity = None
+    if is_pip:
+        _setup_substep("Start dependency resolution and installation")
     try:
         while process.poll() is None or reader.is_alive() or not output.empty():
             try:
@@ -194,11 +234,25 @@ def _run_setup_command(command, check=False, **kwargs):
                 tail.append(line)
                 if line.strip():
                     latest = line.strip()[-240:]
+                    last_output = time.monotonic()
+                    activity = _setup_pip_activity(line) if is_pip else None
+                    if activity and activity != previous_activity:
+                        _setup_substep(activity)
+                        previous_activity = activity
             except queue.Empty:
                 pass
-            if time.monotonic() - last_update >= 0.5:
-                _setup_render(latest)
-                last_update = time.monotonic()
+            now = time.monotonic()
+            activity = _setup_state.get("activity") or latest
+            elapsed = int(now - command_started)
+            quiet = int(now - last_output)
+            detail = f"{activity} | command {elapsed}s, no new output for {quiet}s"
+            if now - last_heartbeat >= 10:
+                print(f"[Setup {_setup_state['step']}/6] Still running: {detail}", flush=True)
+                _setup_state["updated"] = now
+                last_heartbeat = now
+            if now - last_update >= 0.5:
+                _setup_render(detail)
+                last_update = now
         reader.join()
         code = process.wait()
     except BaseException:
@@ -223,9 +277,9 @@ def _run_setup_command(command, check=False, **kwargs):
 def _setup_download_progress(blocks, block_size, total_size):
     downloaded = blocks * block_size
     now = time.monotonic()
-    if now - _setup_state["updated"] < 0.5 and (total_size <= 0 or downloaded < total_size):
+    if now - _setup_state.get("download_updated", 0.0) < 0.5 and (total_size <= 0 or downloaded < total_size):
         return
-    _setup_state["updated"] = now
+    _setup_state["download_updated"] = now
     if total_size > 0:
         downloaded = min(downloaded, total_size)
         detail = f"Model download: {100 * downloaded / total_size:.1f}% ({downloaded / 1048576:.1f} / {total_size / 1048576:.1f} MiB)"
@@ -346,9 +400,13 @@ try:
     # Check if key packages are already installed
     def packages_ready() -> bool:
         try:
+            _setup_substep("Check certificate dependency")
             import certifi  # noqa: F401 -- verify the shared downloader dependency imports
+            _setup_substep("Check InsightFace import")
             import insightface
+            _setup_substep("Check ONNX Runtime import")
             import onnxruntime
+            _setup_substep("Check API server imports")
             import fastapi
             import uvicorn
             return True
