@@ -84,6 +84,8 @@ When working in Windows/PowerShell:
 - Live webcam exposes an InsightFace pack selector (`buffalo_l`, `buffalo_m`, `buffalo_s`) and swapper precision selector (`fp32`, `fp16`); keep `buffalo_l`/`fp32` as the safest baseline for `inswapper_128`, and treat `buffalo_m`/`buffalo_s` plus `fp16` as experimental speed options. Live defaults to DirectShow for OBS Virtual Camera on Windows; Auto capture mode requests the current OBS profile canvas size when available, while Custom mode requests a configured OBS/OpenCV capture size at startup, and the app offers a hot-change Send scale selector; camera/source/capture-backend/capture-size/FPS/model controls are restart-only and should stay disabled during a run. Stop should cancel the paired live websocket sender/receiver tasks promptly instead of waiting for another backend packet.
 - Settings sync: changes in one tab sync to the other when saving or starting jobs.
 
+- Remote Live also offers capture resolution presets in Custom mode; arbitrary width/height and OBS Auto remain available. Presets use existing persisted dimensions and are restart-only. Keep the existing detector-size hot-change control. App close defers window destruction until Live and polling workers finish; camera capture must be joined before its handle is released.
+
 ### Colab Notebook Features
 
 - Resumable cells: Clone/install, Tailscale install, and Tailscale auth cells skip already-completed steps.

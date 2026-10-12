@@ -17,7 +17,7 @@ PR #9 contains 48 upstream commits. PR #10 uses the fork-owned branch `integrate
 | Compatibility | Shared OpenVINO provider configuration and Windows DLL setup; CoreML optimization caches include detection input shape; shared image extension handling includes WebP. |
 | Maintenance | Turkish translations, Dependabot configuration, Python compilation workflow and upstream regression tests. |
 
-Camera selectors and worker changes above belong to the local `run.py` application. The remote controller retains its existing OBS capture, send-scale and Live controls. Shared modules affect the Colab API and batch processor and batch engine; the GPU follow-up also updates `colab_batch.py` initialization.
+Camera selectors and worker changes above belong to the local `run.py` application. The remote controller retains its OBS capture, send-scale and hot-change controls. The subsequent parity change adds custom-mode capture resolution presets and defers window destruction until Live/polling workers finish. Shared modules affect the Colab API and batch processor and batch engine; the GPU follow-up also updates `colab_batch.py` initialization.
 
 ## Fork-specific additions and conflict resolutions
 
@@ -90,3 +90,11 @@ The user-run batch initially initialized CUDA but then failed inference with cuD
 After installing `nvidia-cudnn-cu12==9.26.0.51` and restarting the API, the supplied run excerpt shows successful CUDA graph initialization, active CUDA swapper/GFPGAN providers, and 37 photos completed with photo 38 starting, without cuDNN errors or CPU fallback messages. The accompanying T4 monitor shows sustained GPU utilization, often around 50–90%, and about 6.1 GiB VRAM allocated. The excerpt does not include the final summary for the 90-photo job.
 
 Both notebooks now pin that tested cuDNN version in fresh-install and re-run setup commands. This prevents the dependency repair from selecting the observed failing 9.27 release. Other hardware and root dependency profiles remain outside this smoke test. A related report is documented in [ONNX Runtime issue #26274](https://github.com/microsoft/onnxruntime/issues/26274#issuecomment-6080148695).
+
+## Remote GUI parity follow-up
+
+The remote app already offered persisted capture width/height and detector-size controls, plus prompt Live Stop cancellation. It now adds upstream-style resolution presets in Custom mode while keeping OBS Auto and arbitrary portrait dimensions. The preset is inferred from the existing stored width/height, so no settings migration is introduced. Detector controls retain their existing hot-change behavior.
+
+App close now defers destruction until active Live/polling workers finish, leaving the Qt event loop running. Live preparation callbacks are invalidated and the window is disabled during closing. The capture thread finishes before the OpenCV handle is released. This applies upstream's worker-lifetime principle to the remote architecture rather than copying the local capture worker implementation.
+
+These changes require a rebuilt Full Windows EXE. Syntax/whitespace checks passed; preset persistence, Auto/custom behavior, stop/restart and app-close handling need user manual validation on Windows. Prior Live smoke evidence predates these GUI changes.

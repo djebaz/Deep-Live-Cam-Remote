@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -584,6 +584,7 @@ def _apply_live_options_to_widgets(window: MainWindow) -> None:
     window.live_capture_scale.setCurrentText(str(options["capture_scale"]))
     window.live_capture_width.setValue(int(options["capture_width"]))
     window.live_capture_height.setValue(int(options["capture_height"]))
+    _sync_capture_resolution_preset(window)
     window.live_face_model_pack.setCurrentText(str(options["face_model_pack"]))
     window.live_swapper_precision.setCurrentText(str(options["swapper_precision"]))
     window.live_cache_source_face.setChecked(bool(options["cache_source_face"]))
@@ -620,6 +621,7 @@ def _live_restart_only_widgets(window: MainWindow) -> list[Any]:
             getattr(window, "live_source_browse", None),
             getattr(window, "live_capture_backend", None),
             getattr(window, "live_capture_mode", None),
+            getattr(window, "live_capture_resolution", None),
             getattr(window, "live_capture_width", None),
             getattr(window, "live_capture_height", None),
             getattr(window, "live_width", None),
@@ -653,10 +655,29 @@ def _set_live_controls_running(window: MainWindow, running: bool) -> None:
     _update_capture_custom_controls(window)
 
 
+def _sync_capture_resolution_preset(window: MainWindow) -> None:
+    preset = getattr(window, "live_capture_resolution", None)
+    if preset is None:
+        return
+    size = (window.live_capture_width.value(), window.live_capture_height.value())
+    index = next((i for i in range(1, preset.count()) if tuple(preset.itemData(i)) == size), 0)
+    with QSignalBlocker(preset):
+        preset.setCurrentIndex(index)
+
+
+def _apply_capture_resolution_preset(window: MainWindow, index: int) -> None:
+    size = window.live_capture_resolution.itemData(index)
+    if size is None:
+        return
+    with QSignalBlocker(window.live_capture_width), QSignalBlocker(window.live_capture_height):
+        window.live_capture_width.setValue(size[0])
+        window.live_capture_height.setValue(size[1])
+
+
 def _update_capture_custom_controls(window: MainWindow) -> None:
     is_custom = getattr(window, "live_capture_mode", None) is not None and window.live_capture_mode.currentText() == "custom"
     enabled = is_custom and not getattr(window, "_live_controls_running", False)
-    for widget_name in ("live_capture_width", "live_capture_height"):
+    for widget_name in ("live_capture_resolution", "live_capture_width", "live_capture_height"):
         widget = getattr(window, widget_name, None)
         if widget is not None:
             widget.setEnabled(enabled)
@@ -1151,6 +1172,24 @@ def _build_live_tab(self: MainWindow) -> None:
     self.live_capture_height = QSpinBox()
     self.live_capture_height.setRange(2, 4096)
     self.live_capture_height.setSingleStep(2)
+    self.live_capture_resolution = QComboBox()
+    self.live_capture_resolution.addItem("Custom", None)
+    for label, size in (
+        ("640 x 480", (640, 480)),
+        ("960 x 540 (qHD)", (960, 540)),
+        ("1280 x 720 (HD)", (1280, 720)),
+        ("1920 x 1080 (FHD)", (1920, 1080)),
+    ):
+        self.live_capture_resolution.addItem(label, size)
+    self.live_capture_resolution.setToolTip(
+        "Capture-size presets in custom mode. Width/height remain editable for portrait or other sizes. "
+        "The camera may negotiate another size; the log reports the actual capture size. Applies on next Live start."
+    )
+    self.live_capture_resolution.currentIndexChanged.connect(
+        lambda index: _apply_capture_resolution_preset(self, index)
+    )
+    self.live_capture_width.valueChanged.connect(lambda _value: _sync_capture_resolution_preset(self))
+    self.live_capture_height.valueChanged.connect(lambda _value: _sync_capture_resolution_preset(self))
     self.live_capture_scale = QComboBox()
     self.live_capture_scale.addItems(list(LIVE_CAPTURE_SCALES))
     self.live_capture_scale.setToolTip(
@@ -1175,6 +1214,7 @@ def _build_live_tab(self: MainWindow) -> None:
     form.addRow("Source face path", live_source_row)
     form.addRow("Capture backend", self.live_capture_backend)
     form.addRow("Capture mode", self.live_capture_mode)
+    form.addRow("Capture resolution", self.live_capture_resolution)
     form.addRow("Custom capture width", self.live_capture_width)
     form.addRow("Custom capture height", self.live_capture_height)
     form.addRow("Send scale", self.live_capture_scale)
@@ -1363,7 +1403,25 @@ def closeEvent(self: MainWindow, event: Any) -> None:
         self.sync_settings()
     except Exception as exc:
         self.log(f"settings save on close failed: {exc}")
-    live_preview.stop_live_preview_timer(self)
+    workers = [worker for worker in (
+        getattr(self, "live_worker", None), getattr(self, "poller", None)
+    ) if worker is not None and worker.isRunning()]
+    if workers:
+        # Keep the window and QThread alive until cleanup finishes. Closing is
+        # deferred instead of blocking the Qt event loop while capture stops.
+        if not getattr(self, "_live_close_pending", False):
+            self._live_close_pending = True
+            for worker in workers:
+                worker.finished.connect(self.close)
+            self.setEnabled(False)
+        stop_live(self)
+        poller = getattr(self, "poller", None)
+        if poller is not None:
+            poller.stop()
+        event.ignore()
+        return
+    self._live_close_pending = False
+    stop_live(self)  # Also invalidate any pending source-upload preparation.
     MainWindow.closeEvent(self, event)
 
 
@@ -1448,6 +1506,7 @@ class LiveWorker(BaseLiveWorker):
             capture_backend = DEFAULT_LIVE_CAPTURE_BACKEND
         cap = _open_video_capture(cv2, self.settings.camera_index, capture_backend)
         if not cap.isOpened():
+            cap.release()
             raise RuntimeError(f"could not open camera index {self.settings.camera_index} with backend {capture_backend}")
         try:
             buffer_set = bool(cap.set(cv2.CAP_PROP_BUFFERSIZE, 1))
@@ -2043,7 +2102,9 @@ class LiveWorker(BaseLiveWorker):
             capture_stop.set()
             with capture_condition:
                 capture_condition.notify_all()
-            capture_thread.join(timeout=1.0)
+            # Never release OpenCV capture while the capture thread still
+            # accesses it. A closing window waits for this worker to finish.
+            capture_thread.join()
             cap.release()
             if virtual_cam and hasattr(virtual_cam, "close"):
                 virtual_cam.close()
