@@ -77,3 +77,5 @@ Changed and preserved for this fork:
 - Shared image extension handling includes WebP. The API, batch entry point and remote controller files are unchanged, but use updated shared modules.
 
 Validation: syntax compilation passed for 22 changed Python sources; whitespace and conflict-marker checks passed; notebook rebuilt with `--eol lf`. Tests, dependency installation, desktop builds and Colab/GPU/manual camera checks remain pending. User smoke testing confirmed Tailscale API connectivity, a successful 19-photo batch (0 failed), and all 19 skipped on repeat with the latest desktop build. PR #10 is ready for review and has not been merged. GPU acceleration remains unverified.
+
+Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.

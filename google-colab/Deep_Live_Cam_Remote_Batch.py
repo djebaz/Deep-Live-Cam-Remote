@@ -219,7 +219,7 @@ else:
 # Check if key packages are already installed
 def packages_ready() -> bool:
     try:
-        import certifi
+        import certifi  # noqa: F401 -- verify the shared downloader dependency imports
         import insightface
         import onnxruntime
         import fastapi

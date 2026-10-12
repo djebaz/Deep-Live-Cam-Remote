@@ -31,3 +31,5 @@ Repository AGENTS.md reserves tests/builds for an explicit validation request. T
 ## Finalization
 
 PR #10 is ready for review and conflict-free as observed on 2026-10-12. The GitHub compilation workflow passed for `2fa7bb2`. User smoke testing establishes photo processing and skip preflight behavior; it does not establish CUDA execution. No PR merge has been performed by this session.
+
+Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.

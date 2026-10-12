@@ -72,3 +72,5 @@ Still pending, when validation is explicitly requested under repository guidance
 - Colab video processing, cancellation and remote Live with fp32/fp16 and model-pack selections.
 - Local camera resolution/detection changes and shutdown behavior.
 - CUDA, CoreML and OpenVINO checks on applicable hardware; desktop packaging with the separate build profile.
+
+Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.
