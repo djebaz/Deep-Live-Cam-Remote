@@ -34,6 +34,7 @@
   - Sample data cleanup and nvtop installation
 
 ## Fixed
+- Keep remote Live preview playback deadlines independent of system-clock adjustments by carrying a separate monotonic capture timestamp through the Colab API. Preserve wall-clock latency diagnostics and use arrival-time buffering with older backends.
 - Fix remote Live preview freezes when actual capture FPS differs from requested FPS: schedule buffered frames by capture timestamps, recover after sequence gaps, and measure buffer duration from playback deadlines.
 - Keep the Live preview timer cadence aligned when OBS auto-detects a different capture FPS after startup.
 - Cap Live transport packet batching client-side so large frames flush the current batch before oversized multi-frame websocket messages are built.
@@ -45,12 +46,6 @@
 - Consolidate the Windows remote app runtime patch layers into normal imported modules and a canonical launcher entrypoint.
 - Notebook now clones from GitHub instead of embedding Python source as a bundle
 - Setup cell is idempotent and pulls latest changes on re-run
-
-## Release audit
-
-- PRs: #1, #2, #3, #4, #5, #6, #7, #8; upstream integration ready for review: #10 (source proposal: #9)
-- Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches.
-
 
 ### Upstream integration — PR #10
 
@@ -118,3 +113,8 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Select NumPy <2 for Python through 3.12, and NumPy >=2.1,<3 for Python 3.13+. Require a binary NumPy wheel so setup does not spend minutes preparing an unsupported NumPy 1.26 source build on Python 3.13.
 - Check installed NumPy's version when deciding whether dependencies are ready, display the selected profile, and request a session restart if pip changed a NumPy version already loaded in the kernel.
 - PyPI inspection confirmed no Python 3.13 Linux wheels for NumPy 1.26.4 and available wheels for 2.1.0. Fresh Colab/InsightFace compatibility testing remains pending.
+
+## Release audit
+
+- PRs: #1, #2, #3, #4, #5, #6, #7, #8, #10, #11, #12, #13; monotonic follow-up pending PR (source proposal: #9)
+- Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches. PR #10 integrates upstream and Colab GPU fixes; PR #11 records upstream ancestry; PR #12 improves headless Colab installation progress and NumPy wheel selection; PR #13 fixes capture-FPS preview drift. The monotonic follow-up preserves that scheduling while removing wall-clock dependence and retaining legacy arrival-time buffering.

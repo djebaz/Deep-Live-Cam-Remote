@@ -1359,6 +1359,7 @@ async def live_socket(websocket: WebSocket) -> None:
                 output_meta = {
                     "seq": metadata.get("seq", ""),
                     "capture_time": metadata.get("capture_time", ""),
+                    "capture_monotonic": metadata.get("capture_monotonic", ""),
                     "client_send_time": metadata.get("send_time", ""),
                     "server_receive_time": receive_wall_time,
                     "server_send_time": time.time(),

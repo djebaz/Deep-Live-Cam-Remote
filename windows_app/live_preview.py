@@ -72,7 +72,7 @@ def _preview_frame_seq(self: MainWindow, meta: dict[str, object]) -> int:
 
 
 def enqueue_live_preview_frame_packet(self: MainWindow, meta: dict[str, object], frame_bytes: bytes) -> None:
-    # Sequence numbers identify frames; capture timestamps schedule playback.
+    # Sequence numbers identify frames; monotonic capture timestamps schedule playback.
     # Camera FPS can differ from the requested FPS, and processed sequences skip.
     buffer = getattr(self, "_live_preview_buffer", None)
     if buffer is None:
@@ -82,8 +82,8 @@ def enqueue_live_preview_frame_packet(self: MainWindow, meta: dict[str, object],
     seq = _preview_frame_seq(self, meta if isinstance(meta, dict) else {})
     buffer_seconds = max(0.0, float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS)))
     try:
-        capture_time = float(meta.get("capture_time", "")) if isinstance(meta, dict) else None
-        if capture_time is not None and (not math.isfinite(capture_time) or capture_time <= 0):
+        capture_time = float(meta.get("capture_monotonic", "")) if isinstance(meta, dict) else None
+        if capture_time is not None and (not math.isfinite(capture_time) or capture_time < 0):
             capture_time = None
     except (TypeError, ValueError):
         capture_time = None
@@ -93,7 +93,8 @@ def enqueue_live_preview_frame_packet(self: MainWindow, meta: dict[str, object],
     first_capture_time = getattr(self, "_live_preview_first_capture_time", None)
     presentation_at = now + buffer_seconds
     if capture_time is not None and first_capture_time is not None:
-        # Only relative client timestamps are used; no server clock sync is needed.
+        # Only relative monotonic client timestamps are used; wall-clock changes
+        # cannot alter deadlines. Older backends use arrival-time buffering.
         presentation_at = self._live_preview_clock_started_at + capture_time - first_capture_time
     buffer.append(
         {
