@@ -47,11 +47,11 @@
 
 ## Release audit
 
-- PRs: #1, #2, #3, #4, #5, #6, #7, #8; draft upstream integration: #10 (source proposal: #9)
+- PRs: #1, #2, #3, #4, #5, #6, #7, #8; upstream integration ready for review: #10 (source proposal: #9)
 - Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches.
 
 
-### Upstream integration — draft PR #10
+### Upstream integration — PR #10
 
 Source proposal: [PR #9](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/9), 48 upstream commits through `a92427518a8bf89fee2432a9fccd0a61fb4c2654`. See the [integration guide](../features/upstream-pr-9-integration.md) for dependency profiles and migration steps.
 
@@ -76,4 +76,4 @@ Changed and preserved for this fork:
 - Keep Colab's NumPy 1 / ORT GPU 1.23.2 profile and desktop packaging's separate build profile; add certifi to notebook installation/readiness and regenerate the notebook.
 - Shared image extension handling includes WebP. The API, batch entry point and remote controller files are unchanged, but use updated shared modules.
 
-Validation: syntax compilation passed for 22 changed Python sources; whitespace and conflict-marker checks passed; notebook rebuilt with `--eol lf`. Tests, dependency installation, desktop builds and Colab/GPU/manual camera checks remain pending. PR #10 is draft and has not been merged.
+Validation: syntax compilation passed for 22 changed Python sources; whitespace and conflict-marker checks passed; notebook rebuilt with `--eol lf`. Tests, dependency installation, desktop builds and Colab/GPU/manual camera checks remain pending. User smoke testing confirmed Tailscale API connectivity, a successful 19-photo batch (0 failed), and all 19 skipped on repeat with the latest desktop build. PR #10 is ready for review and has not been merged. GPU acceleration remains unverified.

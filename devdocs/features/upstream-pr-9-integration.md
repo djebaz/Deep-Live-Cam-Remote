@@ -2,7 +2,7 @@
 
 [PR #10](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/10) integrates the update proposed in [PR #9](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/9) into this fork. The source is `hacksider/Deep-Live-Cam` at `a92427518a8bf89fee2432a9fccd0a61fb4c2654`; the downstream base is `867d7e5fe9df20f5b46049ab3b1ba5da8f556028`.
 
-PR #9 contains 48 upstream commits. PR #10 uses the fork-owned branch `integrate/pr-9-upstream` to resolve its seven conflicts and preserve remote/Colab behavior. It remains a draft pending runtime validation.
+PR #9 contains 48 upstream commits. PR #10 uses the fork-owned branch `integrate/pr-9-upstream` to resolve its seven conflicts and preserve remote/Colab behavior. It is ready for review following the user-run Colab photo smoke test; broader runtime validation remains pending.
 
 ## Imported changes
 
@@ -56,12 +56,19 @@ Completed during integration:
 - Whitespace checks and removal of all merge-conflict markers.
 - Notebook regeneration with `python scripts/py_to_ipynb.py google-colab/Deep_Live_Cam_Remote_Batch.py google-colab/Deep_Live_Cam_Remote_Batch.ipynb --eol lf`.
 
+User-run smoke test on 2026-10-12:
+
+- Colab API health check succeeded over Tailscale from Windows.
+- A 19-photo batch completed: 19 completed, 0 skipped, 0 failed.
+- Using the latest desktop build with Skip processed checked and Overwrite unchecked, repeating the folder skipped all 19 photos during preflight; no processing job started.
+- Earlier CUDA library-loading errors were reported. Successful output does not establish GPU execution; the user did not apply the suggested CUDA installation/preload changes.
+
 The imported regression tests cover face-mapping fallback, TLS verification, local preview teardown/source changes/random downloads and FPS handling. They have not been executed in this session.
 
 Still pending, when validation is explicitly requested under repository guidance:
 
 - Fresh root dependency installation and NumPy/InsightFace/backend import checks.
 - Test suite execution, including the offscreen Qt preview tests.
-- Colab setup, photos/videos, cancellation and remote Live with fp32/fp16 and model-pack selections.
+- Colab video processing, cancellation and remote Live with fp32/fp16 and model-pack selections.
 - Local camera resolution/detection changes and shutdown behavior.
 - CUDA, CoreML and OpenVINO checks on applicable hardware; desktop packaging with the separate build profile.

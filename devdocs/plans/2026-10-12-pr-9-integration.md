@@ -18,7 +18,8 @@ Import upstream shared modules, local camera UI, dependencies and regression tes
 - [x] Keep scikit-learn; add a Keras backend dependency for fresh root installs.
 - [x] Rebuild notebook with `python scripts/py_to_ipynb.py google-colab/Deep_Live_Cam_Remote_Batch.py google-colab/Deep_Live_Cam_Remote_Batch.ipynb --eol lf`.
 - [x] Compile 22 changed Python sources; check whitespace and conflict markers.
-- [ ] User-owned dependency installation, test suite, desktop build, and Colab/GPU/manual local camera validation.
+- [x] User smoke test: Tailscale health, 19 photos completed without failure, latest desktop build skipped all 19 on repeat before job creation.
+- [ ] Broader validation: dependency installation, test suite, Colab videos/Live/cancellation, GPU execution and local camera compatibility.
 - [x] User explicitly authorized committing and pushing the prepared integration on 2026-10-12; tests remain deferred. Committed as `af2f4ea` and published as draft PR #10 from the fork-owned branch because PR #9 uses upstream main as its source.
 
 - [x] Expand README, contributor guidance and release notes; add the integration guide and update PR #10 description.
@@ -26,3 +27,7 @@ Import upstream shared modules, local camera UI, dependencies and regression tes
 ## Blockers and limits
 
 Repository AGENTS.md reserves tests/builds for an explicit validation request. The user subsequently explicitly authorized committing and pushing this prepared result, overriding the skill test gate for this commit. Tests remain deferred and are not claimed to pass. Syntax compilation does not establish dependency or runtime compatibility. Use Python 3.11 as the documented baseline; upgraded pins and Python 3.14 backend remain unverified.
+
+## Finalization
+
+PR #10 is ready for review and conflict-free as observed on 2026-10-12. The GitHub compilation workflow passed for `2fa7bb2`. User smoke testing establishes photo processing and skip preflight behavior; it does not establish CUDA execution. No PR merge has been performed by this session.
