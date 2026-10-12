@@ -47,6 +47,25 @@ The notebook clones this repository from:
 https://github.com/djebaz/Deep-Live-Cam-Remote.git
 ```
 
+### Setup progress
+
+The Clone and install cell in both Colab notebooks shows six stages: runtime
+preparation, repository update, Python dependencies, GPU dependencies, model
+download and verification. During pip/git/apt commands, the display updates with
+elapsed time and the latest subprocess output even when the command is quiet.
+Dependency installs also print numbered activities for package resolution, reuse,
+downloads, build preparation, wheel compilation and installation. A persistent
+heartbeat every 10 seconds reports the current activity and time without new output.
+The overall bar counts completed stages; it is not a pip download percentage.
+Model transfers show byte progress when the server provides a total size.
+
+Failures display the captured command-output tail; interrupting a command stops
+its subprocess group. No extra progress-widget dependency is installed. Colab processing runs
+headlessly and no longer installs PySide6 or local camera enumeration packages.
+Setup selects a NumPy wheel compatible with the Python version. If installation
+changes an already imported NumPy, restart the Colab session before running the API. Existing runtime packages are not automatically removed.
+Windows and local GUI dependencies are unchanged.
+
 ## Batch CLI
 
 From a Colab/runtime checkout:
@@ -208,8 +227,10 @@ NumPy 1 binary extensions may need rebuilding for NumPy 2. On macOS, remove
 `onnxruntime-silicon` before installing the official `onnxruntime` package.
 Other Python versions and the upgraded dependency stack still need runtime validation.
 
-The Colab notebook deliberately keeps its separate NumPy 1 / OpenCV 4.10 /
-ONNX Runtime GPU 1.23.2 profile. Both notebooks install its CUDA/cuDNN runtime
+The Colab notebooks keep a separate OpenCV 4.10 / ONNX Runtime GPU 1.23.2
+profile. They select NumPy <2 on Python through 3.12 and NumPy >=2.1,<3 on
+Python 3.13+, where NumPy 1.26 has no matching wheels. NumPy must install from
+a binary wheel; setup fails promptly rather than compiling it from source. Both notebooks install its CUDA/cuDNN runtime
 extras with cuDNN pinned to the tested `9.26.0.51`, and the batch/Live engine
 preloads NVIDIA pip libraries before inference. cuDNN 9.27 caused runtime
 convolution failures and CPU fallback on the tested Colab T4.

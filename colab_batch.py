@@ -234,6 +234,7 @@ class ModernEngine:
             ort.preload_dlls(directory="")
 
         import modules.globals as globals_module
+        globals_module.headless = True
         from modules.face_analyser import get_many_faces, get_one_face, set_face_analyser_model_pack
         from modules.processors.frame import face_swapper
 
