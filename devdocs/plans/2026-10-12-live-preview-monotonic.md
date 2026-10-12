@@ -29,7 +29,8 @@ Components: `windows_app/live_webcam.py`, `colab_api.py`,
 - [x] Extend regression coverage for forward/backward wall-clock adjustments,
   older-backend fallback and a zero monotonic stamp; preserve existing cases.
 - [x] Sync README and unreleased notes.
-- [ ] Open a downstream PR against `main`; do not merge.
+- [x] Open downstream [PR #14](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/14)
+  against `main`; no merge authorized.
 - [ ] User validation: run preview regressions, build the Full app, restart the
   updated Colab API, and verify Live buffering during system-clock adjustments.
 
@@ -38,3 +39,5 @@ Components: `windows_app/live_webcam.py`, `colab_api.py`,
 No implementation blockers. Tests, syntax checks, builds and runtime validation
 are deferred to the user per repository guidance. Regression cases are added but
 not executed. Diff inspection is not runtime acceptance.
+
+Static Standards and Spec reviews found no actionable issues in the code diff.
