@@ -33,3 +33,11 @@ Repository AGENTS.md reserves tests/builds for an explicit validation request. T
 PR #10 is ready for review and conflict-free as observed on 2026-10-12. The GitHub compilation workflow passed for `2fa7bb2`. User smoke testing establishes photo processing and skip preflight behavior; it does not establish CUDA execution. No PR merge has been performed by this session.
 
 Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.
+
+## CUDA repair
+
+- [x] User's direct ONNX swapper probe reproduces CUDA initialization failure: missing `libcublasLt.so.12`, active providers CPU only.
+- [x] Ensure CUDA/cuDNN extras in both notebook setup flows even when other imports are ready; preload in the shared batch/Live engine and log actual swapper session providers.
+- [x] Correct mini notebook clone default to main and add certifi; regenerate both notebooks with LF.
+- [x] Compile changed batch engine and check whitespace; no automated tests run.
+- [ ] User GPU smoke test on the Latest runtime after updating and restarting the API.

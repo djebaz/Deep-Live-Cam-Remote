@@ -1,6 +1,6 @@
 # Auto-generated from notebook; keep markers for round-trip
 # Markers + docstring headers are required for ipynb reconstruction
-# NOTEBOOK_META_B64=eyJjb2xhYiI6eyJwcm92ZW5hbmNlIjpbXSwidG9jX3Zpc2libGUiOnRydWUsImNvbGxhcHNlZF9zZWN0aW9ucyI6WyJydW50aW1lLWJ1bmRsZSJdfSwia2VybmVsc3BlYyI6eyJuYW1lIjoicHl0aG9uMyIsImRpc3BsYXlfbmFtZSI6IlB5dGhvbiAzIn0sImxhbmd1YWdlX2luZm8iOnsibmFtZSI6InB5dGhvbiJ9LCJuYmZvcm1hdCI6NCwibmJmb3JtYXRfbWlub3IiOjV9
+# NOTEBOOK_META_B64=eyJrZXJuZWxzcGVjIjp7ImRpc3BsYXlfbmFtZSI6IlB5dGhvbiAzIiwibmFtZSI6InB5dGhvbjMifSwibGFuZ3VhZ2VfaW5mbyI6eyJuYW1lIjoicHl0aG9uIn0sImNvbGFiIjp7InRvY192aXNpYmxlIjp0cnVlLCJjb2xsYXBzZWRfc2VjdGlvbnMiOlsicnVudGltZS1idW5kbGUiXSwibmFtZSI6IkRlZXBfTGl2ZV9DYW1fUmVtb3RlX21pbmkuaXB5bmIiLCJwcm92ZW5hbmNlIjpbXSwiZ3B1VHlwZSI6IlQ0In0sImFjY2VsZXJhdG9yIjoiR1BVIn0=
 
 # %% [markdown] cell=0 id=title
 """MARKDOWN
@@ -47,7 +47,7 @@ import shutil
 
 REPO_OWNER = "djebaz"
 REPO_NAME = "Deep-Live-Cam-Remote"
-REPO_BRANCH = "live-webcam-stability"
+REPO_BRANCH = "main"
 WORK_DIR = Path("/content/Deep-Live-Cam-Remote")
 CRITICAL_FILES = ["colab_api.py", "colab_batch.py", "modules/__init__.py"]
 
@@ -151,6 +151,7 @@ else:
 # Check if key packages are already installed
 def packages_ready() -> bool:
     try:
+        import certifi  # noqa: F401 -- verify the shared downloader dependency imports
         import insightface
         import onnxruntime
         import fastapi
@@ -169,9 +170,10 @@ else:
         "opencv-python==4.10.0.84",
         "insightface==0.7.3",
         "onnx==1.18.0",
-        "onnxruntime-gpu==1.23.2",
+        "onnxruntime-gpu[cuda,cudnn]==1.23.2",
         "scikit-learn",
         "tqdm",
+        "certifi>=2024.7.4",
         "pillow",
         "psutil",
         "protobuf==4.25.1",
@@ -182,6 +184,15 @@ else:
         "websockets>=12,<16"
     ], check=True)
     print("✓ Python packages installed")
+
+# Also repair an existing runtime whose import readiness check passed but
+# whose ONNX Runtime CUDA libraries were never installed.
+print("Ensuring CUDA 12 / cuDNN 9 runtime dependencies for ONNX Runtime...")
+subprocess.run([
+    sys.executable, "-m", "pip", "install", "-q",
+    "onnxruntime-gpu[cuda,cudnn]==1.23.2",
+    "certifi>=2024.7.4",
+], check=True)
 
 # Download model if needed
 import urllib.request

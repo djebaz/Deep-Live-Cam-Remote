@@ -17,7 +17,7 @@ PR #9 contains 48 upstream commits. PR #10 uses the fork-owned branch `integrate
 | Compatibility | Shared OpenVINO provider configuration and Windows DLL setup; CoreML optimization caches include detection input shape; shared image extension handling includes WebP. |
 | Maintenance | Turkish translations, Dependabot configuration, Python compilation workflow and upstream regression tests. |
 
-Camera selectors and worker changes above belong to the local `run.py` application. The remote controller retains its existing OBS capture, send-scale and Live controls. Shared modules affect the Colab API and batch processor even though those entry-point files are not edited.
+Camera selectors and worker changes above belong to the local `run.py` application. The remote controller retains its existing OBS capture, send-scale and Live controls. Shared modules affect the Colab API and batch processor and batch engine; the GPU follow-up also updates `colab_batch.py` initialization.
 
 ## Fork-specific additions and conflict resolutions
 
@@ -25,7 +25,7 @@ Camera selectors and worker changes above belong to the local `run.py` applicati
 - Route the remote detector-size setter through `modules.globals.det_size`, matching the local UI and CLI. Publish the analyser only after initialization completes, retaining upstream's safe initialization behavior.
 - Preserve enhancer helper APIs and existing minimum-size checks while delegating transfers to the centralized downloader. Retain the fork's GPEN sources and upstream GitHub mirrors, plus the fork's fp16 fallback source. Partial files are discarded before trying another source.
 - Retain scikit-learn in root requirements for clustering. Add TensorFlow for Python below 3.14 and Torch for Python 3.14+ so a fresh root installation declares a Keras backend. Installation and backend compatibility are still unverified.
-- Add certifi to the Colab setup dependency list and readiness check; rebuild the notebook from its markerized Python source.
+- Add certifi to both Colab notebooks. Install ONNX Runtime GPU with its CUDA/cuDNN extras even on re-runs where the import readiness check passes, preload NVIDIA pip libraries before model sessions, and report active swapper providers. Rebuild both notebooks from their markerized sources.
 - Preserve the downstream README and document dependency profiles, migration and validation limits.
 
 ## Dependency profiles
@@ -42,7 +42,7 @@ Python 3.11 remains the documented fork baseline. Root dependency markers for ne
 
 Create a fresh virtual environment for the root upgrade. Reusing a NumPy 1 environment can leave binary extensions compiled against the previous NumPy ABI. On macOS, remove the old `onnxruntime-silicon` package before installing official ONNX Runtime. Preserve model files and settings outside the old environment.
 
-Colab continues using the notebook's explicit install list. Its setup can skip installation when packages are already importable; successful imports do not verify every installed version. The certifi readiness import ensures the new shared downloader dependency participates in that check. Restart the Colab runtime if package replacement leaves already imported libraries stale.
+Colab continues using the notebook's explicit install list. Successful readiness imports do not verify every installed version. Both notebooks now explicitly ensure `onnxruntime-gpu[cuda,cudnn]==1.23.2` and certifi after that check, so missing CUDA 12/cuDNN 9 libraries are repaired even in an existing runtime. The mini notebook default clone branch is corrected to `main`; before merge, select `integrate/pr-9-upstream` manually to try this fix. Restart the Colab runtime if package replacement leaves already imported libraries stale.
 
 For OpenVINO, install matching OpenVINO and ONNX Runtime OpenVINO versions using the [upstream provider documentation](https://onnxruntime.ai/docs/execution-providers/OpenVINO-ExecutionProvider.html#requirements). Root requirements do not select that optional provider distribution.
 
@@ -74,3 +74,11 @@ Still pending, when validation is explicitly requested under repository guidance
 - CUDA, CoreML and OpenVINO checks on applicable hardware; desktop packaging with the separate build profile.
 
 Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.
+
+## CUDA follow-up after smoke testing
+
+A direct swapper session probe on the user's Colab T4 failed to find `libcublasLt.so.12` and returned only `CPUExecutionProvider`. This confirms CUDA initialization failure for that probe; successful photo output alone did not verify GPU execution.
+
+Both notebooks now install ONNX Runtime's CUDA/cuDNN extras, including on setup re-runs. `ModernEngine` calls `onnxruntime.preload_dlls(directory="")` before processor imports and ONNX session creation, covering photo/video batches and remote Live. It logs active swapper session providers and warns when a requested CUDA provider falls back to CPU. Detection/enhancer provider execution is not asserted by this log.
+
+Keep Colab's Latest runtime; an older image is not required by this repair. The missing-library probe reproduces the failure on the user's runtime. The updated code passed syntax and whitespace checks, and both notebooks were regenerated with `--eol lf`; the installation/preload repair still needs user GPU validation. Confirm the active swapper session includes CUDA and monitor utilization during a non-skipped job. Restart the API after updating code or installing libraries so cached CPU sessions are replaced.

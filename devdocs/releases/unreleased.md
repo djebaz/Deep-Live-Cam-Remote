@@ -79,3 +79,10 @@ Changed and preserved for this fork:
 Validation: syntax compilation passed for 22 changed Python sources; whitespace and conflict-marker checks passed; notebook rebuilt with `--eol lf`. Tests, dependency installation, desktop builds and Colab/GPU/manual camera checks remain pending. User smoke testing confirmed Tailscale API connectivity, a successful 19-photo batch (0 failed), and all 19 skipped on repeat with the latest desktop build. PR #10 is ready for review and has not been merged. GPU acceleration remains unverified.
 
 Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.
+
+### Colab CUDA initialization follow-up
+
+- Install ONNX Runtime GPU 1.23.2 with CUDA/cuDNN runtime extras in both notebooks, including on re-runs where packages already import successfully.
+- Preload NVIDIA pip libraries before batch/Live ONNX initialization; log active swapper providers and explicitly warn about CPU fallback.
+- Add certifi to the mini notebook and correct its stale clone branch to `main`; regenerate both notebook artifacts.
+- User's direct swapper probe confirmed missing `libcublasLt.so.12` and CPU-only fallback. GPU validation of this repair is pending; syntax/whitespace checks passed.
