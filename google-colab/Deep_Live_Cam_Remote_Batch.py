@@ -219,6 +219,7 @@ else:
 # Check if key packages are already installed
 def packages_ready() -> bool:
     try:
+        import certifi  # noqa: F401 -- verify the shared downloader dependency imports
         import insightface
         import onnxruntime
         import fastapi
@@ -237,9 +238,11 @@ else:
         "opencv-python==4.10.0.84",
         "insightface==0.7.3",
         "onnx==1.18.0",
-        "onnxruntime-gpu==1.23.2",
+        "onnxruntime-gpu[cuda,cudnn]==1.23.2",
+        "nvidia-cudnn-cu12==9.26.0.51",
         "scikit-learn",
         "tqdm",
+        "certifi>=2024.7.4",
         "pillow",
         "psutil",
         "protobuf==4.25.1",
@@ -250,6 +253,17 @@ else:
         "websockets>=12,<16"
     ], check=True)
     print("✓ Python packages installed")
+
+# Also repair an existing runtime whose import readiness check passed but
+# whose ONNX Runtime CUDA libraries were never installed.
+# cuDNN 9.27 failed during inference on the tested Colab T4; 9.26 passed.
+print("Ensuring CUDA 12 / cuDNN 9.26 runtime dependencies for ONNX Runtime...")
+subprocess.run([
+    sys.executable, "-m", "pip", "install", "-q",
+    "onnxruntime-gpu[cuda,cudnn]==1.23.2",
+    "nvidia-cudnn-cu12==9.26.0.51",
+    "certifi>=2024.7.4",
+], check=True)
 
 # Download model if needed
 import urllib.request

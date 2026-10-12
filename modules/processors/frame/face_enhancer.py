@@ -14,13 +14,12 @@ from modules import imread_unicode, imwrite_unicode
 from modules.core import update_status
 from modules.face_analyser import get_many_faces
 from modules.typing import Frame, Face
-from modules.utilities import conditional_download, is_image, is_video
+from modules.utilities import is_image, is_video
 
 FACE_ENHANCER = None
 THREAD_SEMAPHORE = threading.Semaphore()
 THREAD_LOCK = threading.Lock()
 NAME = "DLC.FACE-ENHANCER"
-MODEL_URL = "https://huggingface.co/hacksider/deep-live-cam/resolve/main/gfpgan-1024.onnx"
 MODEL_FILE = "gfpgan-1024.onnx"
 MIN_MODEL_BYTES = 100 * 1024 * 1024
 
@@ -56,7 +55,9 @@ def ensure_model() -> bool:
     if os.path.exists(path):
         os.remove(path)
     update_status(f"Downloading {MODEL_FILE}...", NAME)
-    conditional_download(models_dir, [MODEL_URL])
+    from modules.model_downloader import ensure_model as download_model
+
+    download_model(MODEL_FILE, dest_dir=models_dir)
     if not model_ready(path):
         update_status(f"{MODEL_FILE} download failed or is incomplete at {path}", NAME)
         return False

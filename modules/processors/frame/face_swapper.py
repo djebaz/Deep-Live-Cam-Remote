@@ -12,12 +12,12 @@ from modules.core import update_status
 from modules.face_analyser import get_one_face, get_many_faces, default_source_face
 from modules.typing import Face, Frame
 from modules.utilities import (
-    conditional_download,
     is_image,
     is_video,
 )
 from modules.cluster_analysis import find_closest_centroid
 from modules.gpu_processing import gpu_gaussian_blur, gpu_sharpen, gpu_add_weighted, gpu_resize
+from modules.platform_info import OPENVINO_PROVIDER_CONFIG
 import os
 from collections import deque
 import time
@@ -229,7 +229,7 @@ def _remove_incomplete_model(path: str) -> None:
 def pre_check() -> bool:
     # Use models_dir instead of abs_dir to save to the correct location
     download_directory_path = models_dir
-    
+
     # Make sure the models directory exists, catch permission errors if they occur
     try:
         os.makedirs(download_directory_path, exist_ok=True)
@@ -237,36 +237,16 @@ def pre_check() -> bool:
         logging.error(f"Failed to create directory {download_directory_path} due to permission error: {e}")
         return False
     
-    # Use direct download URLs from Hugging Face. FP32 is the safe baseline;
-    # FP16 is provisioned when explicitly selected for live T4/RTX comparison.
-    fp32_path = os.path.join(download_directory_path, "inswapper_128.onnx")
-    fp16_path = os.path.join(download_directory_path, "inswapper_128_fp16.onnx")
-    _remove_incomplete_model(fp32_path)
-    _remove_incomplete_model(fp16_path)
-    try:
-        conditional_download(
-            download_directory_path,
-            ["https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx"],
-        )
-    except Exception as error:
-        update_status(f"Could not download inswapper_128.onnx: {error}", NAME)
-        return False
-    if not os.path.isfile(fp32_path) or os.path.getsize(fp32_path) < 1024 * 1024:
-        update_status(f"inswapper_128.onnx download is missing or incomplete: {fp32_path}", NAME)
+    from modules.model_downloader import ensure_model
+
+    # Respect the remote controller's explicit selection; fp32 stays the baseline.
+    name = "inswapper_128_fp16.onnx" if FACE_SWAPPER_PRECISION == "fp16" else "inswapper_128.onnx"
+    path = os.path.join(download_directory_path, name)
+    _remove_incomplete_model(path)
+    if ensure_model(name, dest_dir=download_directory_path) is None:
+        update_status(f"Could not obtain the requested {FACE_SWAPPER_PRECISION} model: {path}", NAME)
         return False
 
-    if FACE_SWAPPER_PRECISION == "fp16":
-        try:
-            conditional_download(
-                download_directory_path,
-                ["https://huggingface.co/Jonny001/Models-Pack-01/resolve/main/inswapper_128_fp16.onnx"],
-            )
-        except Exception as error:
-            update_status(f"Could not download inswapper_128_fp16.onnx: {error}", NAME)
-            return False
-        if not os.path.isfile(fp16_path) or os.path.getsize(fp16_path) < 1024 * 1024:
-            update_status(f"inswapper_128_fp16.onnx download is missing or incomplete: {fp16_path}", NAME)
-            return False
     return True
 
 
@@ -298,7 +278,7 @@ def get_face_swapper() -> Any:
                 model_path = fp16_path
             else:
                 model_path = fp32_path
-            if not os.path.exists(model_path):
+            if not os.path.exists(model_path) and not pre_check():
                 update_status(f"Requested {requested_precision} inswapper model not found: {model_path}", NAME)
                 return None
             loaded_precision = requested_precision
@@ -329,6 +309,8 @@ def get_face_swapper() -> Any:
                         # Use bare provider — ONNX Runtime defaults are
                         # fastest on modern GPUs (Blackwell/sm_120).
                         providers_config.append(p)
+                    elif p == "OpenVINOExecutionProvider":
+                        providers_config.append(OPENVINO_PROVIDER_CONFIG)
                     else:
                         providers_config.append(p)
                 FACE_SWAPPER = insightface.model_zoo.get_model(

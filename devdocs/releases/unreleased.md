@@ -47,5 +47,52 @@
 
 ## Release audit
 
-- PRs: #1, #2, #3, #4, #5, #6, #7, #8
+- PRs: #1, #2, #3, #4, #5, #6, #7, #8; upstream integration ready for review: #10 (source proposal: #9)
 - Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches.
+
+
+### Upstream integration — PR #10
+
+Source proposal: [PR #9](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/9), 48 upstream commits through `a92427518a8bf89fee2432a9fccd0a61fb4c2654`. See the [integration guide](../features/upstream-pr-9-integration.md) for dependency profiles and migration steps.
+
+Added:
+
+- Persisted capture resolution and detection size selectors in the local app, plus CLI `--det-size`.
+- Central TLS-verified resumable model downloads, default InsightFace pack provisioning, Turkish translations, Dependabot and a compilation workflow.
+- Upstream regression tests for video fallback, TLS verification, local preview/source handling and FPS fallback.
+
+Fixed:
+
+- Local preview worker shutdown and failed-camera close handling; recovery after an unreadable source change.
+- Random-face download staging so invalid downloads preserve the current source image.
+- Face-mapping disk video fallback, frame seeking bounds and FPS fallback.
+- CoreML detection cache reuse across different input shapes and shared OpenVINO configuration/Windows DLL registration.
+
+Changed and preserved for this fork:
+
+- Root requirements adopt NumPy 2, newer OpenCV/ONNX Runtime, Keras 3/OpenNSFW2 and declared backend dependencies; retain scikit-learn.
+- Keep explicit remote model-pack and fp32/fp16 selection with `buffalo_l`/fp32 defaults; unify the detector-size setter with the local setting.
+- Keep enhancer helper APIs, incomplete-model thresholds, GPEN fallback sources and the fp16 fallback source with the centralized downloader.
+- Keep Colab's NumPy 1 / ORT GPU 1.23.2 profile and desktop packaging's separate build profile; add certifi to notebook installation/readiness and regenerate the notebook.
+- Shared image extension handling includes WebP. The API, batch entry point and remote controller files are unchanged, but use updated shared modules.
+
+Validation: syntax compilation passed for 22 changed Python sources; whitespace and conflict-marker checks passed; notebook rebuilt with `--eol lf`. Tests, dependency installation, desktop builds and Colab/GPU/manual camera checks remain pending. User smoke testing confirmed Tailscale API connectivity, a successful 19-photo batch (0 failed), and all 19 skipped on repeat with the latest desktop build. PR #10 is ready for review and has not been merged. GPU acceleration remains unverified.
+
+Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.
+
+### Colab CUDA initialization follow-up
+
+- Install ONNX Runtime GPU 1.23.2 with CUDA/cuDNN runtime extras in both notebooks, including on re-runs where packages already import successfully.
+- Preload NVIDIA pip libraries before batch/Live ONNX initialization; log active swapper providers and explicitly warn about CPU fallback.
+- Add certifi to the mini notebook and correct its stale clone branch to `main`; regenerate both notebook artifacts.
+- User's direct swapper probe confirmed missing `libcublasLt.so.12` and CPU-only fallback. GPU validation of this repair is pending; syntax/whitespace checks passed.
+
+### Tested Colab cuDNN pin
+
+- Pin `nvidia-cudnn-cu12==9.26.0.51` in both notebook setup paths. The user observed cuDNN 9.27 runtime convolution failures, CPU fallback and failed GFPGAN enhancement despite successful CUDA session creation.
+- After downgrade/restart, the supplied excerpt shows CUDA graph initialization and successful photo processing without cuDNN/fallback errors; monitoring confirms sustained T4 GPU work and about 6.1 GiB VRAM. The final 90-photo completion summary was not supplied.
+
+### Remote GUI rollback
+
+- Revert the capture preset and shutdown changes from `15799c1` at the user's request after a reported preview freeze. Restore the earlier remote Live implementation while preserving the Colab GPU fixes.
+- The preview renderer itself was unchanged; freeze resolution is not verified. A rebuilt Full EXE needs comparison under the same capture settings.

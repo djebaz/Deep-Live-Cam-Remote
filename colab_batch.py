@@ -226,6 +226,13 @@ def encoder_command(path: Path, output: Path, start: float, duration: float, fps
 
 class ModernEngine:
     def __init__(self, config: ProcessConfig):
+        import onnxruntime as ort
+
+        # Colab's NVIDIA pip libraries are outside the system loader path.
+        # Preload before importing processors or creating any ONNX sessions.
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            ort.preload_dlls(directory="")
+
         import modules.globals as globals_module
         from modules.face_analyser import get_many_faces, get_one_face, set_face_analyser_model_pack
         from modules.processors.frame import face_swapper
@@ -237,14 +244,13 @@ class ModernEngine:
         self.get_many_faces = get_many_faces
         self.swapper = face_swapper
 
-        import onnxruntime as ort
         available_providers = ort.get_available_providers()
         globals_module.execution_providers = [
             provider
             for provider in ("CUDAExecutionProvider", "CPUExecutionProvider")
             if provider in available_providers
         ]
-        print("ONNX Runtime providers:", globals_module.execution_providers)
+        print("Requested ONNX Runtime providers:", globals_module.execution_providers)
 
         print("Checking face swapper model...")
         if not face_swapper.pre_check():
@@ -254,6 +260,11 @@ class ModernEngine:
             )
         if not face_swapper.pre_start():
             raise RuntimeError("The face swapper model could not be loaded.")
+
+        active_providers = face_swapper.get_face_swapper().session.get_providers()
+        print("Active swapper session providers:", active_providers)
+        if "CUDAExecutionProvider" in globals_module.execution_providers and "CUDAExecutionProvider" not in active_providers:
+            print("WARNING: CUDA initialization failed; the swapper is using CPU fallback. Rerun Colab GPU dependency setup and restart the API.")
 
         self.source_cache: dict[str, Any] = {}
         self.source_face_path = config.source_face
