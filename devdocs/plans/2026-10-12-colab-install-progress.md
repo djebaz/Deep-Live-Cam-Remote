@@ -27,3 +27,9 @@ No dependency installation, subprocess runtime tests, GPU tests or Windows build
 ## Dependency-install substeps
 
 User feedback: one Install Python dependencies stage can stay active for minutes and needs more console detail. Added numbered activities based on real pip output (including package names and build stages), import-readiness messages and a persistent 10-second heartbeat that reports command duration and time since last output. Pip may revisit activities; substep numbering counts observed activities rather than a fabricated fixed number of packages or completion percentage. Keep these messages visible independently of the HTML display. Runtime quiet-command/build validation remains user-owned.
+
+## NumPy source-build finding
+
+User smoke output showed NumPy <2 selecting the 1.26.4 source archive and spending minutes in metadata preparation. Earlier user runtime logs established Python 3.13. PyPI metadata confirms 1.26.4 has no Python 3.13 Linux wheels, while 2.1.0 has them; NumPy's 2.1 release notes document Python 3.13 support.
+
+Use a Python-dependent NumPy requirement, require binary NumPy wheels, include the installed NumPy version in readiness checks, and prevent starting with a changed version still loaded in the kernel. This changes the Python 3.13+ notebook profile and needs fresh Colab/InsightFace smoke validation; other dependency pins and the CUDA/cuDNN fix are preserved. The user was advised to stop the current source-build attempt.

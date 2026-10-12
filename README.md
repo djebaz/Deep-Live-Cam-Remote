@@ -61,7 +61,9 @@ Model transfers show byte progress when the server provides a total size.
 
 Failures display the captured command-output tail; interrupting a command stops
 its subprocess group. No extra progress-widget dependency is installed. Colab processing runs
-headlessly and no longer installs PySide6 or local camera enumeration packages. Existing runtime packages are not automatically removed.
+headlessly and no longer installs PySide6 or local camera enumeration packages.
+Setup selects a NumPy wheel compatible with the Python version. If installation
+changes an already imported NumPy, restart the Colab session before running the API. Existing runtime packages are not automatically removed.
 Windows and local GUI dependencies are unchanged.
 
 ## Batch CLI
@@ -224,8 +226,10 @@ NumPy 1 binary extensions may need rebuilding for NumPy 2. On macOS, remove
 `onnxruntime-silicon` before installing the official `onnxruntime` package.
 Other Python versions and the upgraded dependency stack still need runtime validation.
 
-The Colab notebook deliberately keeps its separate NumPy 1 / OpenCV 4.10 /
-ONNX Runtime GPU 1.23.2 profile. Both notebooks install its CUDA/cuDNN runtime
+The Colab notebooks keep a separate OpenCV 4.10 / ONNX Runtime GPU 1.23.2
+profile. They select NumPy <2 on Python through 3.12 and NumPy >=2.1,<3 on
+Python 3.13+, where NumPy 1.26 has no matching wheels. NumPy must install from
+a binary wheel; setup fails promptly rather than compiling it from source. Both notebooks install its CUDA/cuDNN runtime
 extras with cuDNN pinned to the tested `9.26.0.51`, and the batch/Live engine
 preloads NVIDIA pip libraries before inference. cuDNN 9.27 caused runtime
 convolution failures and CPU fallback on the tested Colab T4.

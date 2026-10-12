@@ -111,3 +111,9 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Add visible import-readiness substeps and a persistent heartbeat every 10 seconds with current activity, command elapsed time and time since new output. Updates remain visible even if the HTML display is unavailable or collapsed.
 - Separate model-download update timing from text-fallback timing and avoid duplicate stage/heartbeat messages.
 - Both notebook setup cells parse and artifacts are regenerated with preserved metadata/cell IDs; runtime Colab checks remain pending.
+
+### Colab NumPy wheel compatibility
+
+- Select NumPy <2 for Python through 3.12, and NumPy >=2.1,<3 for Python 3.13+. Require a binary NumPy wheel so setup does not spend minutes preparing an unsupported NumPy 1.26 source build on Python 3.13.
+- Check installed NumPy's version when deciding whether dependencies are ready, display the selected profile, and request a session restart if pip changed a NumPy version already loaded in the kernel.
+- PyPI inspection confirmed no Python 3.13 Linux wheels for NumPy 1.26.4 and available wheels for 2.1.0. Fresh Colab/InsightFace compatibility testing remains pending.

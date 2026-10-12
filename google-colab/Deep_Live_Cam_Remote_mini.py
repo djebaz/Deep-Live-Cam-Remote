@@ -47,6 +47,7 @@ import shutil
 
 
 import html
+import importlib.metadata
 import queue
 import re
 import signal
@@ -328,10 +329,18 @@ try:
         print(f"✓ Repository cloned to: {WORK_DIR}")
 
     _setup_step(3, "Install Python dependencies")
+    NUMPY_REQUIREMENT = "numpy>=2.1,<3" if sys.version_info >= (3, 13) else "numpy<2"
+    _setup_substep(f"Python {sys.version.split()[0]}: select {NUMPY_REQUIREMENT} with binary wheels only")
 
     # Check if key packages are already installed
     def packages_ready() -> bool:
         try:
+            numpy_version = tuple(int(part) for part in importlib.metadata.version("numpy").split(".")[:2])
+            if sys.version_info >= (3, 13):
+                if not (numpy_version >= (2, 1) and numpy_version[0] < 3):
+                    return False
+            elif numpy_version[0] >= 2:
+                return False
             _setup_substep("Check certificate dependency")
             import certifi  # noqa: F401 -- verify the shared downloader dependency imports
             _setup_substep("Check InsightFace import")
@@ -342,7 +351,7 @@ try:
             import fastapi
             import uvicorn
             return True
-        except ImportError:
+        except (ImportError, importlib.metadata.PackageNotFoundError):
             return False
 
     if packages_ready():
@@ -350,8 +359,8 @@ try:
     else:
         print("Installing Python dependencies...")
         _run_setup_command([
-            sys.executable, "-m", "pip", "install",
-            "numpy<2",
+            sys.executable, "-m", "pip", "install", "--only-binary=numpy",
+            NUMPY_REQUIREMENT,
             "opencv-python==4.10.0.84",
             "insightface==0.7.3",
             "onnx==1.18.0",
@@ -428,6 +437,13 @@ try:
         print(f"Directory contents: {list(WORK_DIR.glob('*'))}")
         raise RuntimeError(f"Repository clone incomplete. Missing: {missing_files}")
 
+    loaded_numpy = getattr(sys.modules.get("numpy"), "__version__", None)
+    installed_numpy = importlib.metadata.version("numpy")
+    if loaded_numpy is not None and loaded_numpy != installed_numpy:
+        raise RuntimeError(
+            f"NumPy {installed_numpy} was installed, but this kernel still has {loaded_numpy} loaded. "
+            "Restart the Colab session and rerun setup before starting the API."
+        )
     print(f"✓ Runtime ready: {WORK_DIR}")
     print(f"✓ Python path: {sys.path[0]}")
     print(f"✓ Working directory: {os.getcwd()}")
