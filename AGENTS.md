@@ -87,6 +87,7 @@ When working in Windows/PowerShell:
 ### Colab Notebook Features
 
 - Resumable cells: Clone/install, Tailscale install, and Tailscale auth cells skip already-completed steps.
+- Both Clone/install cells expose staged setup progress and subprocess output/elapsed time. Keep their inline helpers synchronized because they run before the repository/dependencies are available. Colab engine initialization sets headless mode before processor imports. Processor status reporting must not import the local GUI in headless mode; notebook installs omit PySide6 and local camera enumeration. Preserve the tested CUDA/cuDNN packages.
 - Auto-update on re-run: setup cell runs `git pull` when repo already exists, so code updates apply without deleting the cloned directory.
 - The notebook clones `https://github.com/djebaz/Deep-Live-Cam-Remote.git` branch `main`.
 

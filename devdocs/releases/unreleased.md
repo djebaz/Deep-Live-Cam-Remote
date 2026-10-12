@@ -96,3 +96,24 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 
 - Revert the capture preset and shutdown changes from `15799c1` at the user's request after a reported preview freeze. Restore the earlier remote Live implementation while preserving the Colab GPU fixes.
 - The preview renderer itself was unchanged; freeze resolution is not verified. A rebuilt Full EXE needs comparison under the same capture settings.
+
+### Colab installation progress
+
+- Add a six-stage display to both Clone and install cells, including elapsed-time/output updates while pip/git/apt subprocesses run, model-download byte progress, and clear completion/failure/interruption states.
+- Capture subprocess output in the cell display instead of leaving it only in Colab's server log; preserve useful failure tails, redact clone credentials, and stop child process groups on interruption.
+- Remove PySide6 and local camera enumeration from notebook installation by separating processor status reporting from the local GUI import path and explicitly selecting headless mode before Colab processor imports. Preserve GUI status routing and the tested CUDA/cuDNN dependencies. Already-installed packages are not removed.
+- Correct the full notebook source clone branch to the documented main default. Rebuild both artifacts with LF and preserve cell IDs/metadata.
+- Setup-cell syntax, metadata and whitespace checks passed. Colab fresh/re-run, failure and interrupt smoke checks are pending; automated tests were not run under repository guidance.
+
+### Detailed Colab install substeps
+
+- Print numbered dependency activities and package names from actual pip output: resolution, reused packages, downloads/cache hits, metadata/build preparation, wheel compilation and installation.
+- Add visible import-readiness substeps and a persistent heartbeat every 10 seconds with current activity, command elapsed time and time since new output. Updates remain visible even if the HTML display is unavailable or collapsed.
+- Separate model-download update timing from text-fallback timing and avoid duplicate stage/heartbeat messages.
+- Both notebook setup cells parse and artifacts are regenerated with preserved metadata/cell IDs; runtime Colab checks remain pending.
+
+### Colab NumPy wheel compatibility
+
+- Select NumPy <2 for Python through 3.12, and NumPy >=2.1,<3 for Python 3.13+. Require a binary NumPy wheel so setup does not spend minutes preparing an unsupported NumPy 1.26 source build on Python 3.13.
+- Check installed NumPy's version when deciding whether dependencies are ready, display the selected profile, and request a session restart if pip changed a NumPy version already loaded in the kernel.
+- PyPI inspection confirmed no Python 3.13 Linux wheels for NumPy 1.26.4 and available wheels for 2.1.0. Fresh Colab/InsightFace compatibility testing remains pending.
