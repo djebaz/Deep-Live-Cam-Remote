@@ -34,6 +34,7 @@
   - Sample data cleanup and nvtop installation
 
 ## Fixed
+- Fix remote Live preview freezes when actual capture FPS differs from requested FPS: schedule buffered frames by capture timestamps, recover after sequence gaps, and measure buffer duration from playback deadlines.
 - Keep the Live preview timer cadence aligned when OBS auto-detects a different capture FPS after startup.
 - Cap Live transport packet batching client-side so large frames flush the current batch before oversized multi-frame websocket messages are built.
 - Make Live Stop tear down the paired websocket sender/receiver tasks as soon as either side exits, so stopping is not held open waiting for another backend frame.

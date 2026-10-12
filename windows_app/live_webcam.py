@@ -1005,7 +1005,7 @@ def _apply_live_hot_change(self: MainWindow) -> None:
         if buffer is not None:
             buffer.clear()
         self._live_preview_clock_started_at = None
-        self._live_preview_first_seq = None
+        self._live_preview_first_capture_time = None
         self._live_preview_current_seq = None
         self._live_preview_synthetic_seq = 0
     worker = getattr(self, "live_worker", None)
@@ -1320,7 +1320,7 @@ def _build_live_tab(self: MainWindow) -> None:
     self._live_preview_frames = 0
     self._live_preview_last_frame = None
     self._live_preview_clock_started_at = None
-    self._live_preview_first_seq = None
+    self._live_preview_first_capture_time = None
     self._live_preview_current_seq = None
     self._live_preview_synthetic_seq = 0
     self._live_preview_timer = QTimer(self)

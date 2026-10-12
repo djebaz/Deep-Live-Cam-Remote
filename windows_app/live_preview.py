@@ -32,7 +32,7 @@ def start_live_preview_timer(self: MainWindow, settings: AppSettings) -> None:
     self._live_preview_buffer_seconds = float(_live_options(settings)["preview_buffer_seconds"])
     self._live_preview_started = False
     self._live_preview_clock_started_at = None
-    self._live_preview_first_seq = None
+    self._live_preview_first_capture_time = None
     self._live_preview_current_seq = None
     self._live_preview_synthetic_seq = 0
     self._live_preview_frames = 0
@@ -51,7 +51,7 @@ def stop_live_preview_timer(self: MainWindow) -> None:
     self._live_latest_jpeg = None
     self._live_preview_last_frame = None
     self._live_preview_clock_started_at = None
-    self._live_preview_first_seq = None
+    self._live_preview_first_capture_time = None
     self._live_preview_current_seq = None
     buffer = getattr(self, "_live_preview_buffer", None)
     if buffer is not None:
@@ -72,19 +72,34 @@ def _preview_frame_seq(self: MainWindow, meta: dict[str, object]) -> int:
 
 
 def enqueue_live_preview_frame_packet(self: MainWindow, meta: dict[str, object], frame_bytes: bytes) -> None:
-    # The timer is the presentation clock. The queue keeps completed backend
-    # frames; render_live_preview_frame repeats the last displayed frame when a
-    # sequence number is missing.
+    # Sequence numbers identify frames; capture timestamps schedule playback.
+    # Camera FPS can differ from the requested FPS, and processed sequences skip.
     buffer = getattr(self, "_live_preview_buffer", None)
     if buffer is None:
         buffer = create_live_preview_buffer()
         self._live_preview_buffer = buffer
     now = time.monotonic()
     seq = _preview_frame_seq(self, meta if isinstance(meta, dict) else {})
+    buffer_seconds = max(0.0, float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS)))
+    try:
+        capture_time = float(meta.get("capture_time", "")) if isinstance(meta, dict) else None
+        if capture_time is not None and (not math.isfinite(capture_time) or capture_time <= 0):
+            capture_time = None
+    except (TypeError, ValueError):
+        capture_time = None
+    if getattr(self, "_live_preview_clock_started_at", None) is None:
+        self._live_preview_clock_started_at = now + buffer_seconds
+        self._live_preview_first_capture_time = capture_time
+    first_capture_time = getattr(self, "_live_preview_first_capture_time", None)
+    presentation_at = now + buffer_seconds
+    if capture_time is not None and first_capture_time is not None:
+        # Only relative client timestamps are used; no server clock sync is needed.
+        presentation_at = self._live_preview_clock_started_at + capture_time - first_capture_time
     buffer.append(
         {
             "seq": seq,
             "received_at": now,
+            "presentation_at": presentation_at,
             "meta": dict(meta) if isinstance(meta, dict) else {},
             "payload": bytes(frame_bytes),
         }
@@ -94,6 +109,7 @@ def enqueue_live_preview_frame_packet(self: MainWindow, meta: dict[str, object],
     max_frames = max(3, int(math.ceil((buffer_seconds + 2.0) * fps)))
     while len(buffer) > max_frames:
         buffer.popleft()
+        self._live_preview_dropped_frames = int(getattr(self, "_live_preview_dropped_frames", 0)) + 1
 
 
 def _update_buffer_gauge(self: MainWindow, buffer: deque) -> None:
@@ -105,9 +121,8 @@ def _update_buffer_gauge(self: MainWindow, buffer: deque) -> None:
     dropped = int(getattr(self, "_live_preview_dropped_frames", 0))
     frame_count = len(buffer)
 
-    # Estimate current buffer duration
-    fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
-    current_seconds = frame_count / max(1, fps)
+    # Measure remaining playback time rather than assuming requested camera FPS.
+    current_seconds = max(0.0, float(buffer[-1]["presentation_at"]) - time.monotonic()) if buffer else 0.0
 
     # Color code based on buffer health
     fill_ratio = current_seconds / max(0.1, buffer_seconds) if buffer_seconds > 0 else 0
@@ -134,29 +149,20 @@ def render_live_preview_frame(self: MainWindow) -> None:
     _update_buffer_gauge(self, buffer)
 
     now = time.monotonic()
-    buffer_seconds = float(getattr(self, "_live_preview_buffer_seconds", DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS))
-    fps = _live_setting(self.settings, "live_fps", DEFAULT_LIVE_FPS)
-    if getattr(self, "_live_preview_clock_started_at", None) is None:
-        first = buffer[0]
-        self._live_preview_first_seq = int(first["seq"])
-        self._live_preview_clock_started_at = now + max(0.0, buffer_seconds)
-        self._live_preview_started = False
-
-    clock_started_at = float(getattr(self, "_live_preview_clock_started_at", now) or now)
-    if now < clock_started_at:
+    clock_started_at = getattr(self, "_live_preview_clock_started_at", None)
+    if clock_started_at is None or now < clock_started_at:
         return
     self._live_preview_started = True
-    first_seq = int(getattr(self, "_live_preview_first_seq", 0) or 0)
-    target_seq = first_seq + int((now - clock_started_at) * fps)
     frame_item = None
     dropped = 0
-    while buffer and int(buffer[0]["seq"]) <= target_seq:
+    while buffer and float(buffer[0]["presentation_at"]) <= now:
         candidate = buffer.popleft()
-        if int(candidate["seq"]) <= int(getattr(self, "_live_preview_current_seq", -1) or -1):
+        current_seq = getattr(self, "_live_preview_current_seq", None)
+        if current_seq is not None and int(candidate["seq"]) <= current_seq:
             dropped += 1
             continue
         frame_item = candidate
-        if buffer and int(buffer[0]["seq"]) <= target_seq:
+        if buffer and float(buffer[0]["presentation_at"]) <= now:
             dropped += 1
     if dropped:
         self._live_preview_dropped_frames = int(getattr(self, "_live_preview_dropped_frames", 0)) + dropped
