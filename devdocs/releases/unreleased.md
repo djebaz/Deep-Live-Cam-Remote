@@ -47,14 +47,33 @@
 
 ## Release audit
 
-- PRs: #1, #2, #3, #4, #5, #6, #7, #8
+- PRs: #1, #2, #3, #4, #5, #6, #7, #8; draft upstream integration: #10 (source proposal: #9)
 - Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches.
 
 
-### Upstream PR #9 integration
+### Upstream integration — draft PR #10
 
-- Import upstream through `a92427518a8bf89fee2432a9fccd0a61fb4c2654`, including camera/detection selectors, live shutdown fixes, frame seeking/FPS fixes, WebP, OpenVINO and CoreML improvements.
-- Preserve remote InsightFace pack selection and explicit fp32/fp16 defaults; unify remote and local detector size settings.
-- Use centralized resumable TLS-verified model transfers while retaining incomplete-model checks and GPEN fallback sources.
-- Retain Colab's separate NumPy 1 dependency profile and add certifi; root installs move to NumPy 2 with a Keras backend dependency.
-- Runtime tests, dependency installation, desktop builds and Colab/GPU checks are deferred to the user under repository guidance.
+Source proposal: [PR #9](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/9), 48 upstream commits through `a92427518a8bf89fee2432a9fccd0a61fb4c2654`. See the [integration guide](../features/upstream-pr-9-integration.md) for dependency profiles and migration steps.
+
+Added:
+
+- Persisted capture resolution and detection size selectors in the local app, plus CLI `--det-size`.
+- Central TLS-verified resumable model downloads, default InsightFace pack provisioning, Turkish translations, Dependabot and a compilation workflow.
+- Upstream regression tests for video fallback, TLS verification, local preview/source handling and FPS fallback.
+
+Fixed:
+
+- Local preview worker shutdown and failed-camera close handling; recovery after an unreadable source change.
+- Random-face download staging so invalid downloads preserve the current source image.
+- Face-mapping disk video fallback, frame seeking bounds and FPS fallback.
+- CoreML detection cache reuse across different input shapes and shared OpenVINO configuration/Windows DLL registration.
+
+Changed and preserved for this fork:
+
+- Root requirements adopt NumPy 2, newer OpenCV/ONNX Runtime, Keras 3/OpenNSFW2 and declared backend dependencies; retain scikit-learn.
+- Keep explicit remote model-pack and fp32/fp16 selection with `buffalo_l`/fp32 defaults; unify the detector-size setter with the local setting.
+- Keep enhancer helper APIs, incomplete-model thresholds, GPEN fallback sources and the fp16 fallback source with the centralized downloader.
+- Keep Colab's NumPy 1 / ORT GPU 1.23.2 profile and desktop packaging's separate build profile; add certifi to notebook installation/readiness and regenerate the notebook.
+- Shared image extension handling includes WebP. The API, batch entry point and remote controller files are unchanged, but use updated shared modules.
+
+Validation: syntax compilation passed for 22 changed Python sources; whitespace and conflict-marker checks passed; notebook rebuilt with `--eol lf`. Tests, dependency installation, desktop builds and Colab/GPU/manual camera checks remain pending. PR #10 is draft and has not been merged.

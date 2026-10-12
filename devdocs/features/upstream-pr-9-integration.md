@@ -1,0 +1,67 @@
+# Upstream update in PR #10
+
+[PR #10](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/10) integrates the update proposed in [PR #9](https://github.com/djebaz/Deep-Live-Cam-Remote/pull/9) into this fork. The source is `hacksider/Deep-Live-Cam` at `a92427518a8bf89fee2432a9fccd0a61fb4c2654`; the downstream base is `867d7e5fe9df20f5b46049ab3b1ba5da8f556028`.
+
+PR #9 contains 48 upstream commits. PR #10 uses the fork-owned branch `integrate/pr-9-upstream` to resolve its seven conflicts and preserve remote/Colab behavior. It remains a draft pending runtime validation.
+
+## Imported changes
+
+| Area | Change |
+| --- | --- |
+| Dependencies | Root requirements move to NumPy 2, OpenCV 4.14, ONNX 1.22, newer platform-specific ONNX Runtime, Keras 3 and OpenNSFW2 0.18. |
+| Models | Central downloader uses verified TLS with certifi, per-target locks, resumable `.part` transfers and expected download sizes. Automatic provisioning includes the default `buffalo_l` pack. |
+| Local camera UI | Persisted capture resolution and detection input size selectors; detection sizes are 160, 320 and 640. The local CLI also accepts `--det-size`. |
+| Local preview | Workers are joined on close, including slow shutdown; failed camera startup can close safely. Failed source changes can recover when the working source is selected again. |
+| Random source | Failed or invalid random-face downloads preserve the existing image; successful downloads replace it after staging. |
+| Video | Face-mapping disk fallback creates and extracts frames; frame seeking clamps to valid indices; FPS detection falls back to 30 on command or parsing failures. |
+| Compatibility | Shared OpenVINO provider configuration and Windows DLL setup; CoreML optimization caches include detection input shape; shared image extension handling includes WebP. |
+| Maintenance | Turkish translations, Dependabot configuration, Python compilation workflow and upstream regression tests. |
+
+Camera selectors and worker changes above belong to the local `run.py` application. The remote controller retains its existing OBS capture, send-scale and Live controls. Shared modules affect the Colab API and batch processor even though those entry-point files are not edited.
+
+## Fork-specific additions and conflict resolutions
+
+- Preserve explicit remote InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) and swapper precision (`fp32`, `fp16`). Defaults remain `buffalo_l` and fp32; CUDA availability does not override the precision selection.
+- Route the remote detector-size setter through `modules.globals.det_size`, matching the local UI and CLI. Publish the analyser only after initialization completes, retaining upstream's safe initialization behavior.
+- Preserve enhancer helper APIs and existing minimum-size checks while delegating transfers to the centralized downloader. Retain the fork's GPEN sources and upstream GitHub mirrors, plus the fork's fp16 fallback source. Partial files are discarded before trying another source.
+- Retain scikit-learn in root requirements for clustering. Add TensorFlow for Python below 3.14 and Torch for Python 3.14+ so a fresh root installation declares a Keras backend. Installation and backend compatibility are still unverified.
+- Add certifi to the Colab setup dependency list and readiness check; rebuild the notebook from its markerized Python source.
+- Preserve the downstream README and document dependency profiles, migration and validation limits.
+
+## Dependency profiles
+
+| Workflow | Dependency source | NumPy / OpenCV / ONNX Runtime |
+| --- | --- | --- |
+| Full local processing and root installation | `requirements.txt` | NumPy 2; OpenCV 4.14.0.94; ORT GPU 1.26.0 outside macOS; official ORT 1.28.0 on macOS arm64 and 1.23.0 on other macOS architectures. |
+| Colab API and batch runtime | Explicit install list in the notebook source | NumPy below 2; OpenCV 4.10.0.84; ORT GPU 1.23.2. Includes certifi without adopting root's dependency upgrade. |
+| Packaged remote desktop controller | `requirements-build.txt` | NumPy below 2 and OpenCV 4.10.0.84; no inference-server/model stack. |
+
+Python 3.11 remains the documented fork baseline. Root dependency markers for newer Python versions do not establish that those versions have been validated.
+
+### Existing installations
+
+Create a fresh virtual environment for the root upgrade. Reusing a NumPy 1 environment can leave binary extensions compiled against the previous NumPy ABI. On macOS, remove the old `onnxruntime-silicon` package before installing official ONNX Runtime. Preserve model files and settings outside the old environment.
+
+Colab continues using the notebook's explicit install list. Its setup can skip installation when packages are already importable; successful imports do not verify every installed version. The certifi readiness import ensures the new shared downloader dependency participates in that check. Restart the Colab runtime if package replacement leaves already imported libraries stale.
+
+For OpenVINO, install matching OpenVINO and ONNX Runtime OpenVINO versions using the [upstream provider documentation](https://onnxruntime.ai/docs/execution-providers/OpenVINO-ExecutionProvider.html#requirements). Root requirements do not select that optional provider distribution.
+
+Model transfers need access to Hugging Face and, for fallback sources, GitHub release downloads. An interrupted transfer can leave a `.part` file for resumption. Completed new downloads are checked against expected byte sizes; existing files use presence/minimum-size checks, not cryptographic integrity checks. Experimental `buffalo_m` and `buffalo_s` provisioning continues through InsightFace when the central manifest has no matching members.
+
+## Validation status
+
+Completed during integration:
+
+- Syntax compilation of 22 changed Python sources.
+- Whitespace checks and removal of all merge-conflict markers.
+- Notebook regeneration with `python scripts/py_to_ipynb.py google-colab/Deep_Live_Cam_Remote_Batch.py google-colab/Deep_Live_Cam_Remote_Batch.ipynb --eol lf`.
+
+The imported regression tests cover face-mapping fallback, TLS verification, local preview teardown/source changes/random downloads and FPS handling. They have not been executed in this session.
+
+Still pending, when validation is explicitly requested under repository guidance:
+
+- Fresh root dependency installation and NumPy/InsightFace/backend import checks.
+- Test suite execution, including the offscreen Qt preview tests.
+- Colab setup, photos/videos, cancellation and remote Live with fp32/fp16 and model-pack selections.
+- Local camera resolution/detection changes and shutdown behavior.
+- CUDA, CoreML and OpenVINO checks on applicable hardware; desktop packaging with the separate build profile.

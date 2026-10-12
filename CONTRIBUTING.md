@@ -48,6 +48,20 @@ Colab users should start from:
 google-colab/Deep_Live_Cam_Remote_Batch.ipynb
 ```
 
+## Dependency profiles and upstream updates
+
+Use Python 3.11 as the documented baseline. Full local processing uses
+`requirements.txt`; Colab uses the explicit install list in the notebook source;
+desktop packaging uses `requirements-build.txt`. Keep these profiles distinct
+and check shared-module imports when adding dependencies. Colab setup's import
+readiness check does not enforce all package versions.
+
+For upstream imports, resolve conflicts on a fork-owned feature branch and
+preserve remote model selection, detector configuration and enhancer helper APIs.
+Record the upstream SHA, imported behavior, fork-specific changes and validation
+limits in the PR. See the [PR #10 integration guide](devdocs/features/upstream-pr-9-integration.md)
+for this update's decisions and pending runtime checks.
+
 ## Notebook edits
 
 The Colab notebook is generated from a markerized Python source file.
@@ -64,7 +78,7 @@ Then rebuild the notebook from the repo root:
 python scripts/py_to_ipynb.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.ipynb `
-  --eol auto
+  --eol lf
 ```
 
 If you changed the `.ipynb` directly in Colab, export it back:
@@ -73,7 +87,7 @@ If you changed the `.ipynb` directly in Colab, export it back:
 python scripts/ipynb_to_py.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.ipynb `
   .\google-colab\Deep_Live_Cam_Remote_Batch.py `
-  --eol auto
+  --eol lf
 ```
 
 Preserve cell IDs, marker lines, `meta_b64`, `NOTEBOOK_META_B64`, and markdown/raw sentinels.

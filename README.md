@@ -180,7 +180,7 @@ Then rebuild:
 python scripts/py_to_ipynb.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.ipynb `
-  --eol auto
+  --eol lf
 ```
 
 If editing the notebook in Colab, export back to markerized source:
@@ -189,16 +189,19 @@ If editing the notebook in Colab, export back to markerized source:
 python scripts/ipynb_to_py.py `
   .\google-colab\Deep_Live_Cam_Remote_Batch.ipynb `
   .\google-colab\Deep_Live_Cam_Remote_Batch.py `
-  --eol auto
+  --eol lf
 ```
 
 Preserve cell IDs, marker lines, `meta_b64`, `NOTEBOOK_META_B64`, and markdown/raw sentinels.
 
 ## Dependency profiles and upstream integration
 
+See the [PR #10 integration guide](devdocs/features/upstream-pr-9-integration.md)
+for imported fixes, fork-specific additions, migration steps and pending validation.
+
 Use Python 3.11 for this fork's documented desktop and Colab workflows.
 `requirements.txt` now uses NumPy 2, newer OpenCV and ONNX Runtime, Keras 3,
-and a compatible TensorFlow backend on Python below 3.14 (Torch on 3.14+).
+and a declared TensorFlow backend on Python below 3.14 (Torch on 3.14+).
 Create a fresh virtual environment when upgrading an existing installation;
 NumPy 1 binary extensions may need rebuilding for NumPy 2. On macOS, remove
 `onnxruntime-silicon` before installing the official `onnxruntime` package.

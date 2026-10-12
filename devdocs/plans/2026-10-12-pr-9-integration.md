@@ -19,7 +19,9 @@ Import upstream shared modules, local camera UI, dependencies and regression tes
 - [x] Rebuild notebook with `python scripts/py_to_ipynb.py google-colab/Deep_Live_Cam_Remote_Batch.py google-colab/Deep_Live_Cam_Remote_Batch.ipynb --eol lf`.
 - [x] Compile 22 changed Python sources; check whitespace and conflict markers.
 - [ ] User-owned dependency installation, test suite, desktop build, and Colab/GPU/manual local camera validation.
-- [x] User explicitly authorized committing and pushing the prepared integration on 2026-10-12; tests remain deferred. Publish on a fork branch because PR #9 targets upstream main.
+- [x] User explicitly authorized committing and pushing the prepared integration on 2026-10-12; tests remain deferred. Committed as `af2f4ea` and published as draft PR #10 from the fork-owned branch because PR #9 uses upstream main as its source.
+
+- [x] Expand README, contributor guidance and release notes; add the integration guide and update PR #10 description.
 
 ## Blockers and limits
 
