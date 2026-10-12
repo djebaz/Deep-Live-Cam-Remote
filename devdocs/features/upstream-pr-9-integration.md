@@ -61,7 +61,7 @@ User-run smoke test on 2026-10-12:
 - Colab API health check succeeded over Tailscale from Windows.
 - A 19-photo batch completed: 19 completed, 0 skipped, 0 failed.
 - Using the latest desktop build with Skip processed checked and Overwrite unchecked, repeating the folder skipped all 19 photos during preflight; no processing job started.
-- Earlier CUDA library-loading errors were reported. Successful output does not establish GPU execution; the user did not apply the suggested CUDA installation/preload changes.
+- The initial photo smoke test ran before the CUDA repair; its successful output did not establish GPU execution. Later GPU evidence is recorded below.
 
 The imported regression tests cover face-mapping fallback, TLS verification, local preview teardown/source changes/random downloads and FPS handling. They have not been executed in this session.
 
@@ -71,7 +71,7 @@ Still pending, when validation is explicitly requested under repository guidance
 - Test suite execution, including the offscreen Qt preview tests.
 - Colab video processing, cancellation and remote Live with fp32/fp16 and model-pack selections.
 - Local camera resolution/detection changes and shutdown behavior.
-- CUDA, CoreML and OpenVINO checks on applicable hardware; desktop packaging with the separate build profile.
+- Broader CUDA configurations, CoreML and OpenVINO checks on applicable hardware; desktop packaging with the separate build profile.
 
 Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings, also present on the downstream base `867d7e5`. The one additional finding introduced by this PR (the certifi readiness import) was annotated as intentional. Existing lint debt remains; the Ruff workflow is not green.
 
@@ -81,4 +81,12 @@ A direct swapper session probe on the user's Colab T4 failed to find `libcublasL
 
 Both notebooks now install ONNX Runtime's CUDA/cuDNN extras, including on setup re-runs. `ModernEngine` calls `onnxruntime.preload_dlls(directory="")` before processor imports and ONNX session creation, covering photo/video batches and remote Live. It logs active swapper session providers and warns when a requested CUDA provider falls back to CPU. Detection/enhancer provider execution is not asserted by this log.
 
-Keep Colab's Latest runtime; an older image is not required by this repair. The missing-library probe reproduces the failure on the user's runtime. The updated code passed syntax and whitespace checks, and both notebooks were regenerated with `--eol lf`; the installation/preload repair still needs user GPU validation. Confirm the active swapper session includes CUDA and monitor utilization during a non-skipped job. Restart the API after updating code or installing libraries so cached CPU sessions are replaced.
+Keep Colab's Latest runtime; an older image is not required by this repair. The missing-library probe reproduces the failure on the user's runtime. The updated code passed syntax and whitespace checks, and both notebooks were regenerated with `--eol lf`; the user subsequently validated the cuDNN 9.26 repair as described below. Confirm the active swapper session includes CUDA and monitor utilization during a non-skipped job. Restart the API after updating code or installing libraries so cached CPU sessions are replaced.
+
+### Tested cuDNN version
+
+The user-run batch initially initialized CUDA but then failed inference with cuDNN 9.27.0 (`HEURISTIC_QUERY_FAILED` and `GRAPH_EXECUTION_FAILED`), causing ONNX CPU fallback and failed GFPGAN enhancement. Session creation alone was therefore insufficient validation.
+
+After installing `nvidia-cudnn-cu12==9.26.0.51` and restarting the API, the supplied run excerpt shows successful CUDA graph initialization, active CUDA swapper/GFPGAN providers, and 37 photos completed with photo 38 starting, without cuDNN errors or CPU fallback messages. The accompanying T4 monitor shows sustained GPU utilization, often around 50–90%, and about 6.1 GiB VRAM allocated. The excerpt does not include the final summary for the 90-photo job.
+
+Both notebooks now pin that tested cuDNN version in fresh-install and re-run setup commands. This prevents the dependency repair from selecting the observed failing 9.27 release. Other hardware and root dependency profiles remain outside this smoke test. A related report is documented in [ONNX Runtime issue #26274](https://github.com/microsoft/onnxruntime/issues/26274#issuecomment-6080148695).

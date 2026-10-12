@@ -209,7 +209,9 @@ Other Python versions and the upgraded dependency stack still need runtime valid
 
 The Colab notebook deliberately keeps its separate NumPy 1 / OpenCV 4.10 /
 ONNX Runtime GPU 1.23.2 profile. Both notebooks install its CUDA/cuDNN runtime
-extras, and the batch/Live engine preloads NVIDIA pip libraries before inference.
+extras with cuDNN pinned to the tested `9.26.0.51`, and the batch/Live engine
+preloads NVIDIA pip libraries before inference. cuDNN 9.27 caused runtime
+convolution failures and CPU fallback on the tested Colab T4.
 The logs report active swapper providers and warn about CPU fallback. After
 updating setup or libraries, restart the API to replace cached model sessions.
 It does not install the root requirements.

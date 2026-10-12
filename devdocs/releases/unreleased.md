@@ -86,3 +86,8 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Preload NVIDIA pip libraries before batch/Live ONNX initialization; log active swapper providers and explicitly warn about CPU fallback.
 - Add certifi to the mini notebook and correct its stale clone branch to `main`; regenerate both notebook artifacts.
 - User's direct swapper probe confirmed missing `libcublasLt.so.12` and CPU-only fallback. GPU validation of this repair is pending; syntax/whitespace checks passed.
+
+### Tested Colab cuDNN pin
+
+- Pin `nvidia-cudnn-cu12==9.26.0.51` in both notebook setup paths. The user observed cuDNN 9.27 runtime convolution failures, CPU fallback and failed GFPGAN enhancement despite successful CUDA session creation.
+- After downgrade/restart, the supplied excerpt shows CUDA graph initialization and successful photo processing without cuDNN/fallback errors; monitoring confirms sustained T4 GPU work and about 6.1 GiB VRAM. The final 90-photo completion summary was not supplied.

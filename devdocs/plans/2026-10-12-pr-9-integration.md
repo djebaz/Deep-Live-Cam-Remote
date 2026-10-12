@@ -40,4 +40,6 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - [x] Ensure CUDA/cuDNN extras in both notebook setup flows even when other imports are ready; preload in the shared batch/Live engine and log actual swapper session providers.
 - [x] Correct mini notebook clone default to main and add certifi; regenerate both notebooks with LF.
 - [x] Compile changed batch engine and check whitespace; no automated tests run.
-- [ ] User GPU smoke test on the Latest runtime after updating and restarting the API.
+- [x] User GPU smoke evidence after cuDNN 9.26 downgrade: CUDA graph initialized; active CUDA swapping/GFPGAN; 37 photos completed in the supplied excerpt without cuDNN errors/fallback; sustained T4 utilization and about 6.1 GiB VRAM.
+- [x] Pin tested cuDNN 9.26.0.51 in both notebooks and document the 9.27 runtime regression.
+- [ ] Final completion summary for the 90-photo job; other GPU/runtime workflows remain unverified.

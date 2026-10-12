@@ -171,6 +171,7 @@ else:
         "insightface==0.7.3",
         "onnx==1.18.0",
         "onnxruntime-gpu[cuda,cudnn]==1.23.2",
+        "nvidia-cudnn-cu12==9.26.0.51",
         "scikit-learn",
         "tqdm",
         "certifi>=2024.7.4",
@@ -187,10 +188,12 @@ else:
 
 # Also repair an existing runtime whose import readiness check passed but
 # whose ONNX Runtime CUDA libraries were never installed.
-print("Ensuring CUDA 12 / cuDNN 9 runtime dependencies for ONNX Runtime...")
+# cuDNN 9.27 failed during inference on the tested Colab T4; 9.26 passed.
+print("Ensuring CUDA 12 / cuDNN 9.26 runtime dependencies for ONNX Runtime...")
 subprocess.run([
     sys.executable, "-m", "pip", "install", "-q",
     "onnxruntime-gpu[cuda,cudnn]==1.23.2",
+    "nvidia-cudnn-cu12==9.26.0.51",
     "certifi>=2024.7.4",
 ], check=True)
 
