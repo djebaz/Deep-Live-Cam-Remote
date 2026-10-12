@@ -219,6 +219,7 @@ else:
 # Check if key packages are already installed
 def packages_ready() -> bool:
     try:
+        import certifi
         import insightface
         import onnxruntime
         import fastapi
@@ -240,6 +241,7 @@ else:
         "onnxruntime-gpu==1.23.2",
         "scikit-learn",
         "tqdm",
+        "certifi>=2024.7.4",
         "pillow",
         "psutil",
         "protobuf==4.25.1",

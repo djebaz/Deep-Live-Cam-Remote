@@ -25,8 +25,9 @@ would otherwise introduce:
    ``[1]`` and squeeze the added axis on the Gather output.
    (Filed upstream as microsoft/onnxruntime#28180.)
 
-All passes are cached on disk with a ``_coreml`` suffix so the rewrite cost
-is paid only once per model.
+All passes are cached on disk with a ``_coreml`` suffix (plus the input shape
+when one is given, e.g. ``_coreml_1x3x320x320``) so the rewrite cost
+is paid only once per model and shape.
 """
 
 import os
@@ -41,7 +42,7 @@ def optimize_for_coreml(model_path: str, input_shape: tuple = None) -> str:
     """Return path to a CoreML-optimized ONNX model.
 
     Applies all applicable optimizations and caches the result next to
-    the original model (with ``_coreml`` suffix).
+    the original model (``_coreml`` suffix, keyed on ``input_shape``).
 
     Args:
         model_path: Path to the original ONNX model.
@@ -55,7 +56,11 @@ def optimize_for_coreml(model_path: str, input_shape: tuple = None) -> str:
         return model_path
 
     base, ext = os.path.splitext(model_path)
-    optimized_path = f"{base}_coreml{ext}"
+    # Shape/Gather folding bakes input_shape into the graph, so the cache
+    # key must include it — otherwise a model folded at det_size 640 would
+    # be reused after switching to 320/160.
+    shape_tag = "_" + "x".join(str(d) for d in input_shape) if input_shape else ""
+    optimized_path = f"{base}_coreml{shape_tag}{ext}"
     if os.path.exists(optimized_path):
         if os.path.getmtime(optimized_path) >= os.path.getmtime(model_path):
             return optimized_path

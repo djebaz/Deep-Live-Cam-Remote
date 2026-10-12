@@ -63,6 +63,7 @@ from modules.face_analyser import (
     get_unique_faces_from_target_image,
     get_unique_faces_from_target_video,
     has_valid_map,
+    reset_face_analyser,
     simplify_maps,
 )
 from modules.gettext import LanguageManager
@@ -219,6 +220,9 @@ _APP: Optional[QApplication] = None
 _MAIN: Optional["MainWindow"] = None
 _PREVIEW: Optional["PreviewWindow"] = None
 _WEBCAM_PREVIEW: Optional["WebcamPreviewWindow"] = None
+# How long to wait quietly for a live-preview worker to notice the stop flag
+# before saying so. Shutdown then keeps waiting: it has to finish.
+WORKER_SHUTDOWN_GRACE_MS = 30000
 _MAPPER: Optional["MapperDialog"] = None
 _LIVE_MAPPER: Optional["LiveMapperDialog"] = None
 _LANG: Optional[LanguageManager] = None
@@ -236,6 +240,18 @@ def _(text: str) -> str:
 _RECENT_SOURCE_DIR: Optional[str] = None
 _RECENT_TARGET_DIR: Optional[str] = None
 _RECENT_OUTPUT_DIR: Optional[str] = None
+
+# QFileDialog filter strings, built from the canonical extension sets in
+# globals so every dialog stays in sync (no hand-copied lists to drift).
+_IMAGE_FILE_FILTER = "Images (" + " ".join(
+    f"*{ext}" for ext in modules.globals.IMAGE_EXTENSIONS
+) + ")"
+_MEDIA_FILE_FILTER = "Media (" + " ".join(
+    f"*{ext}" for ext in (*modules.globals.IMAGE_EXTENSIONS, *modules.globals.VIDEO_EXTENSIONS)
+) + ")"
+_VIDEO_FILE_FILTER = "Videos (" + " ".join(
+    f"*{ext}" for ext in modules.globals.VIDEO_EXTENSIONS
+) + ")"
 
 
 # ─── image utilities ─────────────────────────────────────────────────────
@@ -314,6 +330,8 @@ def save_switch_states():
         "mouth_mask": modules.globals.mouth_mask,
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
         "mouth_mask_size": modules.globals.mouth_mask_size,
+        "capture_resolution": list(modules.globals.capture_resolution),
+        "det_size": modules.globals.det_size,
     }
     try:
         with open("switch_states.json", "w") as f:
@@ -343,6 +361,18 @@ def load_switch_states():
         modules.globals.mouth_mask_size = 0.0
         modules.globals.mouth_mask = False
         modules.globals.show_mouth_mask_box = False
+        # Validate persisted camera settings before trusting them — a hand-
+        # edited/corrupt file shouldn't push a bad size into cv2/insightface.
+        res = state.get("capture_resolution")
+        if isinstance(res, (list, tuple)) and len(res) == 2:
+            try:
+                w, h = int(res[0]), int(res[1])
+                if w > 0 and h > 0:
+                    modules.globals.capture_resolution = (w, h)
+            except (TypeError, ValueError):
+                pass
+        if state.get("det_size") in (160, 320, 640):
+            modules.globals.det_size = int(state["det_size"])
     except FileNotFoundError:
         pass
     except (OSError, json.JSONDecodeError):
@@ -417,7 +447,7 @@ def get_available_cameras() -> Tuple[List[int], List[str]]:
     indices: List[int] = []
     names: List[str] = []
     for i in range(10):
-        cap = cv2.VideoCapture(i)
+        cap = cv2.VideoCapture(f"/dev/video{i}")
         if cap.isOpened():
             indices.append(i)
             names.append(f"Camera {i}")
@@ -698,9 +728,12 @@ class MainWindow(QMainWindow):
 
     def _build_camera_card(self) -> QGroupBox:
         card = QGroupBox(_("Camera"))
-        layout = QHBoxLayout(card)
+        grid = QGridLayout(card)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
 
-        layout.addWidget(QLabel(_("Select Camera:")))
+        # Row 0: camera selector + Live button
+        grid.addWidget(QLabel(_("Select Camera:")), 0, 0)
         self._camera_indices, self._camera_names = get_available_cameras()
 
         self.cb_camera = QComboBox()
@@ -712,15 +745,91 @@ class MainWindow(QMainWindow):
             self.cb_camera.addItems(self._camera_names)
             cam_ok = True
         self.cb_camera.setToolTip(_("Select which camera to use for live mode"))
-        layout.addWidget(self.cb_camera, 1)
+        grid.addWidget(self.cb_camera, 0, 1)
 
         self.btn_live = QPushButton(_("Live"))
         self.btn_live.setEnabled(cam_ok)
         self.btn_live.setToolTip(_("Start real-time face swap using webcam"))
         self.btn_live.clicked.connect(self._on_live)
-        layout.addWidget(self.btn_live)
+        grid.addWidget(self.btn_live, 0, 2)
 
+        # Row 1: capture resolution
+        grid.addWidget(QLabel(_("Resolution:")), 1, 0)
+        self.cb_resolution = QComboBox()
+        # 640x480 is native on virtually every webcam and the safest 30fps
+        # mode on USB 2.0. Higher tiers are 16:9 and useful when the camera
+        # supports them natively (DSLR + capture card, USB 3.0 webcams).
+        self._resolution_options = [
+            ("640 x 480", (640, 480)),
+            ("960 x 540 (qHD)", (960, 540)),
+            ("1280 x 720 (HD)", (1280, 720)),
+            ("1920 x 1080 (FHD)", (1920, 1080)),
+        ]
+        for label, _wh in self._resolution_options:
+            self.cb_resolution.addItem(label)
+        cur = tuple(modules.globals.capture_resolution)
+        idx = next((i for i, (_, wh) in enumerate(self._resolution_options) if wh == cur), 0)
+        self.cb_resolution.setCurrentIndex(idx)
+        self.cb_resolution.currentIndexChanged.connect(self._on_resolution_change)
+        self.cb_resolution.setToolTip(_(
+            "Requested webcam resolution. Camera may negotiate to its "
+            "nearest supported size — actual size printed in console as "
+            "'[VideoCapturer] WxH @ FPS'. Applies on next Live start.\n\n"
+            "640x480 is native on virtually every webcam and the safest "
+            "30fps choice. qHD often works too. HD/FHD typically drop to "
+            "~10fps on USB 2.0 webcams due to isochronous bandwidth limits."
+        ))
+        grid.addWidget(self.cb_resolution, 1, 1, 1, 2)
+
+        # Row 2: face detection size
+        grid.addWidget(QLabel(_("Det size:")), 2, 0)
+        self.cb_det_size = QComboBox()
+        self._det_size_options = [160, 320, 640]
+        for v in self._det_size_options:
+            self.cb_det_size.addItem(f"{v} x {v}")
+        cur_det = int(getattr(modules.globals, 'det_size', modules.globals.DEFAULT_DET_SIZE))
+        # Normalize to a valid option first so .index() can never raise: fall back
+        # to the default size, then to the last (highest) option if even that is
+        # somehow missing.
+        if cur_det not in self._det_size_options:
+            cur_det = (modules.globals.DEFAULT_DET_SIZE
+                       if modules.globals.DEFAULT_DET_SIZE in self._det_size_options
+                       else self._det_size_options[-1])
+        idx = self._det_size_options.index(cur_det)
+        self.cb_det_size.setCurrentIndex(idx)
+        self.cb_det_size.currentIndexChanged.connect(self._on_det_size_change)
+        self.cb_det_size.setToolTip(_(
+            "Face detection input resolution. Lower = faster, less accurate at "
+            "distance. Changes take effect on next face analyser init."
+        ))
+        grid.addWidget(self.cb_det_size, 2, 1, 1, 2)
+
+        grid.setColumnStretch(1, 1)
         return card
+
+    def _on_resolution_change(self, idx: int) -> None:
+        if 0 <= idx < len(self._resolution_options):
+            _label, wh = self._resolution_options[idx]
+            modules.globals.capture_resolution = wh
+            save_switch_states()
+            # Pre-translate the static template; append the dynamic size after
+            # so the message still participates in localization (update_status
+            # only translates whole-string keys).
+            update_status(
+                _("Capture resolution set (applies on next Live start):")
+                + f" {wh[0]}x{wh[1]}"
+            )
+
+    def _on_det_size_change(self, idx: int) -> None:
+        if 0 <= idx < len(self._det_size_options):
+            v = self._det_size_options[idx]
+            modules.globals.det_size = v
+            reset_face_analyser()
+            save_switch_states()
+            update_status(
+                _("Face detection size set (analyser re-inits on next call):")
+                + f" {v}x{v}"
+            )
 
     # ── slot handlers ────────────────────────────────────────────────────
 
@@ -734,7 +843,7 @@ class MainWindow(QMainWindow):
         path, _filter = QFileDialog.getOpenFileName(
             self, _("select an source image"),
             _RECENT_SOURCE_DIR or "",
-            "Images (*.png *.jpg *.jpeg *.gif *.bmp)",
+            _IMAGE_FILE_FILTER,
         )
         if path and is_image(path):
             modules.globals.source_path = path
@@ -755,7 +864,7 @@ class MainWindow(QMainWindow):
         path, _filter = QFileDialog.getOpenFileName(
             self, _("select an target image or video"),
             _RECENT_TARGET_DIR or "",
-            "Media (*.png *.jpg *.jpeg *.gif *.bmp *.mp4 *.mkv)",
+            _MEDIA_FILE_FILTER,
         )
         if not path:
             return
@@ -781,16 +890,35 @@ class MainWindow(QMainWindow):
             _PREVIEW.hide()
         try:
             response = requests.get(
-                "https://thispersondoesnotexist.com/",
+                "https://thispersondoesnotexist.com/random-person.jpeg",
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=10,
             )
             response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                raise ValueError(f"expected an image, got {content_type!r}")
             temp_path = os.path.join(tempfile.gettempdir(), "deep_live_cam_random_face.jpg")
-            with open(temp_path, "wb") as f:
-                f.write(response.content)
+            staging_path = f"{temp_path}.part"
+            # Download into a staging file and validate there. Writing straight
+            # to temp_path would destroy the image currently in use whenever a
+            # later fetch comes back bad, and content-type alone does not prove
+            # the bytes decode.
+            try:
+                with open(staging_path, "wb") as f:
+                    f.write(response.content)
+                pixmap = render_image_preview(staging_path, (200, 200))
+                if imread_unicode(staging_path) is None:
+                    raise ValueError("downloaded image could not be decoded")
+                os.replace(staging_path, temp_path)
+            except Exception:
+                try:
+                    os.remove(staging_path)
+                except OSError:
+                    pass
+                raise
             modules.globals.source_path = temp_path
-            self.source_label.setPixmap(render_image_preview(temp_path, (200, 200)))
+            self.source_label.setPixmap(pixmap)
             self.source_label.setText("")
         except Exception as exc:
             print(f"Failed to fetch random face: {exc}")
@@ -886,13 +1014,13 @@ class MainWindow(QMainWindow):
             path, _f = QFileDialog.getSaveFileName(
                 self, _("save image output file"),
                 os.path.join(_RECENT_OUTPUT_DIR or "", "output.png"),
-                "Images (*.png *.jpg *.jpeg *.bmp)",
+                _IMAGE_FILE_FILTER,
             )
         elif is_video(modules.globals.target_path):
             path, _f = QFileDialog.getSaveFileName(
                 self, _("save video output file"),
                 os.path.join(_RECENT_OUTPUT_DIR or "", "output.mp4"),
-                "Videos (*.mp4 *.mkv)",
+                _VIDEO_FILE_FILTER,
             )
         else:
             return
@@ -986,11 +1114,15 @@ class PreviewWindow(QWidget):
         temp_frame = get_video_frame(modules.globals.target_path, frame_number)
         if modules.globals.nsfw_filter and check_and_ignore_nsfw(temp_frame):
             return
+        source_frame = imread_unicode(modules.globals.source_path)
+        if source_frame is None:
+            update_status(
+                f"Could not read source image: {modules.globals.source_path}"
+            )
+            return
         from modules.processors.frame.core import get_frame_processors_modules as _gfpm
         for fp in _gfpm(modules.globals.frame_processors):
-            temp_frame = fp.process_frame(
-                get_one_face(imread_unicode(modules.globals.source_path)), temp_frame
-            )
+            temp_frame = fp.process_frame(get_one_face(source_frame), temp_frame)
         # Fit to current widget size while preserving aspect ratio.
         h, w = temp_frame.shape[:2]
         bound_w = min(PREVIEW_MAX_WIDTH, max(self.width(), PREVIEW_DEFAULT_WIDTH))
@@ -1047,6 +1179,7 @@ class _ProcessingWorker(QThread):
         frame_processors = get_frame_processors_modules(modules.globals.frame_processors)
         source_image = None
         last_source_path = None
+        reported_source_error = None
         prev_time = time.time()
         fps_update_interval = 0.5
         frame_count = 0
@@ -1071,8 +1204,27 @@ class _ProcessingWorker(QThread):
                     modules.globals.source_path
                     and modules.globals.source_path != last_source_path
                 ):
-                    last_source_path = modules.globals.source_path
-                    source_image = get_one_face(imread_unicode(modules.globals.source_path))
+                    source_frame = imread_unicode(modules.globals.source_path)
+                    if source_frame is None:
+                        # Clear the cached path along with the image. It keeps
+                        # a source that is only transiently unreadable (still
+                        # being written, on a volume that just went away) from
+                        # being given up on, and it keeps a bad pick from
+                        # sticking: with the path cached, A -> unreadable B -> A
+                        # never reloaded A, so swapping stayed off. Retrying
+                        # every frame is cheap; the message is reported once per
+                        # path so it cannot flood the status line.
+                        source_image = None
+                        last_source_path = None
+                        if reported_source_error != modules.globals.source_path:
+                            reported_source_error = modules.globals.source_path
+                            update_status(
+                                f"Could not read source image: {modules.globals.source_path}"
+                            )
+                    else:
+                        last_source_path = modules.globals.source_path
+                        reported_source_error = None
+                        source_image = get_one_face(source_frame)
 
                 det_count += 1
                 if det_count % det_interval == 0:
@@ -1184,7 +1336,8 @@ class WebcamPreviewWindow(QWidget):
         layout.addWidget(self._image_label, 1)
 
         self._cap = VideoCapturer(camera_index)
-        if not self._cap.start(PREVIEW_DEFAULT_WIDTH, PREVIEW_DEFAULT_HEIGHT, 60):
+        req_w, req_h = modules.globals.capture_resolution
+        if not self._cap.start(req_w, req_h, 60):
             update_status("Failed to start camera")
             QTimer.singleShot(0, self.close)
             return
@@ -1226,20 +1379,41 @@ class WebcamPreviewWindow(QWidget):
         self._image_label.setPixmap(_bgr_to_qpixmap(bgr_frame))
 
     def closeEvent(self, event) -> None:
-        self._stop_event.set()
-        try:
-            self._timer.stop()
-        except Exception:
-            pass
-        for worker in (self._capture_worker, self._processing_worker):
+        # __init__ can bail out before these exist (e.g. the camera fails to open),
+        # and closeEvent still runs.
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            stop_event.set()
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
             try:
-                worker.wait(2000)
+                timer.stop()
             except Exception:
                 pass
-        try:
-            self._cap.release()
-        except Exception:
-            pass
+        # Shutdown has to actually complete. Qt aborts the process when a
+        # running QThread is destroyed, and holding a straggler in a module
+        # global only moves that abort to interpreter exit. Both loops re-check
+        # the stop flag between bounded operations (a camera read, a 50ms queue
+        # get, one inference), so waiting terminates; a first-time model load
+        # is simply slow, which is what the grace period absorbs quietly.
+        for name in ("_capture_worker", "_processing_worker"):
+            worker = getattr(self, name, None)
+            if worker is None:
+                continue
+            if not worker.wait(WORKER_SHUTDOWN_GRACE_MS):
+                print(
+                    f"[webcam] still waiting for {name[1:]} to stop...",
+                    flush=True,
+                )
+                worker.wait()
+        # Only now: releasing the capture while the capture thread could still
+        # be inside cap.read() is not safe.
+        cap = getattr(self, "_cap", None)
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
         global _WEBCAM_PREVIEW
         if _WEBCAM_PREVIEW is self:
             _WEBCAM_PREVIEW = None
@@ -1334,7 +1508,7 @@ class MapperDialog(QDialog):
         path, _f = QFileDialog.getOpenFileName(
             self, _("select an source image"),
             _RECENT_SOURCE_DIR or "",
-            "Images (*.png *.jpg *.jpeg *.gif *.bmp)",
+            _IMAGE_FILE_FILTER,
         )
         if not path:
             return
@@ -1439,7 +1613,7 @@ class LiveMapperDialog(QDialog):
         path, _f = QFileDialog.getOpenFileName(
             self, _("select an source image"),
             _RECENT_SOURCE_DIR or "",
-            "Images (*.png *.jpg *.jpeg *.gif *.bmp)",
+            _IMAGE_FILE_FILTER,
         )
         if not path:
             return
@@ -1504,6 +1678,17 @@ def close_mapper_window() -> None:
 # ─── entry point ─────────────────────────────────────────────────────────
 
 
+def _close_live_windows() -> None:
+    """Close every window that owns worker threads, so the threads stop."""
+    for win in (_WEBCAM_PREVIEW, _LIVE_MAPPER):
+        if win is None:
+            continue
+        try:
+            win.close()
+        except Exception:
+            pass
+
+
 class _Window:
     """Thin wrapper exposing .mainloop() for core.py compatibility."""
 
@@ -1529,7 +1714,14 @@ def init(
     _APP.setStyleSheet(QSS)
 
     _BRIDGE = _UIBridge()
-    _MAIN = MainWindow(start, destroy)
+    def _destroy_with_cleanup(*args, **kwargs):
+        # core.destroy() ends in a bare quit(), which raises SystemExit and tears
+        # the interpreter down without unwinding Qt. Destroying a running QThread
+        # is fatal in Qt, so stop the live-preview workers before that happens.
+        _close_live_windows()
+        return destroy(*args, **kwargs)
+
+    _MAIN = MainWindow(start, _destroy_with_cleanup)
     _PREVIEW = PreviewWindow()
 
     # Route status updates onto the UI thread regardless of caller.

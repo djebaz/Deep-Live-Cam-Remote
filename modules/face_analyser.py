@@ -17,12 +17,27 @@ FACE_ANALYSER_LOCK = threading.Lock()
 FACE_ANALYSER_MODEL_PACK = "buffalo_l"
 FACE_ANALYSER_MODEL_PACKS = {"buffalo_l", "buffalo_m", "buffalo_s"}
 
-DET_SIZE = (640, 640)
+
+def _current_det_size() -> tuple:
+    s = int(getattr(modules.globals, 'det_size', modules.globals.DEFAULT_DET_SIZE))
+    return (s, s)
+
+
+def reset_face_analyser() -> None:
+    """Force re-init on next get_face_analyser() call.
+
+    Called when det_size changes — insightface FaceAnalysis fixes its
+    detection input shape at prepare() time, so a new size requires a
+    fresh prepare() call.
+    """
+    global FACE_ANALYSER
+    with FACE_ANALYSER_LOCK:
+        FACE_ANALYSER = None
 
 
 def set_face_analyser_detector_size(detector_size: int | None) -> tuple[int, int]:
     """Select the InsightFace detector input size used by future FaceAnalysis calls."""
-    global FACE_ANALYSER, DET_SIZE
+    global FACE_ANALYSER
 
     try:
         size = int(detector_size or 640)
@@ -32,10 +47,10 @@ def set_face_analyser_detector_size(detector_size: int | None) -> tuple[int, int
     size = max(32, size // 32 * 32)
     selected = (size, size)
     with FACE_ANALYSER_LOCK:
-        if selected != DET_SIZE:
+        if selected != _current_det_size():
             FACE_ANALYSER = None
-            DET_SIZE = selected
-    return DET_SIZE
+            modules.globals.det_size = size
+    return selected
 
 
 def set_face_analyser_model_pack(model_pack: str | None) -> str:
@@ -60,26 +75,40 @@ def get_face_analyser() -> Any:
     """Get face analyser with thread-safe initialization."""
     global FACE_ANALYSER
 
-    if FACE_ANALYSER is None:
+    # Snapshot the global so a concurrent reset_face_analyser() (e.g. a
+    # det_size change from the UI thread mid-Live) can't null it between our
+    # check and the return.
+    analyser = FACE_ANALYSER
+    if analyser is None:
         with FACE_ANALYSER_LOCK:
             # Double-check after acquiring lock
             if FACE_ANALYSER is None:
                 from modules.processors.frame._onnx_enhancer import (
                     build_provider_config,
                 )
+                from modules.model_downloader import ensure_insightface_pack
+
+                ensure_insightface_pack(FACE_ANALYSER_MODEL_PACK)
                 providers = build_provider_config()
-                FACE_ANALYSER = insightface.app.FaceAnalysis(
+                analyser = insightface.app.FaceAnalysis(
                     name=FACE_ANALYSER_MODEL_PACK,
                     providers=providers,
                     allowed_modules=['detection', 'recognition', 'landmark_2d_106']
                 )
-                FACE_ANALYSER.prepare(ctx_id=0, det_size=DET_SIZE)
-                _optimize_det_model(FACE_ANALYSER, providers)
+                det_size = _current_det_size()
+                analyser.prepare(ctx_id=0, det_size=det_size)
+                _optimize_det_model(analyser, providers, det_size)
+                # Publish only after prepare()/optimize() complete, so a
+                # lock-free reader can never observe a half-built analyser
+                # (insightface fixes det shape at prepare() time).
+                FACE_ANALYSER = analyser
                 print(f"InsightFace model pack: {FACE_ANALYSER_MODEL_PACK}")
-    return FACE_ANALYSER
+            else:
+                analyser = FACE_ANALYSER
+    return analyser
 
 
-def _optimize_det_model(fa: Any, providers) -> None:
+def _optimize_det_model(fa: Any, providers, det_size: tuple) -> None:
     """Replace the detection model's ONNX session with a CoreML-optimized one.
 
     Folds dynamic Shape→Gather chains into constants (the input size is
@@ -95,7 +124,8 @@ def _optimize_det_model(fa: Any, providers) -> None:
     if model_path is None or not os.path.exists(model_path):
         return
 
-    input_shape = (1, 3, DET_SIZE[1], DET_SIZE[0])
+    ds = det_size
+    input_shape = (1, 3, ds[1], ds[0])
     optimized_path = optimize_for_coreml(model_path, input_shape=input_shape)
     if optimized_path == model_path:
         return
@@ -372,6 +402,9 @@ def _default_target_face():
                 best_face = frame['faces'][0]
                 best_frame = frame
                 break
+
+        if best_face is None:
+            continue  # No faces detected in this cluster — skip
 
         for frame in map['target_faces_in_frame']:
             for face in frame['faces']:

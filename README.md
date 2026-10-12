@@ -194,6 +194,26 @@ python scripts/ipynb_to_py.py `
 
 Preserve cell IDs, marker lines, `meta_b64`, `NOTEBOOK_META_B64`, and markdown/raw sentinels.
 
+## Dependency profiles and upstream integration
+
+Use Python 3.11 for this fork's documented desktop and Colab workflows.
+`requirements.txt` now uses NumPy 2, newer OpenCV and ONNX Runtime, Keras 3,
+and a compatible TensorFlow backend on Python below 3.14 (Torch on 3.14+).
+Create a fresh virtual environment when upgrading an existing installation;
+NumPy 1 binary extensions may need rebuilding for NumPy 2. On macOS, remove
+`onnxruntime-silicon` before installing the official `onnxruntime` package.
+Other Python versions and the upgraded dependency stack still need runtime validation.
+
+The Colab notebook deliberately keeps its separate NumPy 1 / OpenCV 4.10 /
+ONNX Runtime GPU 1.23.2 profile. It does not install the root requirements.
+Desktop packaging continues to use `requirements-build.txt`.
+
+Shared model downloads use verified TLS and resumable transfers. Remote Live
+keeps explicit InsightFace pack and fp32/fp16 selection, with `buffalo_l` and
+fp32 as defaults. The local upstream UI adds persisted camera resolution and
+detection size selectors. OpenVINO users must install matching OpenVINO and
+ONNX Runtime OpenVINO packages as described in upstream's provider documentation.
+
 ## Relationship to upstream
 
 This repository is an official GitHub fork of `hacksider/Deep-Live-Cam`, but it is maintained as a downstream remote/Colab variant.

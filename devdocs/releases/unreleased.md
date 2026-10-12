@@ -49,3 +49,12 @@
 
 - PRs: #1, #2, #3, #4, #5, #6, #7, #8
 - Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches.
+
+
+### Upstream PR #9 integration
+
+- Import upstream through `a92427518a8bf89fee2432a9fccd0a61fb4c2654`, including camera/detection selectors, live shutdown fixes, frame seeking/FPS fixes, WebP, OpenVINO and CoreML improvements.
+- Preserve remote InsightFace pack selection and explicit fp32/fp16 defaults; unify remote and local detector size settings.
+- Use centralized resumable TLS-verified model transfers while retaining incomplete-model checks and GPEN fallback sources.
+- Retain Colab's separate NumPy 1 dependency profile and add certifi; root installs move to NumPy 2 with a Keras backend dependency.
+- Runtime tests, dependency installation, desktop builds and Colab/GPU checks are deferred to the user under repository guidance.

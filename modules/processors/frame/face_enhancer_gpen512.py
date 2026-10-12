@@ -10,7 +10,7 @@ from modules import imread_unicode, imwrite_unicode
 from modules.core import update_status
 from modules.face_analyser import get_one_face
 from modules.typing import Frame, Face
-from modules.utilities import conditional_download, is_image, is_video
+from modules.utilities import is_image, is_video
 from modules.processors.frame._onnx_enhancer import (
     create_onnx_session,
     warmup_session,
@@ -19,7 +19,6 @@ from modules.processors.frame._onnx_enhancer import (
 
 NAME = "DLC.FACE-ENHANCER-GPEN512"
 INPUT_SIZE = 512
-MODEL_URL = "https://huggingface.co/martintomov/comfy/resolve/6644701b147beb68645be82ff78e4fd0eddb3927/facerestore_models/GPEN-BFR-512.onnx"
 MODEL_FILE = "GPEN-BFR-512.onnx"
 MIN_MODEL_BYTES = 100 * 1024 * 1024
 
@@ -47,7 +46,9 @@ def ensure_model() -> bool:
     if os.path.exists(path):
         os.remove(path)
     update_status(f"Downloading {MODEL_FILE}...", NAME)
-    conditional_download(models_dir, [MODEL_URL])
+    from modules.model_downloader import ensure_model as download_model
+
+    download_model(MODEL_FILE, dest_dir=models_dir)
     if not model_ready(path):
         update_status(f"{MODEL_FILE} download failed or is incomplete at {path}", NAME)
         return False
