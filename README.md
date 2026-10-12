@@ -111,7 +111,6 @@ The app currently provides:
 - Photos and Videos tabs with shared processing options.
 - Recursive input scanning, overwrite/skip behavior, and quicker cooperative cancel checks during the active photo/video item.
 - Video percentage range selection.
-- Live capture resolution presets (640x480, 960x540, 1280x720, 1920x1080) in Custom capture mode, with arbitrary width/height and OBS Auto preserved. Capture presets apply on the next Live start and remain disabled during a run. Closing the app requests worker shutdown and waits for Live/polling cleanup before destroying the window.
 - Live webcam InsightFace pack selection (`buffalo_l`, `buffalo_m`, `buffalo_s`) with `buffalo_l` as the safest default, plus fp32/fp16 swapper precision selection for `swap_ms` comparison.
 - Live webcam uses configurable buffered, fixed-cadence preview rendering so bursty backend frames are delayed briefly, evenly paced, and coalesced instead of repainting stale frame backlogs. Transport batching is capped by packet bytes so large frames flush before oversized multi-frame websocket messages are built. Stop cancels the paired websocket sender/receiver tasks promptly instead of waiting for the backend to send another packet.
 - Live preview size can be switched between fit, real pixels, 1.5x, and 2x; scaled modes automatically fall back to fit when larger than the panel.

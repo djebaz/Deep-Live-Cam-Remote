@@ -92,9 +92,7 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Pin `nvidia-cudnn-cu12==9.26.0.51` in both notebook setup paths. The user observed cuDNN 9.27 runtime convolution failures, CPU fallback and failed GFPGAN enhancement despite successful CUDA session creation.
 - After downgrade/restart, the supplied excerpt shows CUDA graph initialization and successful photo processing without cuDNN/fallback errors; monitoring confirms sustained T4 GPU work and about 6.1 GiB VRAM. The final 90-photo completion summary was not supplied.
 
-### Remote Live controls and shutdown parity
+### Remote GUI rollback
 
-- Add capture resolution presets (640x480, 960x540, 1280x720, 1920x1080) in Custom mode, preserving arbitrary dimensions, OBS Auto and existing persistence. Presets are disabled during Live.
-- Retain the remote detector-size hot-change control, which already provides the upstream capability.
-- Defer window destruction until Live/polling workers finish; invalidate pending Live preparation and join the capture thread before releasing its OpenCV handle. Release handles after failed camera opening.
-- Syntax/whitespace checks passed; Full EXE rebuild and Windows/manual UI checks are pending.
+- Revert the capture preset and shutdown changes from `15799c1` at the user's request after a reported preview freeze. Restore the earlier remote Live implementation while preserving the Colab GPU fixes.
+- The preview renderer itself was unchanged; freeze resolution is not verified. A rebuilt Full EXE needs comparison under the same capture settings.

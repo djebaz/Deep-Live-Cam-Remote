@@ -43,3 +43,7 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - [x] User GPU smoke evidence after cuDNN 9.26 downgrade: CUDA graph initialized; active CUDA swapping/GFPGAN; 37 photos completed in the supplied excerpt without cuDNN errors/fallback; sustained T4 utilization and about 6.1 GiB VRAM.
 - [x] Pin tested cuDNN 9.26.0.51 in both notebooks and document the 9.27 runtime regression.
 - [ ] Final completion summary for the 90-photo job; other GPU/runtime workflows remain unverified.
+
+## Remote GUI rollback
+
+The user reported preview freezes with the build containing `15799c1` and requested returning to the previously working behavior. Reverted that GUI commit, including capture presets and its shutdown changes, while retaining the CUDA preload/cuDNN pin. `windows_app/live_webcam.py` again matches `25c5228`. The preview renderer had not changed in `15799c1`; this rollback is a controlled comparison, not a verified fix for the freeze. Syntax/whitespace checks passed. Rebuild the Full EXE and compare with the same OBS/source/FPS settings before further preview changes.
