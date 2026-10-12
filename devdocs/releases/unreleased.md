@@ -96,3 +96,11 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 
 - Revert the capture preset and shutdown changes from `15799c1` at the user's request after a reported preview freeze. Restore the earlier remote Live implementation while preserving the Colab GPU fixes.
 - The preview renderer itself was unchanged; freeze resolution is not verified. A rebuilt Full EXE needs comparison under the same capture settings.
+
+### Colab installation progress
+
+- Add a six-stage display to both Clone and install cells, including elapsed-time/output updates while pip/git/apt subprocesses run, model-download byte progress, and clear completion/failure/interruption states.
+- Capture subprocess output in the cell display instead of leaving it only in Colab's server log; preserve useful failure tails, redact clone credentials, and stop child process groups on interruption.
+- Remove PySide6 and local camera enumeration from notebook installation by separating processor status reporting from the local GUI import path and explicitly selecting headless mode before Colab processor imports. Preserve GUI status routing and the tested CUDA/cuDNN dependencies. Already-installed packages are not removed.
+- Correct the full notebook source clone branch to the documented main default. Rebuild both artifacts with LF and preserve cell IDs/metadata.
+- Setup-cell syntax, metadata and whitespace checks passed. Colab fresh/re-run, failure and interrupt smoke checks are pending; automated tests were not run under repository guidance.

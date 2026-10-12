@@ -113,202 +113,342 @@ import sys
 from pathlib import Path
 import shutil
 
-REPO_OWNER = "djebaz"
-REPO_NAME = "Deep-Live-Cam-Remote"
-REPO_BRANCH = "live-webcam-stability"
-WORK_DIR = Path("/content/Deep-Live-Cam-Remote")
-CRITICAL_FILES = ["colab_api.py", "colab_batch.py", "modules/__init__.py"]
 
-# Clean up Colab sample data (one-time)
-if Path("/content/sample_data").exists():
-    shutil.rmtree("/content/sample_data")
-    print("✓ Removed /content/sample_data")
+import html
+import queue
+import re
+import signal
+import threading
+import time
+from collections import deque
 
-# Install nvtop if not present
-if shutil.which("nvtop") is None:
-    subprocess.run(["apt-get", "install", "-qq", "-y", "nvtop"], check=False)
-    print("✓ Installed nvtop")
-else:
-    print("✓ nvtop already installed")
+try:
+    from IPython.display import HTML, display
+    _setup_display = display(HTML("Preparing setup..."), display_id=True)
+except (ImportError, AttributeError):
+    _setup_display = None
 
-# Create local input/output directories
-LOCAL_DIRS = [
-    Path("/content/inputs/source"),
-    Path("/content/inputs/photos"),
-    Path("/content/inputs/videos"),
-    Path("/content/outputs/photos"),
-    Path("/content/outputs/videos"),
-]
-for d in LOCAL_DIRS:
-    d.mkdir(parents=True, exist_ok=True)
-print("✓ Local input/output directories ready")
+_setup_state = {"step": 0, "label": "Preparing setup", "started": time.monotonic(), "updated": 0.0}
 
-# Check if repo is already cloned with all critical files
-def repo_ready() -> bool:
-    if not WORK_DIR.exists():
-        return False
-    for f in CRITICAL_FILES:
-        if not (WORK_DIR / f).exists():
-            return False
-    return True
 
-if repo_ready():
-    print(f"✓ Repository already present: {WORK_DIR}")
-    # Pull latest changes
-    os.chdir(WORK_DIR)
-    result = subprocess.run(["git", "pull", "--ff-only"], capture_output=True, text=True)
-    if result.returncode == 0:
-        if "Already up to date" in result.stdout:
-            print("✓ Already up to date")
-        else:
-            print("✓ Pulled latest changes")
-            print(result.stdout.strip())
-    else:
-        print(f"⚠️ git pull failed: {result.stderr.strip()}")
-else:
-    # Need to clone
-    import urllib.request
-    import json
+def _setup_redact(text):
+    for name in ("GH_PAT", "REPO_URL"):
+        value = globals().get(name)
+        if isinstance(value, str) and value:
+            text = text.replace(value, "<redacted>")
+    return re.sub(r"https?://[^/\s@]+@", "https://<redacted>@", text)
 
-    # Check if repo is public
-    try:
-        api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
-        req = urllib.request.Request(api_url)
-        with urllib.request.urlopen(req, timeout=5) as response:
-            repo_info = json.loads(response.read().decode())
-            is_private = repo_info.get("private", True)
-    except Exception:
-        is_private = True
 
-    # Build clone URL
-    if is_private:
-        try:
-            from google.colab import userdata
-            GH_PAT = userdata.get('GH_PAT')
-            REPO_URL = f"https://{GH_PAT}@github.com/{REPO_OWNER}/{REPO_NAME}.git"
-            print("Using authenticated clone (private repo)")
-        except Exception as e:
-            print(f"Warning: Repository appears private but no GH_PAT available: {e}")
-            REPO_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git"
-    else:
-        REPO_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git"
-        print("Using public clone (repo is public)")
+def _setup_render(detail="", status="running"):
+    elapsed = int(time.monotonic() - _setup_state["started"])
+    step = _setup_state["step"]
+    completed = 6 if status == "complete" else max(0, step - 1)
+    label = f"Step {step}/6: {_setup_state['label']} — {elapsed}s elapsed"
+    detail = _setup_redact(str(detail))
+    if _setup_display is not None:
+        color = {"failed": "#b91c1c", "cancelled": "#92400e", "complete": "#15803d"}.get(status, "#2563eb")
+        _setup_display.update(HTML(
+            f'<div style="padding:12px;border:1px solid #888;border-radius:6px">'
+            f'<strong style="color:{color}">{html.escape(label)}</strong>'
+            f'<progress value="{completed}" max="6" style="display:block;width:100%;margin:8px 0"></progress>'
+            f'<div style="font-family:monospace;overflow-wrap:anywhere">{html.escape(detail)}</div></div>'
+        ))
+    elif time.monotonic() - _setup_state["updated"] >= 10 or status != "running":
+        print(f"{label} | {detail}", flush=True)
+        _setup_state["updated"] = time.monotonic()
 
-    os.chdir("/content")
 
-    # Clean up any existing incomplete directories
-    if WORK_DIR.exists():
-        shutil.rmtree(WORK_DIR)
-    TEMP_CLONE = Path("/content/Deep_Live_Cam_Remote_temp")
-    if TEMP_CLONE.exists():
-        shutil.rmtree(TEMP_CLONE)
+def _setup_step(number, label):
+    _setup_state.update(step=number, label=label, updated=0.0)
+    print(f"[Setup {number}/6] {label}", flush=True)
+    _setup_render()
 
-    print(f"Cloning {REPO_OWNER}/{REPO_NAME} (branch: {REPO_BRANCH})...")
-    result = subprocess.run(
-        ["git", "clone", "--depth=1", "--branch", REPO_BRANCH, REPO_URL, str(TEMP_CLONE)],
-        capture_output=True, text=True, cwd="/content"
+
+def _run_setup_command(command, check=False, **kwargs):
+    # Pipe child output into the notebook display; update even when the child
+    # is quiet. Do not print command arguments, which can contain clone tokens.
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+        bufsize=1, start_new_session=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PIP_PROGRESS_BAR": "off", "PIP_NO_COLOR": "1"},
+        **kwargs,
     )
-    if result.returncode != 0:
-        error_msg = result.stderr.replace(REPO_URL, f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git")
-        raise RuntimeError(f"Clone failed:\n{error_msg}")
+    output = queue.Queue()
+    tail = deque(maxlen=30)
 
-    # Move cloned repository into the stable work directory
-    shutil.move(str(TEMP_CLONE), str(WORK_DIR))
-    print(f"✓ Repository cloned to: {WORK_DIR}")
+    def read_output():
+        try:
+            for line in process.stdout:
+                output.put(line)
+        finally:
+            process.stdout.close()
 
-# Check if key packages are already installed
-def packages_ready() -> bool:
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    last_update = 0.0
+    latest = "Command running..."
     try:
-        import certifi  # noqa: F401 -- verify the shared downloader dependency imports
-        import insightface
-        import onnxruntime
-        import fastapi
-        import uvicorn
-        return True
-    except ImportError:
-        return False
+        while process.poll() is None or reader.is_alive() or not output.empty():
+            try:
+                line = _setup_redact(output.get(timeout=0.2))
+                tail.append(line)
+                if line.strip():
+                    latest = line.strip()[-240:]
+            except queue.Empty:
+                pass
+            if time.monotonic() - last_update >= 0.5:
+                _setup_render(latest)
+                last_update = time.monotonic()
+        reader.join()
+        code = process.wait()
+    except BaseException:
+        # Colab interruption must stop pip/git and their build subprocesses.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        raise
+    captured = "".join(tail)
+    _setup_render(latest if code == 0 else f"Command exited with status {code}")
+    if check and code:
+        raise RuntimeError(f"{_setup_state['label']} failed (exit {code}):\n{captured}") from None
+    return subprocess.CompletedProcess(command, code, stdout=captured, stderr=captured if code else "")
 
-if packages_ready():
-    print("✓ Python packages already installed")
-else:
-    print("Installing Python dependencies...")
-    subprocess.run([
-        sys.executable, "-m", "pip", "install", "-q",
-        "numpy<2",
-        "opencv-python==4.10.0.84",
-        "insightface==0.7.3",
-        "onnx==1.18.0",
+
+def _setup_download_progress(blocks, block_size, total_size):
+    downloaded = blocks * block_size
+    now = time.monotonic()
+    if now - _setup_state["updated"] < 0.5 and (total_size <= 0 or downloaded < total_size):
+        return
+    _setup_state["updated"] = now
+    if total_size > 0:
+        downloaded = min(downloaded, total_size)
+        detail = f"Model download: {100 * downloaded / total_size:.1f}% ({downloaded / 1048576:.1f} / {total_size / 1048576:.1f} MiB)"
+    else:
+        detail = f"Model download: {downloaded / 1048576:.1f} MiB received"
+    _setup_render(detail)
+
+try:
+    REPO_OWNER = "djebaz"
+    REPO_NAME = "Deep-Live-Cam-Remote"
+    REPO_BRANCH = "main"
+    WORK_DIR = Path("/content/Deep-Live-Cam-Remote")
+    CRITICAL_FILES = ["colab_api.py", "colab_batch.py", "modules/__init__.py"]
+
+    _setup_step(1, "Prepare runtime and folders")
+
+    # Clean up Colab sample data (one-time)
+    if Path("/content/sample_data").exists():
+        shutil.rmtree("/content/sample_data")
+        print("✓ Removed /content/sample_data")
+
+    # Install nvtop if not present
+    if shutil.which("nvtop") is None:
+        result = _run_setup_command(["apt-get", "install", "-qq", "-y", "nvtop"], check=False)
+        print("✓ Installed nvtop" if result.returncode == 0 else "Warning: nvtop installation failed; continuing without it")
+    else:
+        print("✓ nvtop already installed")
+
+    # Create local input/output directories
+    LOCAL_DIRS = [
+        Path("/content/inputs/source"),
+        Path("/content/inputs/photos"),
+        Path("/content/inputs/videos"),
+        Path("/content/outputs/photos"),
+        Path("/content/outputs/videos"),
+    ]
+    for d in LOCAL_DIRS:
+        d.mkdir(parents=True, exist_ok=True)
+    print("✓ Local input/output directories ready")
+
+    _setup_step(2, "Clone or update repository")
+
+    # Check if repo is already cloned with all critical files
+    def repo_ready() -> bool:
+        if not WORK_DIR.exists():
+            return False
+        for f in CRITICAL_FILES:
+            if not (WORK_DIR / f).exists():
+                return False
+        return True
+
+    if repo_ready():
+        print(f"✓ Repository already present: {WORK_DIR}")
+        # Pull latest changes
+        os.chdir(WORK_DIR)
+        result = _run_setup_command(["git", "pull", "--ff-only"])
+        if result.returncode == 0:
+            if "Already up to date" in result.stdout:
+                print("✓ Already up to date")
+            else:
+                print("✓ Pulled latest changes")
+                print(result.stdout.strip())
+        else:
+            print(f"⚠️ git pull failed: {result.stderr.strip()}")
+    else:
+        # Need to clone
+        import urllib.request
+        import json
+
+        # Check if repo is public
+        try:
+            api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
+            req = urllib.request.Request(api_url)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                repo_info = json.loads(response.read().decode())
+                is_private = repo_info.get("private", True)
+        except Exception:
+            is_private = True
+
+        # Build clone URL
+        if is_private:
+            try:
+                from google.colab import userdata
+                GH_PAT = userdata.get('GH_PAT')
+                REPO_URL = f"https://{GH_PAT}@github.com/{REPO_OWNER}/{REPO_NAME}.git"
+                print("Using authenticated clone (private repo)")
+            except Exception as e:
+                print(f"Warning: Repository appears private but no GH_PAT available: {e}")
+                REPO_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git"
+        else:
+            REPO_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git"
+            print("Using public clone (repo is public)")
+
+        os.chdir("/content")
+
+        # Clean up any existing incomplete directories
+        if WORK_DIR.exists():
+            shutil.rmtree(WORK_DIR)
+        TEMP_CLONE = Path("/content/Deep_Live_Cam_Remote_temp")
+        if TEMP_CLONE.exists():
+            shutil.rmtree(TEMP_CLONE)
+
+        print(f"Cloning {REPO_OWNER}/{REPO_NAME} (branch: {REPO_BRANCH})...")
+        result = _run_setup_command(
+            ["git", "clone", "--progress", "--depth=1", "--branch", REPO_BRANCH, REPO_URL, str(TEMP_CLONE)],
+            cwd="/content"
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.replace(REPO_URL, f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git")
+            raise RuntimeError(f"Clone failed:\n{error_msg}")
+
+        # Move cloned repository into the stable work directory
+        shutil.move(str(TEMP_CLONE), str(WORK_DIR))
+        print(f"✓ Repository cloned to: {WORK_DIR}")
+
+    _setup_step(3, "Install Python dependencies")
+
+    # Check if key packages are already installed
+    def packages_ready() -> bool:
+        try:
+            import certifi  # noqa: F401 -- verify the shared downloader dependency imports
+            import insightface
+            import onnxruntime
+            import fastapi
+            import uvicorn
+            return True
+        except ImportError:
+            return False
+
+    if packages_ready():
+        print("✓ Python packages already installed")
+    else:
+        print("Installing Python dependencies...")
+        _run_setup_command([
+            sys.executable, "-m", "pip", "install",
+            "numpy<2",
+            "opencv-python==4.10.0.84",
+            "insightface==0.7.3",
+            "onnx==1.18.0",
+            "onnxruntime-gpu[cuda,cudnn]==1.23.2",
+            "nvidia-cudnn-cu12==9.26.0.51",
+            "scikit-learn",
+            "tqdm",
+            "certifi>=2024.7.4",
+            "pillow",
+            "psutil",
+            "protobuf==4.25.1",
+            "fastapi>=0.115,<1",
+            "uvicorn[standard]>=0.30,<1",
+            "websockets>=12,<16"
+        ], check=True)
+        print("✓ Python packages installed")
+
+    _setup_step(4, "Ensure CUDA and cuDNN dependencies")
+
+    # Also repair an existing runtime whose import readiness check passed but
+    # whose ONNX Runtime CUDA libraries were never installed.
+    # cuDNN 9.27 failed during inference on the tested Colab T4; 9.26 passed.
+    print("Ensuring CUDA 12 / cuDNN 9.26 runtime dependencies for ONNX Runtime...")
+    _run_setup_command([
+        sys.executable, "-m", "pip", "install",
         "onnxruntime-gpu[cuda,cudnn]==1.23.2",
         "nvidia-cudnn-cu12==9.26.0.51",
-        "scikit-learn",
-        "tqdm",
         "certifi>=2024.7.4",
-        "pillow",
-        "psutil",
-        "protobuf==4.25.1",
-        "PySide6>=6.7,<7",
-        "cv2_enumerate_cameras==1.1.15",
-        "fastapi>=0.115,<1",
-        "uvicorn[standard]>=0.30,<1",
-        "websockets>=12,<16"
     ], check=True)
-    print("✓ Python packages installed")
 
-# Also repair an existing runtime whose import readiness check passed but
-# whose ONNX Runtime CUDA libraries were never installed.
-# cuDNN 9.27 failed during inference on the tested Colab T4; 9.26 passed.
-print("Ensuring CUDA 12 / cuDNN 9.26 runtime dependencies for ONNX Runtime...")
-subprocess.run([
-    sys.executable, "-m", "pip", "install", "-q",
-    "onnxruntime-gpu[cuda,cudnn]==1.23.2",
-    "nvidia-cudnn-cu12==9.26.0.51",
-    "certifi>=2024.7.4",
-], check=True)
+    _setup_step(5, "Download or reuse the swapper model")
 
-# Download model if needed
-import urllib.request
-MODEL_URL = "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx"
-MODEL_PATH = WORK_DIR / "models" / "inswapper_128.onnx"
-MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Download model if needed
+    import urllib.request
+    MODEL_URL = "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx"
+    MODEL_PATH = WORK_DIR / "models" / "inswapper_128.onnx"
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1024 * 1024:
-    print(f"✓ Model already present: {MODEL_PATH.name} ({MODEL_PATH.stat().st_size / 1048576:.1f} MB)")
-else:
-    MODEL_PATH.unlink(missing_ok=True)
-    temporary_model = MODEL_PATH.with_suffix(".onnx.part")
-    temporary_model.unlink(missing_ok=True)
-    print("Downloading face swapper model...")
-    urllib.request.urlretrieve(MODEL_URL, temporary_model)
-    if temporary_model.stat().st_size < 1024 * 1024:
+    if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1024 * 1024:
+        print(f"✓ Model already present: {MODEL_PATH.name} ({MODEL_PATH.stat().st_size / 1048576:.1f} MB)")
+    else:
+        MODEL_PATH.unlink(missing_ok=True)
+        temporary_model = MODEL_PATH.with_suffix(".onnx.part")
         temporary_model.unlink(missing_ok=True)
-        raise RuntimeError("Downloaded inswapper_128.onnx is incomplete")
-    temporary_model.replace(MODEL_PATH)
-    print(f"✓ Model downloaded: {MODEL_PATH.name} ({MODEL_PATH.stat().st_size / 1048576:.1f} MB)")
+        print("Downloading face swapper model...")
+        urllib.request.urlretrieve(MODEL_URL, temporary_model, reporthook=_setup_download_progress)
+        if temporary_model.stat().st_size < 1024 * 1024:
+            temporary_model.unlink(missing_ok=True)
+            raise RuntimeError("Downloaded inswapper_128.onnx is incomplete")
+        temporary_model.replace(MODEL_PATH)
+        print(f"✓ Model downloaded: {MODEL_PATH.name} ({MODEL_PATH.stat().st_size / 1048576:.1f} MB)")
 
-# Clean up any cached modules from previous runs
-for module_name in list(sys.modules):
-    if module_name == "colab_batch" or module_name == "modules" or module_name.startswith("modules."):
-        del sys.modules[module_name]
+    _setup_step(6, "Verify runtime")
 
-# Set working directory and path
-os.chdir(WORK_DIR)
-if str(WORK_DIR) not in sys.path:
-    sys.path.insert(0, str(WORK_DIR))
+    # Clean up any cached modules from previous runs
+    for module_name in list(sys.modules):
+        if module_name == "colab_batch" or module_name == "modules" or module_name.startswith("modules."):
+            del sys.modules[module_name]
 
-# Show GPU info
-subprocess.run(["nvidia-smi"], check=False)
+    # Set working directory and path
+    os.chdir(WORK_DIR)
+    if str(WORK_DIR) not in sys.path:
+        sys.path.insert(0, str(WORK_DIR))
 
-# Verify critical files exist
-critical_files = ["colab_api.py", "colab_batch.py", "modules/__init__.py"]
-missing_files = [f for f in critical_files if not (WORK_DIR / f).exists()]
-if missing_files:
-    print(f"ERROR: Missing critical files: {missing_files}")
-    print(f"Directory contents: {list(WORK_DIR.glob('*'))}")
-    raise RuntimeError(f"Repository clone incomplete. Missing: {missing_files}")
+    # Show GPU info
+    gpu_result = _run_setup_command(["nvidia-smi"], check=False)
+    print(gpu_result.stdout)
 
-print(f"✓ Runtime ready: {WORK_DIR}")
-print(f"✓ Python path: {sys.path[0]}")
-print(f"✓ Working directory: {os.getcwd()}")
+    # Verify critical files exist
+    critical_files = ["colab_api.py", "colab_batch.py", "modules/__init__.py"]
+    missing_files = [f for f in critical_files if not (WORK_DIR / f).exists()]
+    if missing_files:
+        print(f"ERROR: Missing critical files: {missing_files}")
+        print(f"Directory contents: {list(WORK_DIR.glob('*'))}")
+        raise RuntimeError(f"Repository clone incomplete. Missing: {missing_files}")
+
+    print(f"✓ Runtime ready: {WORK_DIR}")
+    print(f"✓ Python path: {sys.path[0]}")
+    print(f"✓ Working directory: {os.getcwd()}")
+
+    _setup_render("Runtime ready", status="complete")
+except KeyboardInterrupt:
+    _setup_render("Setup interrupted", status="cancelled")
+    raise
+except Exception:
+    _setup_render("Setup failed; see the error below", status="failed")
+    raise
 
 # %% [markdown] cell=5 id=config-heading
 """MARKDOWN

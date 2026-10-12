@@ -8,7 +8,7 @@ import platform
 import modules.globals
 import modules.processors.frame.core
 from modules import imread_unicode, imwrite_unicode
-from modules.core import update_status
+from modules.status import update_status
 from modules.face_analyser import get_one_face, get_many_faces, default_source_face
 from modules.typing import Face, Frame
 from modules.utilities import (

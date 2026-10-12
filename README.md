@@ -47,6 +47,20 @@ The notebook clones this repository from:
 https://github.com/djebaz/Deep-Live-Cam-Remote.git
 ```
 
+### Setup progress
+
+The Clone and install cell in both Colab notebooks shows six stages: runtime
+preparation, repository update, Python dependencies, GPU dependencies, model
+download and verification. During pip/git/apt commands, the display updates with
+elapsed time and the latest subprocess output even when the command is quiet.
+The overall bar counts completed stages; it is not a pip download percentage.
+Model transfers show byte progress when the server provides a total size.
+
+Failures display the captured command-output tail; interrupting a command stops
+its subprocess group. No extra progress-widget dependency is installed. Colab processing runs
+headlessly and no longer installs PySide6 or local camera enumeration packages. Existing runtime packages are not automatically removed.
+Windows and local GUI dependencies are unchanged.
+
 ## Batch CLI
 
 From a Colab/runtime checkout:
