@@ -1828,6 +1828,9 @@ class LiveWorker(BaseLiveWorker):
                             {
                                 "seq": capture_seq,
                                 "capture_time": captured_wall_time,
+                                # perf_counter is monotonic; only relative capture
+                                # offsets are used for client preview playback.
+                                "capture_monotonic": captured_at,
                                 "codec": current_frame_codec,
                                 "width": frame_width,
                                 "height": frame_height,

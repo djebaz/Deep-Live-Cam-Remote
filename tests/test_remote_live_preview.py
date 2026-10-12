@@ -18,10 +18,14 @@ class PreviewClockTest(unittest.TestCase):
         )
         self.window.settings.live_fps = 20
 
-    def enqueue(self, now, seq, capture_time):
+    def enqueue(self, now, seq, capture_monotonic, capture_time=1000.0):
         with patch.object(preview.time, 'monotonic', return_value=now):
             preview.enqueue_live_preview_frame_packet(
-                self.window, {'seq': seq, 'capture_time': capture_time}, str(seq).encode()
+                self.window, {
+                    'seq': seq,
+                    'capture_monotonic': capture_monotonic,
+                    'capture_time': capture_time,
+                }, str(seq).encode()
             )
 
     def render(self, now):
@@ -60,6 +64,35 @@ class PreviewClockTest(unittest.TestCase):
         self.render(101.01)
         self.enqueue(101.02, 0, 1000.0)
         self.assertFalse(self.render(101.03).called)
+
+    def test_wall_clock_changes_do_not_shift_playback_deadlines(self):
+        for adjustment in (3600.0, -3600.0):
+            with self.subTest(adjustment=adjustment):
+                self.setUp()
+                self.enqueue(100.0, 0, 50.0, capture_time=10000.0)
+                self.render(101.01)
+                self.enqueue(102.0, 50, 52.0, capture_time=10002.0 + adjustment)
+                self.assertFalse(self.render(102.99).called)
+                self.assertEqual(self.render(103.01).call_args.args[1], b'50')
+
+    def test_legacy_wall_clock_only_packets_use_arrival_buffer(self):
+        for wall_time in (1000.0, 4600.0, -2600.0):
+            with self.subTest(wall_time=wall_time):
+                self.setUp()
+                self.enqueue(100.0, 0, None)
+                self.render(101.01)
+                with patch.object(preview.time, 'monotonic', return_value=102.0):
+                    preview.enqueue_live_preview_frame_packet(
+                        self.window, {'seq': 50, 'capture_time': wall_time}, b'50'
+                    )
+                self.assertFalse(self.render(102.99).called)
+                self.assertEqual(self.render(103.01).call_args.args[1], b'50')
+
+    def test_zero_monotonic_timestamp_is_valid(self):
+        self.enqueue(100.0, 0, 0.0)
+        self.render(101.01)
+        self.enqueue(102.0, 50, 0.5)
+        self.assertEqual(self.render(102.01).call_args.args[1], b'50')
 
 
 if __name__ == '__main__':
