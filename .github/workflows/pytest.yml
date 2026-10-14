@@ -6,18 +6,33 @@ on:
       pr_number:
         description: 'Pull request number to test'
         required: true
-        type: number
+        type: string
 
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR
+      - name: Checkout default branch
         uses: actions/checkout@v4
         with:
-          ref: refs/pull/${{ inputs.pr_number }}/head
           fetch-depth: 0
+          ref: main
+
+      - name: Fetch and checkout PR head
+        shell: bash
+        run: |
+          PR_INPUT="${{ inputs.pr_number }}"
+          PR="${PR_INPUT%%.*}"
+
+          if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PR number: '$PR_INPUT'"
+            exit 1
+          fi
+
+          echo "Testing PR #$PR"
+          git fetch origin "refs/pull/${PR}/head:refs/remotes/origin/pr-${PR}"
+          git checkout -q "refs/remotes/origin/pr-${PR}"
 
       - name: Cache pip
         uses: actions/cache@v4
@@ -37,7 +52,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          python -m pip install pytest
 
       - name: Run tests
         run: pytest -q
