@@ -66,6 +66,8 @@ class ProcessConfig:
     color_correction: bool = False
     interpolation_weight: float = 0.0
     enhancer: str = "none"
+    image_quality: int | None = None
+    detector_size: int | None = None
     output_max_width: int | None = None
     face_model_pack: str = "buffalo_l"
     swapper_precision: str = "fp32"
@@ -157,6 +159,9 @@ def input_fingerprint(path: Path, root: Path) -> dict[str, Any]:
 def config_signature(config: ProcessConfig) -> str:
     ignored = {"input_dir", "output_dir", "overwrite", "skip_processed", "decode_queue", "encode_queue"}
     payload = {key: str(value) if isinstance(value, Path) else value for key, value in asdict(config).items() if key not in ignored}
+    for optional in ("image_quality", "detector_size"):
+        if payload.get(optional) is None:
+            payload.pop(optional, None)
     payload["engine"] = ENGINE_VERSION
     if config.source_face and config.source_face.is_file():
         payload["source_face_sha256"] = file_hash(config.source_face)
@@ -235,9 +240,11 @@ class ModernEngine:
 
         import modules.globals as globals_module
         globals_module.headless = True
-        from modules.face_analyser import get_many_faces, get_one_face, set_face_analyser_model_pack
+        from modules.face_analyser import get_many_faces, get_one_face, set_face_analyser_model_pack, set_face_analyser_detector_size
         from modules.processors.frame import face_swapper
 
+        if config.detector_size is not None:
+            set_face_analyser_detector_size(config.detector_size)
         set_face_analyser_model_pack(config.face_model_pack)
         face_swapper.set_face_swapper_precision(config.swapper_precision)
         self.globals = globals_module
@@ -739,7 +746,13 @@ def process_image_one(
         result = cv2.resize(result, (new_width, new_height), interpolation=cv2.INTER_AREA)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
-    if not cv2.imwrite(str(output), np.ascontiguousarray(result)):
+    write_params = []
+    if config.image_quality is not None:
+        if output.suffix.lower() in {".jpg", ".jpeg"}:
+            write_params = [cv2.IMWRITE_JPEG_QUALITY, config.image_quality]
+        elif output.suffix.lower() == ".webp":
+            write_params = [cv2.IMWRITE_WEBP_QUALITY, config.image_quality]
+    if not cv2.imwrite(str(output), np.ascontiguousarray(result), write_params):
         raise RuntimeError(f"Could not write image: {output}")
     return {"width": int(result.shape[1]), "height": int(result.shape[0]), "seconds": time.monotonic() - started, "size_mb": output.stat().st_size / 1048576}
 
@@ -754,6 +767,8 @@ def process_photos(args: argparse.Namespace) -> int:
         mouth_mask_size=args.mouth_mask_size, poisson_blend=args.poisson_blend,
         color_correction=args.color_correction, interpolation_weight=args.interpolation_weight,
         enhancer=args.enhancer, output_max_width=args.output_max_width,
+        image_quality=args.image_quality, detector_size=args.detector_size,
+        face_model_pack=args.face_model_pack, swapper_precision=args.swapper_precision,
     )
     if not config.input_dir.is_dir(): raise NotADirectoryError(config.input_dir)
     if config.source_face and not config.source_face.is_file(): raise FileNotFoundError(config.source_face)
@@ -837,6 +852,10 @@ def build_parser() -> argparse.ArgumentParser:
     photos = subparsers.add_parser("photos", help="process every input image through the modern engine")
     add_common_process_args(photos)
     photos.add_argument("--output-max-width", type=int, default=None, help="scale output to max width (preserves aspect ratio)")
+    photos.add_argument("--image-quality", type=int, default=None, help="JPEG/WebP quality; PNG/BMP are lossless")
+    photos.add_argument("--detector-size", type=int, default=None)
+    photos.add_argument("--face-model-pack", choices=["buffalo_l", "buffalo_m", "buffalo_s"], default="buffalo_l")
+    photos.add_argument("--swapper-precision", choices=["fp32", "fp16"], default="fp32")
     photos.set_defaults(func=process_photos)
     return parser
 
