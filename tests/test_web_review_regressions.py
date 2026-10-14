@@ -128,3 +128,28 @@ def test_video_job_omits_unset_detector_size_but_photo_keeps_it(client,monkeypat
     assert '--detector-size' not in captured[0]
     assert batch.build_parser().parse_args(captured[0]).detector_size is None
     assert captured[1][captured[1].index('--detector-size')+1]=='640'
+
+
+def test_upload_locks_are_per_batch_and_released():
+    import asyncio
+    async def run():
+        async with api.upload_lock(api.LOCAL_PHOTOS_DIR, 'a'):
+            async with asyncio.timeout(1):
+                async with api.upload_lock(api.LOCAL_PHOTOS_DIR, 'b'):
+                    pass
+            assert len(api.UPLOAD_LOCKS) == 1
+    asyncio.run(run())
+    assert api.UPLOAD_LOCKS == {}
+
+
+def test_cleanup_blocks_job_registration_until_delete_finishes(client, monkeypatch):
+    api.ensure_local_layout()
+    root = api.LOCAL_PHOTOS_DIR / 'batches' / 'racy'
+    root.mkdir(parents=True)
+    (root / 'x.webp').write_bytes(b'x')
+    assert not api.JOBS_LOCK.locked()
+    seen = []
+    real = api.shutil.rmtree
+    monkeypatch.setattr(api.shutil, 'rmtree', lambda p: seen.append(api.JOBS_LOCK.locked()) or real(p))
+    assert client.delete('/upload/photos/batches/racy').status_code == 200
+    assert seen == [True]

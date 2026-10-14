@@ -4,6 +4,7 @@ import {
   pack,
   unpack,
   PACKET_LIMIT,
+  FRAME_HEADER_RESERVE,
   PreviewQueue,
   type Frame,
   type Meta,
@@ -289,7 +290,7 @@ export class LiveSession {
       // The capture metadata has a fixed set of scalar keys. Reserve a
       // conservative header budget while batching; serialize once at flush
       // after setting the actual send_time, then reuse those encoded bytes.
-      const size = 8 + bytes.length + 1024;
+      const size = 8 + bytes.length + FRAME_HEADER_RESERVE;
       if (size + 8 > PACKET_LIMIT)
         throw new Error("Frame exceeds 4 MiB. Reduce Send scale or quality.");
       if (this.batchBytes + size > PACKET_LIMIT) this.flush();

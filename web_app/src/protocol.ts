@@ -4,6 +4,11 @@ export interface Frame {
   bytes: Uint8Array;
 }
 export const PACKET_LIMIT = 4 * 1024 * 1024;
+/** Batching budget for one live frame's JSON header. The capture meta has seven
+ * scalar keys (~200 bytes worst case); tests assert it stays well under this. */
+export const FRAME_HEADER_RESERVE = 1024;
+/** A capture clock moving back by more than this is a new epoch, not jitter. */
+const EPOCH_RESET_SECONDS = 1;
 const encoder = new TextEncoder(),
   decoder = new TextDecoder("utf-8", { fatal: true });
 export interface EncodedFrame { header: Uint8Array; bytes: Uint8Array; }
@@ -80,6 +85,7 @@ export class PreviewQueue {
   private synthetic = 0;
   private order = 0;
   private previousCapture?: number;
+  private lastSourceSeq?: number;
   bytes = 0;
   constructor(
     public delay = 1,
@@ -93,10 +99,19 @@ export class PreviewQueue {
         ? raw
         : undefined;
     // A new capture epoch must not inherit deadlines from a previous counter.
-    if(capture !== undefined && this.previousCapture !== undefined && capture < this.previousCapture) {
+    if(capture !== undefined && this.previousCapture !== undefined && capture < this.previousCapture - EPOCH_RESET_SECONDS) {
       this.dropped += this.queue.length;this.queue = [];this.bytes = 0;this.anchor = undefined;
     }
     if(capture !== undefined)this.previousCapture = capture;
+    const sourceSeq = Number(frame.meta.seq);
+    const hasSeq = frame.meta.seq !== "" && frame.meta.seq !== undefined && Number.isFinite(sourceSeq);
+    // Only an immediate resend of the same source sequence is a duplicate; any
+    // other sequence change (including a restarted counter) is accepted.
+    if (hasSeq && sourceSeq === this.lastSourceSeq) {
+      this.dropped++;
+      return;
+    }
+    this.lastSourceSeq = hasSeq ? sourceSeq : undefined;
     if (this.anchor === undefined) {
       this.anchor = now + this.delay;
       this.firstCapture = capture;
@@ -149,6 +164,7 @@ export class PreviewQueue {
     this.synthetic = 0;
     this.order = 0;
     this.previousCapture = undefined;
+    this.lastSourceSeq = undefined;
     this.dropped = 0;
   }
 }

@@ -6,7 +6,7 @@ import {syncBuiltinESMExports} from 'node:module';
 import {Readable} from 'node:stream';
 import {once} from 'node:events';
 import {createGateway} from '../server/gateway.mjs';
-import {pack,PreviewQueue} from '../src/protocol.ts';
+import {pack,PreviewQueue,FRAME_HEADER_RESERVE} from '../src/protocol.ts';
 import {startBatch} from '../src/batch.ts';
 import {defaults} from '../src/settings.ts';
 import type {Api} from '../src/api.ts';
@@ -42,4 +42,15 @@ test('lost submission response retains inputs for a possibly running job',async(
  const api={request:async(path:string,method='GET')=>{calls.push(method+' '+path);if(path==='/health')return {web_capabilities:{relative_uploads:true,output_preflight:true,photo_options:true,batch_cleanup:true}};throw new Error('lost response');},upload:async(path:string)=>({input_dir:'/content/inputs/photos/batches/'+new URL('http://test'+path).searchParams.get('batch_id')})} as unknown as Api;
  await assert.rejects(()=>startBatch(api,p,'photos',[new File(['input'],'x.webp')],undefined,new AbortController().signal,()=>{},()=>{}),/lost response/);
  assert.ok(calls.includes('POST /jobs/photos'));assert.ok(!calls.some(c=>c.startsWith('DELETE ')));
+});
+test('preview jitter keeps the queue, a real epoch reset flushes it, and resent seq is dropped',()=>{
+ const f=(seq:unknown,t:number)=>({meta:{seq,capture_monotonic:t},bytes:new Uint8Array([1])});
+ const q=new PreviewQueue(5);q.enqueue(f(1,10),0);q.enqueue(f(2,10.1),0);q.enqueue(f(3,9.9),0);
+ assert.equal(q.queue.length,3);
+ q.enqueue(f(3,10.2),0);assert.equal(q.queue.length,3);assert.equal(q.dropped,1);
+ q.enqueue(f(1,0.5),0);assert.equal(q.queue.length,1);
+});
+test('worst-case live frame header fits the batching reserve',()=>{
+ const meta={seq:Number.MAX_SAFE_INTEGER,capture_monotonic:123456789.123456789,capture_time:1.7e9+0.123456789,send_time:1.7e9+0.123456789,codec:'image/webp',width:7680,height:4320};
+ assert.ok(new TextEncoder().encode(JSON.stringify(meta)).length<FRAME_HEADER_RESERVE/2);
 });

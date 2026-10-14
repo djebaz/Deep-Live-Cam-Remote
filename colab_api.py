@@ -188,6 +188,8 @@ class JobWriter(io.TextIOBase):
 JOBS: dict[str, JobState] = {}
 CREATED_ARCHIVES: dict[str, Path] = {}
 ENGINE_LOCK = threading.Lock()
+# Serializes job registration with batch cleanup's active-job check and delete.
+JOBS_LOCK = threading.Lock()
 app = FastAPI(title="Deep-Live-Cam Remote API", version="1.0")
 
 
@@ -407,7 +409,8 @@ def run_job(job: JobState, argv: list[str]) -> None:
 def start_job(kind: str, argv: list[str]) -> JobState:
     input_dir = argv[argv.index("--input-dir") + 1] if "--input-dir" in argv else None
     job = JobState(job_id=uuid.uuid4().hex, kind=kind, input_dir=input_dir)
-    JOBS[job.job_id] = job
+    with JOBS_LOCK:
+        JOBS[job.job_id] = job
     threading.Thread(target=run_job, args=(job, argv), daemon=True).start()
     return job
 
@@ -936,12 +939,23 @@ async def upload_source(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"ok": True, "path": str(dest), "size": size}
 
 
-# Fixed pool bounds lock storage while serializing uploads and cleanup of a batch.
-UPLOAD_LOCKS = [asyncio.Lock() for _ in range(64)]
+# One lock per (storage, batch); entries are dropped once nobody holds or awaits them,
+# so unrelated batches never block each other and the table cannot grow.
+UPLOAD_LOCKS: dict[tuple[str, str], list[Any]] = {}
 
 
-def upload_lock(base_dir: Path, batch_id: str | None) -> asyncio.Lock:
-    return UPLOAD_LOCKS[hash((str(base_dir), safe_batch_id(batch_id))) % len(UPLOAD_LOCKS)]
+@contextlib.asynccontextmanager
+async def upload_lock(base_dir: Path, batch_id: str | None):
+    key = (str(base_dir), safe_batch_id(batch_id))
+    entry = UPLOAD_LOCKS.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] == 0:
+            UPLOAD_LOCKS.pop(key, None)
 
 
 async def upload_media(kind: str, files: list[UploadFile], batch_id: str | None, relative_paths: list[str] | None) -> dict[str, Any]:
@@ -969,6 +983,16 @@ async def upload_videos(files: list[UploadFile] = File(...), batch_id: str | Non
     return await upload_media("videos", files, batch_id, relative_paths)
 
 
+def delete_batch_if_idle(destination: Path) -> None:
+    """Check for active jobs and delete under JOBS_LOCK so no job can start in between."""
+    with JOBS_LOCK:
+        for job in list(JOBS.values()):
+            if job.status in {"queued", "running"} and job.input_dir and Path(job.input_dir).resolve().is_relative_to(destination.resolve()):
+                raise HTTPException(status_code=409, detail="batch is used by an active job")
+        if destination.exists():
+            shutil.rmtree(destination)
+
+
 @app.delete("/upload/{kind}/batches/{batch_id}")
 async def cleanup_upload_batch(kind: str, batch_id: str) -> dict[str, Any]:
     if kind not in {"photos", "videos"}:
@@ -981,11 +1005,7 @@ async def cleanup_upload_batch(kind: str, batch_id: str) -> dict[str, Any]:
         destination = root / batch_id
         if root.is_symlink() or destination.is_symlink() or destination.resolve().parent != root.resolve():
             raise HTTPException(status_code=400, detail="invalid batch directory")
-        for job in JOBS.values():
-            if job.status in {"queued", "running"} and job.input_dir and Path(job.input_dir).resolve().is_relative_to(destination.resolve()):
-                raise HTTPException(status_code=409, detail="batch is used by an active job")
-        if destination.exists():
-            await asyncio.to_thread(shutil.rmtree, destination)
+        await asyncio.to_thread(delete_batch_if_idle, destination)
         return {"ok": True, "batch_id": batch_id}
 
 
