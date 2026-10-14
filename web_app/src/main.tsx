@@ -15,6 +15,7 @@ import {
   type Kind,
   type Control,
 } from "./settings";
+import { chooseJob } from "./recover";
 import { LiveSession, type LiveStats } from "./live";
 import { Outputs, saveBlob } from "./Outputs";
 import "./style.css";
@@ -264,19 +265,21 @@ function App() {
         if (record?.backend === `${p.gateway}|${p.host}:${p.port}`)
           saved = record.job;
       } catch {}
+      let existing: Job | null = null;
       if (saved) {
         try {
-          const existing = await api.request<Job>(`/jobs/${saved.job_id}`);
-          setJob(existing);
+          existing = await api.request<Job>(`/jobs/${saved.job_id}`);
         } catch (e) {
           log(`Saved job unavailable: ${String(e)}`);
-          localStorage.removeItem("dlcr.activeJob");
         }
-      } else if (h.active_jobs?.length) {
-        setJob(h.active_jobs[0]);
-        log(
-          `Attached to active ${h.active_jobs[0].kind} job ${h.active_jobs[0].job_id}`,
-        );
+        if (!existing || !["queued", "running"].includes(existing.status))
+          localStorage.removeItem("dlcr.activeJob");
+      }
+      const choice = chooseJob(existing, h.active_jobs);
+      if (choice.job) {
+        setJob(choice.job);
+        if (choice.attachedActive)
+          log(`Attached to active ${choice.job.kind} job ${choice.job.job_id}`);
       }
     } catch (e) {
       setConnected(false);

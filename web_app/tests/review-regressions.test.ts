@@ -70,3 +70,13 @@ test('preview bounds evict without starving playback at a long buffer',()=>{
  const b=new PreviewQueue(1,256,3);for(let i=0;i<20;i++){const now=i/60;b.enqueue({meta:{seq:i,capture_monotonic:now},bytes:new Uint8Array([1,2])},now);}
  assert.ok(b.take(20/60));
 });
+test('saved job that is missing or finished does not hide a different active job',async()=>{
+ const {chooseJob}=await import('../src/recover.ts');
+ const job=(id:string,status:string)=>({job_id:id,kind:'videos',status}) as any;
+ const active=[job('live-one','running')];
+ assert.equal(chooseJob(null,active).job.job_id,'live-one');
+ assert.equal(chooseJob(job('old','completed'),active).job.job_id,'live-one');
+ assert.equal(chooseJob(job('old','running'),active).job.job_id,'old');
+ assert.equal(chooseJob(job('old','completed'),[]).job.job_id,'old');
+ assert.equal(chooseJob(null,undefined).job,null);
+});
