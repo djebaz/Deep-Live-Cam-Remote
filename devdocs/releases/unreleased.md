@@ -138,4 +138,4 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Keep video manifests valid by forwarding detector size only when set; honor overwrite over skip-processed preflight.
 - Keep Live preview playing under frame/byte bounds, and attach to the backend's active job when a saved job is stale.
 - Guard batch cleanup against ancestor-rooted active jobs and use per-batch upload locks.
-- Known gap: repository-wide `ruff check` errors (pre-existing on `main`) are left for a separate PR.
+- Fix all repository-wide `ruff check` errors (unused imports, one-line compound statements) and exclude the generated Colab notebook sources (`google-colab/`) from linting.

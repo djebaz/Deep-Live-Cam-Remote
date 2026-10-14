@@ -6,7 +6,6 @@ from windows_app import main_window_ui as ui_base
 from windows_app import output_tasks as output_tasks_base
 from windows_app.settings import (
     AppSettings,
-    PROCESSING_OPTION_KEYS,
     apply_processing_options_to_settings,
     coerce_processing_options,
     default_processing_options,

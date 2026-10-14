@@ -3,7 +3,7 @@ from __future__ import annotations
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication

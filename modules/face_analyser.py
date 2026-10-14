@@ -1,16 +1,14 @@
 import os
-import shutil
 from typing import Any
 import insightface
 import threading
 
 import modules.globals
-from modules import imread_unicode, imwrite_unicode
+from modules import imread_unicode
 from tqdm import tqdm
 from modules.typing import Frame
 from modules.cluster_analysis import find_cluster_centroids, find_closest_centroid
-from modules.utilities import get_temp_directory_path, create_temp, extract_frames, clean_temp, get_temp_frame_paths
-from pathlib import Path
+from modules.utilities import create_temp, extract_frames, clean_temp, get_temp_frame_paths
 
 FACE_ANALYSER = None
 FACE_ANALYSER_LOCK = threading.Lock()

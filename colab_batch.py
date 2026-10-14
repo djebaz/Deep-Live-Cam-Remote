@@ -14,13 +14,12 @@ import math
 import queue
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import cv2
 import numpy as np
@@ -488,8 +487,10 @@ def process_one(
                     continue
         except BaseException as exc:
             errors.put(("decode", exc))
-            try: decoded.put(sentinel, timeout=1)
-            except queue.Full: pass
+            try:
+                decoded.put(sentinel, timeout=1)
+            except queue.Full:
+                pass
 
     def encoder_worker() -> None:
         try:
@@ -585,8 +586,10 @@ def process_one(
         for process in (decoder, encoder):
             if process.poll() is None:
                 process.terminate()
-                try: process.wait(timeout=5)
-                except subprocess.TimeoutExpired: process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
         decode_thread.join(timeout=5)
         encode_thread.join(timeout=5)
     if not output.is_file() or output.stat().st_size == 0:
@@ -610,7 +613,8 @@ def scan_identities(args: argparse.Namespace) -> int:
         index = 0
         while len(samples) < args.max_samples:
             ok, frame = capture.read()
-            if not ok: break
+            if not ok:
+                break
             if index % every == 0:
                 for face in get_many_faces(frame) or []:
                     vector = np.asarray(getattr(face, "normed_embedding", face.embedding), np.float32)
@@ -618,7 +622,8 @@ def scan_identities(args: argparse.Namespace) -> int:
                     bbox = np.asarray(face.bbox, int)
                     x1, y1, x2, y2 = np.maximum(bbox, 0)
                     crop = frame[y1:y2, x1:x2].copy()
-                    if crop.size: samples.append({"embedding": vector, "crop": crop})
+                    if crop.size:
+                        samples.append({"embedding": vector, "crop": crop})
             index += 1
         capture.release()
         clusters: list[dict[str, Any]] = []
@@ -641,7 +646,8 @@ def scan_identities(args: argparse.Namespace) -> int:
         if thumbs:
             columns = min(4, len(thumbs)); rows = math.ceil(len(thumbs) / columns)
             sheet = np.zeros((rows * 180, columns * 180, 3), np.uint8)
-            for i, thumb in enumerate(thumbs): sheet[(i // columns)*180:(i // columns+1)*180, (i % columns)*180:(i % columns+1)*180] = thumb
+            for i, thumb in enumerate(thumbs):
+                sheet[(i // columns)*180:(i // columns+1)*180, (i % columns)*180:(i % columns+1)*180] = thumb
             cv2.imwrite(str(mapping_dir / f"{stem}_contact_sheet.jpg"), sheet)
         payload["videos"][relative] = identities
         print(f"{relative}: {len(identities)} identities from {len(samples)} samples")
@@ -677,12 +683,16 @@ def process_batch(args: argparse.Namespace) -> int:
         detector_size=args.detector_size, face_model_pack=args.face_model_pack,
         swapper_precision=args.swapper_precision,
     )
-    if not config.input_dir.is_dir(): raise NotADirectoryError(config.input_dir)
-    if config.source_face and not config.source_face.is_file(): raise FileNotFoundError(config.source_face)
-    if config.map_config and not config.map_config.is_file(): raise FileNotFoundError(config.map_config)
+    if not config.input_dir.is_dir():
+        raise NotADirectoryError(config.input_dir)
+    if config.source_face and not config.source_face.is_file():
+        raise FileNotFoundError(config.source_face)
+    if config.map_config and not config.map_config.is_file():
+        raise FileNotFoundError(config.map_config)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     videos = discover_videos(config.input_dir, config.recursive)
-    if not videos: raise FileNotFoundError(f"No videos found in {config.input_dir}")
+    if not videos:
+        raise FileNotFoundError(f"No videos found in {config.input_dir}")
     engine = ModernEngine(config)
     signature = config_signature(config)
     manifest_path = config.output_dir / MANIFEST_NAME
@@ -780,12 +790,16 @@ def process_photos(args: argparse.Namespace) -> int:
         image_quality=args.image_quality, detector_size=args.detector_size,
         face_model_pack=args.face_model_pack, swapper_precision=args.swapper_precision,
     )
-    if not config.input_dir.is_dir(): raise NotADirectoryError(config.input_dir)
-    if config.source_face and not config.source_face.is_file(): raise FileNotFoundError(config.source_face)
-    if config.map_config and not config.map_config.is_file(): raise FileNotFoundError(config.map_config)
+    if not config.input_dir.is_dir():
+        raise NotADirectoryError(config.input_dir)
+    if config.source_face and not config.source_face.is_file():
+        raise FileNotFoundError(config.source_face)
+    if config.map_config and not config.map_config.is_file():
+        raise FileNotFoundError(config.map_config)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     images = discover_images(config.input_dir, config.recursive)
-    if not images: raise FileNotFoundError(f"No images found in {config.input_dir}")
+    if not images:
+        raise FileNotFoundError(f"No images found in {config.input_dir}")
     engine = ModernEngine(config)
     signature = config_signature(config)
     manifest_path = config.output_dir / MANIFEST_NAME
@@ -872,14 +886,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if getattr(args, "ss", 0) < 0: raise ValueError("--ss must be non-negative")
-    if getattr(args, "duration", None) is not None and args.duration <= 0: raise ValueError("--duration must be positive")
-    if getattr(args, "max_fps", 1) <= 0 or getattr(args, "max_width", 1) <= 0: raise ValueError("FPS and width limits must be positive")
-    if not 0 <= getattr(args, "opacity", 1) <= 1: raise ValueError("--opacity must be between 0 and 1")
+    if getattr(args, "ss", 0) < 0:
+        raise ValueError("--ss must be non-negative")
+    if getattr(args, "duration", None) is not None and args.duration <= 0:
+        raise ValueError("--duration must be positive")
+    if getattr(args, "max_fps", 1) <= 0 or getattr(args, "max_width", 1) <= 0:
+        raise ValueError("FPS and width limits must be positive")
+    if not 0 <= getattr(args, "opacity", 1) <= 1:
+        raise ValueError("--opacity must be between 0 and 1")
     start_pct, end_pct = getattr(args, "start_pct", 0.0), getattr(args, "end_pct", 100.0)
-    if not 0 <= start_pct < 100: raise ValueError("--start-pct must be between 0 and 99")
-    if not 0 < end_pct <= 100: raise ValueError("--end-pct must be between 1 and 100")
-    if start_pct >= end_pct: raise ValueError("--start-pct must be less than --end-pct")
+    if not 0 <= start_pct < 100:
+        raise ValueError("--start-pct must be between 0 and 99")
+    if not 0 < end_pct <= 100:
+        raise ValueError("--end-pct must be between 1 and 100")
+    if start_pct >= end_pct:
+        raise ValueError("--start-pct must be less than --end-pct")
     return args.func(args)
 
 

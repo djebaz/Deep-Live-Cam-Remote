@@ -175,7 +175,6 @@ def show_output_at(self: MainWindow, index: int) -> None:
             self.outputs_progress.setValue(0)
             self.outputs_progress.show()
 
-        from typing import Callable
         def fetch_photo(progress_cb: Callable[[int, int], None]) -> bytes:
             return output_tasks_base._download_bytes_with_progress(self.client, key, timeout=20.0, progress_callback=progress_cb)
 
@@ -233,7 +232,6 @@ def show_video_output(self: MainWindow, item: dict[str, Any]) -> None:
         self.outputs_progress.setValue(0)
         self.outputs_progress.show()
 
-    from typing import Callable
     def fetch_video(progress_cb: Callable[[int, int], None]) -> dict[str, str]:
         if not local_path.exists() or local_path.stat().st_size != file_size:
             output_tasks_base._download_file_fast(self.client, key, local_path, timeout=900.0, progress_callback=progress_cb)

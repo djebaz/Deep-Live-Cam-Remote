@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from windows_app.api_client import ApiClient
-from windows_app.settings import AppSettings, load_settings, save_settings
+from windows_app.settings import load_settings, save_settings
 from windows_app.workers import LiveWorker, PollWorker
 
 
