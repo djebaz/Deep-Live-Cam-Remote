@@ -118,3 +118,13 @@ def test_cli_segment_output_and_video_model_config_reach_processor(tmp_path, mon
     assert outputs == [out / 'nested/clip_face_swapped_ss2.5_dur3.mp4']
     assert (configs[0].detector_size, configs[0].face_model_pack,
             configs[0].swapper_precision) == (1280, 'buffalo_s', 'fp16')
+
+
+def test_video_job_omits_unset_detector_size_but_photo_keeps_it(client,monkeypatch):
+    captured=[]
+    monkeypatch.setattr(api,'start_job',lambda kind,argv: captured.append(argv) or SimpleNamespace(job_id='id',status='queued'))
+    assert client.post('/jobs/videos',json={}).status_code==200
+    assert client.post('/jobs/photos',json={}).status_code==200
+    assert '--detector-size' not in captured[0]
+    assert batch.build_parser().parse_args(captured[0]).detector_size is None
+    assert captured[1][captured[1].index('--detector-size')+1]=='640'

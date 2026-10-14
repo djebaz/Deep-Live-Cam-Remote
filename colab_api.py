@@ -1001,13 +1001,19 @@ def clear_uploads() -> dict[str, Any]:
     return {"ok": True, "cleared": len(cleared)}
 
 
-def model_args(request: JobRequest) -> list[str]:
-    """Apply identical model validation and forwarding to both batch workflows."""
+def model_args(request: JobRequest, always_detector_size: bool) -> list[str]:
+    """Apply identical model validation to both batch workflows.
+
+    Videos forward detector_size only when the client set it: an omitted value
+    stays None in the CLI config signature, so existing manifests keep matching.
+    """
     if request.detector_size % 32 or request.face_model_pack not in LIVE_FACE_MODEL_PACKS or request.swapper_precision not in LIVE_SWAPPER_PRECISIONS:
         raise HTTPException(status_code=400, detail="invalid detector size, model pack, or precision")
-    return ["--detector-size", str(request.detector_size),
-            "--face-model-pack", request.face_model_pack,
+    args = ["--face-model-pack", request.face_model_pack,
             "--swapper-precision", request.swapper_precision]
+    if always_detector_size or "detector_size" in request.model_fields_set:
+        args = ["--detector-size", str(request.detector_size), *args]
+    return args
 
 
 @app.post("/jobs/photos")
@@ -1015,7 +1021,7 @@ def start_photos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
     if not 1 <= request.quality <= 100:
         raise HTTPException(status_code=400, detail="invalid photo quality")
-    argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request)]
+    argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request, True)]
     if "quality" in request.model_fields_set:
         argv.extend(["--image-quality", str(request.quality)])
     if request.output_max_width is not None:
@@ -1032,7 +1038,7 @@ def start_videos(request: JobRequest) -> dict[str, Any]:
     argv = [
         "process",
         *common_args(request, VIDEOS_DIR, OUTPUT_VIDEOS_DIR),
-        *model_args(request),
+        *model_args(request, False),
         "--max-fps", str(request.max_fps),
         "--max-width", str(request.max_width),
         "--quality", str(request.quality),
