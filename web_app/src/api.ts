@@ -103,7 +103,7 @@ export class Api {
     u.searchParams.set("ticket", ticket);
     return new WebSocket(u);
   }
-  async media(path: string) {
+  async media(path: string, signal?: AbortSignal) {
     const u = new URL(
       this.url(path.split("/").map(encodeURIComponent).join("/")),
     );
@@ -111,6 +111,7 @@ export class Api {
       "/gateway/media-ticket",
       "POST",
       { path: u.pathname },
+      signal,
     );
     u.searchParams.set("ticket", ticket);
     return u.toString();

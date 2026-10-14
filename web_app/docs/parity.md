@@ -6,36 +6,36 @@ Sources inspected: `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `windows_app/mai
 
 ## Feature checklist
 
-Status initially pending; update each row from actual implementation and validation evidence. A represented control is not complete until its value reaches processing.
+Status: backend-connected implementation is present for the browser workflows below. Local protocol/API tests and build checks are recorded in validation.md; real hardware acceptance remains unverified. A represented control is not complete until its value reaches processing.
 
 | Desktop behavior | Required web implementation | Native companion | Status |
 | --- | --- | --- | --- |
-| Setup host, port, Drive paths; health; save settings; logs | Persistent connection area, constrained configured backend, actionable health errors, local preferences, credential-redacted bounded logs | No | Pending |
-| Shared source path linked across tabs | One shared source face; browser-selected file or remote source path | No | Pending |
-| Separate Photos/Videos processing dictionaries; Live dictionary | Persist workflow-specific controls independently; shared connection/source/path settings | No | Pending |
-| Local source auto-transformed through QImageReader to PNG | Normalize EXIF orientation before multipart source upload | No | Pending |
-| Local folder enumeration recursive/nonrecursive | Browser file/folder selection, supported-extension filter, preserve selected folder-relative paths | No for selected files; yes for arbitrary paths | Pending |
-| Remote photo/video paths | Send backend-visible paths directly without local upload | No | Pending |
-| Skip-processed local preflight before input upload | Compare actual output relative names; all matched means zero input upload and zero job creation | No | Pending |
-| Isolated batch upload UUID; 1000-file client cap | Use existing upload endpoints with batch_id and verify returned input directory | No | Pending |
-| Full photo controls including advanced controls | API-to-engine plumbing for every displayed control, not silently ignored fields | No | Pending |
-| Video controls and percentage range | Real jobs/videos payload, backend progress/logs, output naming, cancellation | No | Pending |
-| Start button turns into Stop | Prevent duplicate submits; cancel preparation/upload or cooperative active backend job | No | Pending |
-| Logs/polling/status | Real queued/running/completed/failed/cancelled states; explain unknown/missing jobs | No | Pending |
-| Webcam/OBS input camera | Browser camera enumeration after permission, actual negotiated capture dimensions/FPS | No if device is exposed to browser | Pending |
+| Setup host, port, Drive paths; health; save settings; logs | Persistent connection area, constrained configured backend, actionable health errors, local preferences, credential-redacted bounded logs | No | Connected implementation; hardware unverified |
+| Shared source path linked across tabs | One shared source face; browser-selected file or remote source path | No | Connected implementation; hardware unverified |
+| Separate Photos/Videos processing dictionaries; Live dictionary | Persist workflow-specific controls independently; shared connection/source/path settings | No | Connected implementation; hardware unverified |
+| Local source auto-transformed through QImageReader to PNG | Normalize EXIF orientation before multipart source upload | No | Connected implementation; hardware unverified |
+| Local folder enumeration recursive/nonrecursive | Browser file/folder selection, supported-extension filter, preserve selected folder-relative paths | No for selected files; yes for arbitrary paths | Connected implementation; hardware unverified |
+| Remote photo/video paths | Send backend-visible paths directly without local upload | No | Connected implementation; hardware unverified |
+| Skip-processed local preflight before input upload | Compare actual output relative names; all matched means zero input upload and zero job creation | No | Connected implementation; hardware unverified |
+| Isolated batch upload UUID; 1000-file client cap | Use existing upload endpoints with batch_id and verify returned input directory | No | Connected implementation; hardware unverified |
+| Full photo controls including advanced controls | API-to-engine plumbing for every displayed control, not silently ignored fields | No | Connected implementation; hardware unverified |
+| Video controls and percentage range | Real jobs/videos payload, backend progress/logs, output naming, cancellation | No | Connected implementation; hardware unverified |
+| Start button turns into Stop | Prevent duplicate submits; cancel preparation/upload or cooperative active backend job | No | Connected implementation; hardware unverified |
+| Logs/polling/status | Real queued/running/completed/failed/cancelled states; explain unknown/missing jobs | No | Connected implementation; hardware unverified |
+| Webcam/OBS input camera | Browser camera enumeration after permission, actual negotiated capture dimensions/FPS | No if device is exposed to browser | Connected implementation; hardware unverified |
 | DirectShow/MSMF/Auto capture backend | Explain browser-managed capture; omit unusable native selectors | Yes for explicit backend choice | Native limitation |
 | Auto reads OBS profile canvas size | Browser constraints/manual dimensions; no claim to read OBS profile | Yes | Native limitation |
 | pyvirtualcam processed output | Browser preview only ordinarily; companion required for OS virtual-camera output | Yes | Native limitation |
-| Hot-change tuning and restart-only controls | Runtime config_update message for server hot keys; local hot keys stay local; disable restart-only controls while running | No | Pending |
-| DLCR binary live input/output batches | Existing big-endian packet framing, metadata echo, drop acknowledgements | No | Pending |
-| Pipeline bounds, packet limit | Cap in-flight frames, pending capture/decode/preview resources; packet cap and batch timeout | No | Pending |
-| Buffered monotonic playback | Relative monotonic capture timestamps, arrival fallback, overdue coalescing, last image retained | No | Pending |
-| Prompt Live Stop | Close socket/tracks, cancel timers/animation callbacks, invalidate asynchronous work, release images/resources | No | Pending |
-| Live perf text and CSV; automatic perf sweep | Backend diagnostics plus separate measurable capture/send/receive/display FPS; CSV export; document sweep gap if absent | No | Pending |
-| Outputs fixed remote roots; Refresh/select/previous/next | Use actual backend listing/download links; do not treat custom output paths as indexed roots | No | Pending |
-| Photo WebP/zoom/autoplay/prefetch | Browser WebP decode; all zoom choices; visible timer starts after load; bounded cache | No | Pending |
-| Video preview/player/download | Browser player, explicit codec compatibility errors, real download | No | Pending |
-| Download current/all ZIP; Taildrop fallback support | Browser download plus existing ZIP/archive API; native Taildrop optional | Only Taildrop/local destination access | Pending |
+| Hot-change tuning and restart-only controls | Runtime config_update message for server hot keys; local hot keys stay local; disable restart-only controls while running | No | Connected implementation; hardware unverified |
+| DLCR binary live input/output batches | Existing big-endian packet framing, metadata echo, drop acknowledgements | No | Connected implementation; hardware unverified |
+| Pipeline bounds, packet limit | Cap in-flight frames, pending capture/decode/preview resources; packet cap and batch timeout | No | Connected implementation; hardware unverified |
+| Buffered monotonic playback | Relative monotonic capture timestamps, arrival fallback, overdue coalescing, last image retained | No | Connected implementation; hardware unverified |
+| Prompt Live Stop | Close socket/tracks, cancel timers/animation callbacks, invalidate asynchronous work, release images/resources | No | Connected implementation; hardware unverified |
+| Live perf text and CSV; automatic perf sweep | Backend diagnostics plus separate measurable capture/send/receive/display FPS; CSV export; document sweep gap if absent | No | Connected implementation; hardware unverified |
+| Outputs fixed remote roots; Refresh/select/previous/next | Use actual backend listing/download links; do not treat custom output paths as indexed roots | No | Connected implementation; hardware unverified |
+| Photo WebP/zoom/autoplay/prefetch | Browser WebP decode; all zoom choices; visible timer starts after load; bounded cache | No | Connected implementation; hardware unverified |
+| Video preview/player/download | Browser player, explicit codec compatibility errors, real download | No | Connected implementation; hardware unverified |
+| Download current/all ZIP; Taildrop fallback support | Browser download plus existing ZIP/archive API; native Taildrop optional | Only Taildrop/local destination access | Connected implementation; hardware unverified |
 | Persistent Windows geometry/theme | Responsive familiar dark UI; browser layout/preferences instead of DWM/Qt geometry | No | Browser equivalent |
 
 ## Connection and settings source values
@@ -178,3 +178,33 @@ Proposed installation: optional Python 3.11 desktop dependency profile in an iso
 Connection/security requirements: bind loopback only; serve a local same-origin controller or use a trusted HTTPS loopback endpoint; require explicit pairing with a short-lived token and exact controller-origin allowlist for HTTP and WebSocket Origin; protect against cross-site/CSRF calls; reject wildcard origins, arbitrary upstream URLs, ungranted local paths and command strings. Require user approval per selected folder/device, show a persistent active indicator, expose Stop, and release device access on disconnect. Route backend traffic only to the preconfigured tailnet address. Do not send pairing credentials to logs or persist them in browser preferences. An HTTPS remote page calling insecure loopback directly is not a viable default; local same-origin hosting avoids mixed-content/private-network restrictions.
 
 The companion would expose a narrow capture/output capability interface, not face processing. No companion installation package or native web integration is claimed in this audit; native features remain explicit gaps until separately implemented and tested.
+
+
+## Implementation evidence and intentional differences
+
+- `src/settings.ts` provides workflow-specific dictionaries and control schema;
+  connection/source settings are shared. Access tokens remain in memory.
+- `src/batch.ts` calls real health, source/upload/job endpoints. Additive
+  `relative_paths` manifests preserve folders; `/outputs/{kind}/preflight` checks
+  exact expected paths in the requested output directory, including remote scans.
+  It does not treat two equal basenames in different folders as the same output.
+- `colab_api.py` now accepts photo detector/model/precision and forwards them to
+  `colab_batch.py`; explicit photo quality affects JPEG/WebP writes. PNG/BMP stay
+  lossless. Legacy CLI image encoding defaults remain unchanged when omitted.
+- `src/live.ts` implements capture, encoding, packet transport, hot changes,
+  drop acknowledgements, bounded processing reservations, preview and cleanup.
+  Native OpenCV grab/retrieve and virtual-camera timings are unavailable; browser
+  encode/decode, transport sizes, four measured FPS rates, and backend metrics are
+  exported instead. Performance sweep: 16 codec/batch cases, 3s warmup + 9s sample.
+- `src/Outputs.tsx` uses real listings, scoped streamed media and actual ZIP APIs.
+  Photo cache caps count/bytes, cancels obsolete requests and limits fetch concurrency.
+- `server/gateway.mjs` is a production HTTP/binary-WebSocket gateway. Sites hosts
+  the frontend only; the browser device and gateway must be on the tailnet.
+- Browser managed capture replaces `auto`/`opencv_auto`; manual requested dimensions
+  replace custom OpenCV sizing. No inert DirectShow/MSMF or OS virtual-camera controls.
+- Live navigation is disabled while active to keep its canvas attached. Stop before
+  changing workflow. Brief transport gaps recover by overdue coalescing; a 15s
+  acknowledgement stall closes the session and requires restart. Socket closure
+  is explicit rather than silently creating a new GPU session.
+- No native companion code/package was built in this PR, as requested. The design
+  above is a future option only.

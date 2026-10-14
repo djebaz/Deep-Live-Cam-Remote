@@ -95,6 +95,35 @@ export async function startBatch(
         "Maximum 1000 pending files per batch. Select a smaller subset.",
       );
   }
+  if (
+    files === null &&
+    p[kind].skip_processed &&
+    health.web_capabilities?.output_preflight
+  ) {
+    const preflight = await api.request<{
+      processed: string[];
+      total: number;
+      remaining: number;
+    }>(
+      `/outputs/${kind}/preflight`,
+      "POST",
+      {
+        input_dir: input,
+        output_dir: p[`${kind}_output`],
+        recursive: p[kind].recursive,
+      },
+      signal,
+    );
+    log(
+      `Remote preflight: ${preflight.processed.length} processed, ${preflight.remaining} remain.`,
+    );
+    if (!preflight.total)
+      throw new Error("No supported files in the remote input directory.");
+    if (!preflight.remaining) {
+      log("Everything is already processed. No uploads or job started.");
+      return null;
+    }
+  }
   if (kind === "photos" && !health.web_capabilities?.photo_options)
     throw new Error("Update Colab API to connect the advanced photo controls.");
   if (

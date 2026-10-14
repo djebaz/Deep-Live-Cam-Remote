@@ -139,3 +139,29 @@ test("all-processed preflight issues no source upload, input upload or job creat
   assert.equal(result, null);
   assert.deepEqual(calls, ["/health", "/outputs/photos/preflight"]);
 });
+
+test("remote all-processed preflight submits no job", async () => {
+  const calls: string[] = [];
+  const api = {
+    request: async (path: string) => {
+      calls.push(path);
+      return path === "/health"
+        ? { web_capabilities: { output_preflight: true, photo_options: true } }
+        : { processed: ["x.webp"], total: 1, remaining: 0 };
+    },
+  } as unknown as Api;
+  assert.equal(
+    await startBatch(
+      api,
+      defaults,
+      "photos",
+      null,
+      undefined,
+      new AbortController().signal,
+      () => {},
+      () => {},
+    ),
+    null,
+  );
+  assert.deepEqual(calls, ["/health", "/outputs/photos/preflight"]);
+});

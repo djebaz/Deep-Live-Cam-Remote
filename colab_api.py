@@ -776,7 +776,9 @@ def list_outputs(kind: str) -> dict[str, Any]:
 
 class OutputPreflightRequest(BaseModel):
     output_dir: str
-    relative_paths: list[str]
+    relative_paths: list[str] = Field(default_factory=list)
+    input_dir: str | None = None
+    recursive: bool = True
 
 
 @app.post("/outputs/{kind}/preflight")
@@ -784,14 +786,29 @@ def output_preflight(kind: str, request: OutputPreflightRequest) -> dict[str, An
     if kind not in {"photos", "videos"}:
         raise HTTPException(status_code=404, detail="unknown kind")
     root = Path(request.output_dir)
-    inputs = relative_upload_destinations(root, request.relative_paths, len(request.relative_paths))
+    relative_paths = request.relative_paths
+    if request.input_dir is not None:
+        if relative_paths:
+            raise HTTPException(status_code=400, detail="choose input_dir or relative_paths")
+        input_root = Path(request.input_dir)
+        if not input_root.is_dir():
+            raise HTTPException(status_code=400, detail="remote input directory not found")
+        discover = colab_batch.discover_images if kind == "photos" else colab_batch.discover_videos
+        relative_paths = [p.relative_to(input_root).as_posix() for p in discover(input_root, request.recursive)]
+    inputs = []
+    for offset in range(0, len(relative_paths), 1000):
+        chunk = relative_paths[offset:offset + 1000]
+        inputs.extend(relative_upload_destinations(root, chunk, len(chunk)))
     processed = []
-    for relative, path in zip(request.relative_paths, inputs):
+    for relative, path in zip(relative_paths, inputs):
         suffix = path.suffix.lower() if kind == "photos" else ".mp4"
         output = path.with_name(f"{path.stem}_face_swapped{suffix}")
         if output.is_file():
             processed.append(relative)
-    return {"processed": processed}
+    result = {"processed": processed}
+    if request.input_dir is not None:
+        result.update({"total": len(relative_paths), "remaining": len(relative_paths) - len(processed)})
+    return result
 
 
 @app.get("/outputs/{kind}/zip")

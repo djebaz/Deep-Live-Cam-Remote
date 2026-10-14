@@ -23,3 +23,9 @@ publish frontend, open downstream PR without merging.
 Validation: user selected local validation. Real Colab GPU, Tailscale, webcam/OBS,
 system-clock changes in a real browser, and native companion remain user-owned.
 No backend address or credentials were supplied.
+
+
+Progress: implementation pushed and draft PR #15 opened for early review. Browser
+workflows, gateway and additive backend changes are present. Windows files and
+notebooks remain unchanged. Final local checks and publication proceed in the same
+PR; native companion implementation excluded by user instruction.

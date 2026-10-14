@@ -12,7 +12,11 @@ export function saveBlob(blob: Blob, name: string) {
 export class PhotoCache {
   private entries = new Map<string, { url: string; size: number }>();
   private pending = new Map<string, Promise<string>>();
-  private controllers = new Set<AbortController>();
+  private controllers = new Map<string, AbortController>();
+  private wanted = new Set<string>();
+  private pinned?: string;
+  private active = 0;
+  private waiters: (() => void)[] = [];
   private bytes = 0;
   private disposed = false;
   constructor(
@@ -24,62 +28,100 @@ export class PhotoCache {
     progress?: (l: number, t: number) => void,
   ): Promise<string> {
     const key = item.download_path;
+    if (this.disposed || (this.wanted.size && !this.wanted.has(key)))
+      throw new DOMException("Obsolete preview", "AbortError");
     const found = this.entries.get(key);
     if (found) return found.url;
     if (this.pending.has(key)) return this.pending.get(key)!;
     const controller = new AbortController();
-    this.controllers.add(controller);
+    this.controllers.set(key, controller);
     const promise = (async () => {
-      if (item.size > this.maxBytes)
-        throw new Error(
-          "Photo exceeds the 64 MiB preview limit; download instead.",
+      if (this.active >= 2)
+        await new Promise<void>((resolve, reject) => {
+          const wake = () => {
+            controller.signal.removeEventListener("abort", abort);
+            resolve();
+          };
+          const abort = () => {
+            this.waiters = this.waiters.filter((x) => x !== wake);
+            reject(new DOMException("Cancelled", "AbortError"));
+          };
+          this.waiters.push(wake);
+          controller.signal.addEventListener("abort", abort, { once: true });
+        });
+      if (controller.signal.aborted) {
+        this.waiters.shift()?.();
+        controller.signal.throwIfAborted();
+      }
+      this.active++;
+      try {
+        if (item.size > this.maxBytes)
+          throw new Error(
+            "Photo exceeds the 64 MiB preview limit; download instead.",
+          );
+        const url = await this.api.media(key, controller.signal);
+        controller.signal.throwIfAborted();
+        const response = await fetch(url, {
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`Preview HTTP ${response.status}`);
+        const reader = response.body!.getReader();
+        const chunks: Uint8Array[] = [];
+        let n = 0;
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          n += next.value.length;
+          if (n > this.maxBytes) {
+            await reader.cancel();
+            throw new Error("Preview too large; download instead.");
+          }
+          chunks.push(next.value);
+          progress?.(n, item.size);
+        }
+        if (this.disposed) throw new DOMException("Disposed", "AbortError");
+        const object = URL.createObjectURL(
+          new Blob(chunks as BlobPart[], {
+            type: response.headers.get("Content-Type") || "image/jpeg",
+          }),
         );
-      const url = await this.api.media(key);
-      controller.signal.throwIfAborted();
-      const response = await fetch(url, {
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (!response.ok) throw new Error(`Preview HTTP ${response.status}`);
-      const reader = response.body!.getReader();
-      const chunks: Uint8Array[] = [];
-      let n = 0;
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        n += next.value.length;
-        if (n > this.maxBytes) {
-          await reader.cancel();
-          throw new Error("Preview too large; download instead.");
+        this.entries.set(key, { url: object, size: n });
+        this.bytes += n;
+        for (const [k, v] of this.entries) {
+          if (this.bytes <= this.maxBytes && this.entries.size <= 52) break;
+          if (k !== key && k !== this.pinned) {
+            URL.revokeObjectURL(v.url);
+            this.entries.delete(k);
+            this.bytes -= v.size;
+          }
         }
-        chunks.push(next.value);
-        progress?.(n, item.size);
-      }
-      if (this.disposed) throw new DOMException("Disposed", "AbortError");
-      const object = URL.createObjectURL(
-        new Blob(chunks as BlobPart[], {
-          type: response.headers.get("Content-Type") || "image/jpeg",
-        }),
-      );
-      this.entries.set(key, { url: object, size: n });
-      this.bytes += n;
-      for (const [k, v] of this.entries) {
-        if (this.bytes <= this.maxBytes && this.entries.size <= 52) break;
-        if (k !== key) {
-          URL.revokeObjectURL(v.url);
-          this.entries.delete(k);
-          this.bytes -= v.size;
+        if (this.bytes > this.maxBytes) {
+          URL.revokeObjectURL(object);
+          this.entries.delete(key);
+          this.bytes -= n;
+          throw new Error(
+            "Preview cache budget exhausted; reduce prefetch or download this photo.",
+          );
         }
+        return object;
+      } finally {
+        this.active--;
+        this.waiters.shift()?.();
       }
-      return object;
     })().finally(() => {
-      this.controllers.delete(controller);
+      if (this.controllers.get(key) === controller)
+        this.controllers.delete(key);
       this.pending.delete(key);
     });
     this.pending.set(key, promise);
     return promise;
   }
   trim(keep: Set<string>) {
+    this.wanted = keep;
+    this.pinned = keep.values().next().value;
+    for (const [key, controller] of this.controllers)
+      if (!keep.has(key)) controller.abort();
     for (const [key, value] of this.entries)
       if (!keep.has(key)) {
         URL.revokeObjectURL(value.url);
@@ -89,7 +131,7 @@ export class PhotoCache {
   }
   dispose() {
     this.disposed = true;
-    for (const c of this.controllers) c.abort();
+    for (const c of this.controllers.values()) c.abort();
     for (const e of this.entries.values()) URL.revokeObjectURL(e.url);
     this.entries.clear();
     this.pending.clear();
@@ -134,6 +176,7 @@ export function Outputs({
     setStatus("Refresh to browse backend outputs.");
   }, [api, kind]);
   const next = (delta = 1) => {
+    if (files.length < 2) return;
     setLoaded(false);
     setIndex((i) => (i + delta + files.length) % Math.max(1, files.length));
   };
@@ -163,6 +206,15 @@ export function Outputs({
     if (!current) return;
     setStatus(`Loading ${current.relative_path}`);
     let cancelled = false;
+    const count = options.autoplay ? Number(options.prefetch) : 2;
+    const keep = new Set([
+      current.download_path,
+      ...Array.from(
+        { length: Math.min(count, files.length - 1) },
+        (_, i) => files[(index + i + 1) % files.length].download_path,
+      ),
+    ]);
+    cache.current!.trim(keep);
     const load = async () => {
       try {
         const url =
@@ -343,8 +395,10 @@ export function Outputs({
               aria-pressed={i === index}
               className={i === index ? "selected" : ""}
               onClick={() => {
-                setLoaded(false);
-                setIndex(i);
+                if (i !== index) {
+                  setLoaded(false);
+                  setIndex(i);
+                }
               }}
             >
               <strong>{f.relative_path}</strong>

@@ -77,3 +77,11 @@ def test_output_webp_listing_download_and_cancel(client,monkeypatch):
     job=api.JobState(job_id='cancel-me',kind='videos');monkeypatch.setitem(api.JOBS,job.job_id,job)
     assert client.post('/jobs/cancel',json={'job_id':job.job_id}).json()['cancel_requested']
     assert job.cancel_event.is_set()
+
+
+def test_remote_preflight_counts_all_processed_without_starting_job(client,tmp_path):
+    inp=tmp_path/'remote-in';out=tmp_path/'remote-out'
+    (inp/'nested').mkdir(parents=True);(out/'nested').mkdir(parents=True)
+    (inp/'nested/x.webp').write_bytes(b'input');(out/'nested/x_face_swapped.webp').write_bytes(b'output')
+    response=client.post('/outputs/photos/preflight',json={'input_dir':str(inp),'output_dir':str(out),'recursive':True})
+    assert response.json()=={'processed':['nested/x.webp'],'total':1,'remaining':0}

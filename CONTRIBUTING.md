@@ -139,3 +139,13 @@ When contributing changes derived from another project or PR, credit the source 
 ## Responsible use
 
 Do not contribute features whose primary purpose is abuse, deception, evasion, credential theft, or bypassing platform safeguards. Use and distribute this software only with appropriate rights, consent, and legal compliance.
+
+## Browser controller contributions
+
+Keep browser code in `web_app/` and retain the Windows implementation. Start from
+[web setup](web_app/README.md) and the [parity audit](web_app/docs/parity.md).
+Run `npm --prefix web_app test` and `npm --prefix web_app run build` when validation
+is requested; backend checks are documented there. Keep gateways restricted to
+operator-allowlisted upstreams and exact origins; do not publish backend credentials
+or change notebook artifacts for frontend-only work. Dist, node_modules, local
+secrets and camera outputs must stay out of commits.
