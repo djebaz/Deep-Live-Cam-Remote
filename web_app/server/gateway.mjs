@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { resolve, dirname, extname } from "node:path";
+import { resolve, dirname, extname, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -264,10 +264,8 @@ export function createGateway({
       }
       const decoded = decodeURIComponent(path),
         candidate = resolve(dist, "." + decoded);
-      if (
-        candidate !== resolve(dist) &&
-        !candidate.startsWith(resolve(dist) + "/")
-      ) {
+      const rel = relative(resolve(dist), candidate);
+      if (rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)) {
         json(res, 403, { error: "Invalid path" });
         return;
       }

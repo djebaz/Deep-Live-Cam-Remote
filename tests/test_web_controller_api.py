@@ -24,7 +24,7 @@ def test_relative_upload_and_exact_preflight(client, tmp_path):
     assert response.status_code == 200
     upload = response.json()
     assert Path(upload['input_dir'], 'nested/x.webp').read_bytes() == b'photo'
-    out = tmp_path / 'custom'
+    out = tmp_path / 'drive_root' / 'custom'
     (out / 'nested').mkdir(parents=True)
     (out / 'nested/x_face_swapped.webp').write_bytes(b'output')
     r = client.post('/outputs/photos/preflight', json={'output_dir': str(out), 'relative_paths':['nested/x.webp','other/x.webp']})
@@ -39,7 +39,7 @@ def test_relative_upload_and_exact_preflight(client, tmp_path):
     assert Path(r.json()['input_dir'], 'x.webp').read_bytes() == b'legacy'
 
 def test_video_preflight_matches_mp4_output_and_range(client,tmp_path,monkeypatch):
-    out=tmp_path/'video-out';out.mkdir();(out/'clip_face_swapped.mp4').write_bytes(b'v')
+    out=tmp_path/'drive_root'/'video-out';out.mkdir(parents=True);(out/'clip_face_swapped.mp4').write_bytes(b'v')
     assert client.post('/outputs/videos/preflight',json={'output_dir':str(out),'relative_paths':['clip.MOV']}).json()['processed']==['clip.MOV']
     captured=[]
     monkeypatch.setattr(api,'start_job',lambda kind,argv: captured.append(argv) or SimpleNamespace(job_id='id',status='queued'))
@@ -80,8 +80,14 @@ def test_output_webp_listing_download_and_cancel(client,monkeypatch):
 
 
 def test_remote_preflight_counts_all_processed_without_starting_job(client,tmp_path):
-    inp=tmp_path/'remote-in';out=tmp_path/'remote-out'
+    inp=tmp_path/'drive_root'/'remote-in';out=tmp_path/'drive_root'/'remote-out'
     (inp/'nested').mkdir(parents=True);(out/'nested').mkdir(parents=True)
     (inp/'nested/x.webp').write_bytes(b'input');(out/'nested/x_face_swapped.webp').write_bytes(b'output')
     response=client.post('/outputs/photos/preflight',json={'input_dir':str(inp),'output_dir':str(out),'recursive':True})
     assert response.json()=={'processed':['nested/x.webp'],'total':1,'remaining':0}
+
+
+def test_preflight_rejects_dirs_outside_layout_roots(client, tmp_path):
+    for body in ({'output_dir': '/etc'}, {'output_dir': str(tmp_path / 'drive_root'), 'input_dir': '/root'},
+                 {'output_dir': str(tmp_path / 'drive_root' / '..' / 'elsewhere')}):
+        assert client.post('/outputs/photos/preflight', json=body).status_code == 400

@@ -781,16 +781,30 @@ class OutputPreflightRequest(BaseModel):
     recursive: bool = True
 
 
+def preflight_roots() -> list[Path]:
+    return [DRIVE_ROOT, LOCAL_ROOT, LOCAL_OUTPUT_PHOTOS_DIR, LOCAL_OUTPUT_VIDEOS_DIR]
+
+
+def confined_dir(value: str, label: str) -> Path:
+    """Resolve a client-supplied directory and require it to sit under a layout root."""
+    path = Path(value).resolve()
+    for root in preflight_roots():
+        resolved = root.resolve()
+        if path == resolved or resolved in path.parents:
+            return path
+    raise HTTPException(status_code=400, detail=f"{label} is outside the allowed folders")
+
+
 @app.post("/outputs/{kind}/preflight")
 def output_preflight(kind: str, request: OutputPreflightRequest) -> dict[str, Any]:
     if kind not in {"photos", "videos"}:
         raise HTTPException(status_code=404, detail="unknown kind")
-    root = Path(request.output_dir)
+    root = confined_dir(request.output_dir, "output_dir")
     relative_paths = request.relative_paths
     if request.input_dir is not None:
         if relative_paths:
             raise HTTPException(status_code=400, detail="choose input_dir or relative_paths")
-        input_root = Path(request.input_dir)
+        input_root = confined_dir(request.input_dir, "input_dir")
         if not input_root.is_dir():
             raise HTTPException(status_code=400, detail="remote input directory not found")
         discover = colab_batch.discover_images if kind == "photos" else colab_batch.discover_videos

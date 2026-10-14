@@ -243,8 +243,9 @@ class ModernEngine:
         from modules.face_analyser import get_many_faces, get_one_face, set_face_analyser_model_pack, set_face_analyser_detector_size
         from modules.processors.frame import face_swapper
 
-        if config.detector_size is not None:
-            set_face_analyser_detector_size(config.detector_size)
+        # Always apply (None -> default 640): the analyser is process-wide and
+        # a previous job in a long-lived API process may have changed it.
+        set_face_analyser_detector_size(config.detector_size)
         set_face_analyser_model_pack(config.face_model_pack)
         face_swapper.set_face_swapper_precision(config.swapper_precision)
         self.globals = globals_module
