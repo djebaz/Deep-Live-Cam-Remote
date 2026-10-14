@@ -153,3 +153,16 @@ def test_cleanup_blocks_job_registration_until_delete_finishes(client, monkeypat
     monkeypatch.setattr(api.shutil, 'rmtree', lambda p: seen.append(api.JOBS_LOCK.locked()) or real(p))
     assert client.delete('/upload/photos/batches/racy').status_code == 200
     assert seen == [True]
+
+
+def test_cleanup_refuses_when_ancestor_rooted_job_is_active(client, monkeypatch):
+    api.ensure_local_layout()
+    root = api.LOCAL_PHOTOS_DIR / 'batches' / 'child'
+    root.mkdir(parents=True)
+    (root / 'x.webp').write_bytes(b'x')
+    for job_root in (api.LOCAL_PHOTOS_DIR / 'batches', api.LOCAL_PHOTOS_DIR):
+        monkeypatch.setitem(api.JOBS, 'parent-job', SimpleNamespace(status='running', input_dir=str(job_root)))
+        assert client.delete('/upload/photos/batches/child').status_code == 409
+        assert (root / 'x.webp').exists()
+    monkeypatch.setitem(api.JOBS, 'parent-job', SimpleNamespace(status='running', input_dir=str(api.LOCAL_PHOTOS_DIR / 'batches' / 'other')))
+    assert client.delete('/upload/photos/batches/child').status_code == 200

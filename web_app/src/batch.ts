@@ -66,7 +66,8 @@ export async function startBatch(
       throw new Error(
         "Update and restart Colab API from this PR to enable relative uploads and exact preflight.",
       );
-    if (p[kind].skip_processed) {
+    // Overwrite takes precedence over skip, matching colab_batch.
+    if (p[kind].skip_processed && !p[kind].overwrite) {
       log(`Checking ${selected.length} inputs against ${p[`${kind}_output`]}`);
       const skipped = new Set<string>();
       for (let i = 0; i < selected.length; i += 1000) {
@@ -98,6 +99,7 @@ export async function startBatch(
   if (
     files === null &&
     p[kind].skip_processed &&
+    !p[kind].overwrite &&
     health.web_capabilities?.output_preflight
   ) {
     const preflight = await api.request<{

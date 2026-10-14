@@ -129,10 +129,25 @@ export class PreviewQueue {
         : this.synthetic++;
     this.queue.push({ ...frame, at, seq, order: this.order++ });
     this.bytes += frame.bytes.length;
+    let evicted = false;
     while (this.queue.length > this.capacity || this.bytes > this.maxBytes) {
       this.bytes -= this.queue.shift()!.bytes.length;
       this.dropped++;
+      evicted = true;
     }
+    // Bounds must not starve playback: if eviction left a head that is not yet
+    // due, pull the whole schedule forward so it presents now. Otherwise a
+    // sustained arrival rate that overflows before the buffer fills never shows.
+    if (evicted && this.queue.length && this.queue[0].at > now) {
+      const delta = this.queue[0].at - now;
+      if (this.anchor !== undefined) this.anchor -= delta;
+      this.queue.forEach((f) => (f.at -= delta));
+    }
+  }
+  /** Desktop cap: max(3, ceil((buffer + 2) * fps)). */
+  setCapacityFor(fps: number) {
+    const f = Number.isFinite(fps) && fps > 0 ? fps : 30;
+    this.capacity = Math.max(3, Math.ceil((this.delay + 2) * f));
   }
   take(now: number): Scheduled | undefined {
     let chosen: Scheduled | undefined;

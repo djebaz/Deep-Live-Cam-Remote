@@ -986,8 +986,13 @@ async def upload_videos(files: list[UploadFile] = File(...), batch_id: str | Non
 def delete_batch_if_idle(destination: Path) -> None:
     """Check for active jobs and delete under JOBS_LOCK so no job can start in between."""
     with JOBS_LOCK:
+        target = destination.resolve()
         for job in list(JOBS.values()):
-            if job.status in {"queued", "running"} and job.input_dir and Path(job.input_dir).resolve().is_relative_to(destination.resolve()):
+            if job.status not in {"queued", "running"} or not job.input_dir:
+                continue
+            job_root = Path(job.input_dir).resolve()
+            # A job rooted at an ancestor (e.g. recursive over all batches) also consumes this batch.
+            if job_root.is_relative_to(target) or target.is_relative_to(job_root):
                 raise HTTPException(status_code=409, detail="batch is used by an active job")
         if destination.exists():
             shutil.rmtree(destination)

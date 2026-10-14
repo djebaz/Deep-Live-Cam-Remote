@@ -54,3 +54,19 @@ test('worst-case live frame header fits the batching reserve',()=>{
  const meta={seq:Number.MAX_SAFE_INTEGER,capture_monotonic:123456789.123456789,capture_time:1.7e9+0.123456789,send_time:1.7e9+0.123456789,codec:'image/webp',width:7680,height:4320};
  assert.ok(new TextEncoder().encode(JSON.stringify(meta)).length<FRAME_HEADER_RESERVE/2);
 });
+test('overwrite takes precedence over skip processed for local and remote preflight',async()=>{
+ const p=structuredClone(defaults);p.photos.skip_processed=true;p.photos.overwrite=true;const calls:string[]=[];
+ const api={request:async(path:string)=>{calls.push(path);if(path==='/health')return {web_capabilities:{relative_uploads:true,output_preflight:true,photo_options:true}};throw new Error('stop');},upload:async()=>{throw new Error('stop');}} as unknown as Api;
+ const files=Array.from({length:1001},(_,i)=>({name:`image${i}.webp`,webkitRelativePath:''} as File));
+ await assert.rejects(()=>startBatch(api,p,'photos',files,undefined,new AbortController().signal,()=>{},()=>{}),/1000/);
+ await assert.rejects(()=>startBatch(api,p,'photos',null,undefined,new AbortController().signal,()=>{},()=>{}));
+ assert.ok(!calls.some(c=>c.includes('preflight')));
+});
+test('preview bounds evict without starving playback at a long buffer',()=>{
+ const q=new PreviewQueue(5,256);let shown=0;
+ for(let i=0;i<600;i++){const now=i/60;q.enqueue({meta:{seq:i,capture_monotonic:now},bytes:new Uint8Array([1])},now);if(q.take(now))shown++;}
+ assert.ok(shown>0);
+ const c=new PreviewQueue(5);c.setCapacityFor(60);assert.equal(c.capacity,420);
+ const b=new PreviewQueue(1,256,3);for(let i=0;i<20;i++){const now=i/60;b.enqueue({meta:{seq:i,capture_monotonic:now},bytes:new Uint8Array([1,2])},now);}
+ assert.ok(b.take(20/60));
+});

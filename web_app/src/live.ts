@@ -165,6 +165,7 @@ export class LiveSession {
     if (this.renderTimer || this.stopped) return;
     clearTimeout(this.watchdog);
     this.preview.delay = Number(this.options.preview_buffer_seconds);
+    this.preview.setCapacityFor(Number(this.options.fps));
     this.renderTimer = window.setInterval(() => this.render(), 8);
     this.statsTimer = window.setInterval(() => this.report(), 1000);
     if ("requestVideoFrameCallback" in this.video) {
@@ -388,6 +389,7 @@ export class LiveSession {
       if (options[k] !== this.options[k]) patch[k] = options[k];
     }
     this.preview.setDelay(Number(options.preview_buffer_seconds));
+    this.preview.setCapacityFor(Number(options.fps));
     this.options = { ...options };
     this.paint();
     if (Object.keys(patch).length && this.socket?.readyState === WebSocket.OPEN)
