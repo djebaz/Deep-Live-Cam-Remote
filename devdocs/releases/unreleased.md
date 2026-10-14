@@ -118,3 +118,24 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 
 - PRs: #1, #2, #3, #4, #5, #6, #7, #8, #10, #11, #12, #13, #14 (source proposal: #9)
 - Scope: PR #1 added Colab/remote/batch face-swap workflows; PR #2 adds standalone desktop app build scaffolding, versioned artifacts, Lite packaging, and manual build/release GitHub Actions; PR #3 separates photo and video processing options; PR #4 fixes Live webcam source upload and frame geometry; PR #5 consolidates Windows app patch layers; PR #6 extracts Windows app settings, API client, worker, and window core ownership; shrinks `app_base.py` into a compatibility shim; converts migration mixins to explicit methods; removes stale `async_base` aliases; replaces broad `app_base as base` imports; removes Live webcam previous-function capture; replaces migration mixin composition with explicit `MainWindow` delegates; splits output browsing, task running, live options, and live preview modules; and adds a downstream PR guard; PR #7 adds Live hot-change controls with runtime tuning over websocket, OBS profile auto-detection, capture backend/mode/scale configuration, strict input validation, capture threading with performance metrics, perf test CSV export, and virtual camera resize handling; PR #8 speeds up Stop handling by cancelling paired Live websocket tasks promptly and adding cooperative in-item cancel checks for photo/video batches. PR #10 integrates upstream and Colab GPU fixes; PR #11 records upstream ancestry; PR #12 improves headless Colab installation progress and NumPy wheel selection; PR #13 fixes capture-FPS preview drift. The monotonic follow-up preserves that scheduling while removing wall-clock dependence and retaining legacy arrival-time buffering.
+
+## Browser remote controller
+
+- Add a separate React/TypeScript Photos, Videos, Live and Outputs controller,
+  with local preferences and a private production HTTPS gateway deployment path.
+- Preserve PR #14 monotonic preview scheduling and existing DLCR packet protocols.
+- Add optional relative upload manifests and exact output preflight, without changing
+  Windows upload requests. Wire photo quality/detector/model/precision to processing.
+- Native virtual-camera output and other Windows-only features remain omitted;
+  future companion requirements are documented. Real GPU/camera/tailnet checks pending.
+
+## Web controller review follow-up
+- Forward video detector/model/precision controls and share CLI/preflight segment naming.
+- Preserve remote POSIX filenames within confined preflight roots.
+- Pause/resume binary WebSocket relay under temporary backpressure; prevent preview freezes from missing/reset sequences and encode packet headers once.
+- Clean cancelled unsubmitted upload batches while retaining potentially submitted inputs.
+- Preserve the user's detector reset, Windows static path guard and root confinement fixes.
+- Keep video manifests valid by forwarding detector size only when set; honor overwrite over skip-processed preflight.
+- Keep Live preview playing under frame/byte bounds, and attach to the backend's active job when a saved job is stale.
+- Guard batch cleanup against ancestor-rooted active jobs and use per-batch upload locks.
+- Known gap: repository-wide `ruff check` errors (pre-existing on `main`) are left for a separate PR.

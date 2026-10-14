@@ -103,6 +103,14 @@ python colab_batch.py --help
 python colab_batch.py process --help
 ```
 
+## Browser remote controller
+
+A separate React/TypeScript browser controller lives in [`web_app/`](web_app/README.md).
+It connects to the existing Colab API through a private HTTPS Tailscale gateway
+with binary WebSocket support. Photos, Videos, Live inputs and Outputs use the
+real backend. The Windows application is unchanged. See the [parity audit](web_app/docs/parity.md)
+for controls and native limitations; no companion is required for ordinary workflows.
+
 ## Desktop remote controller
 
 The current controller app connects to `colab_api.py` running in Colab over Tailscale.

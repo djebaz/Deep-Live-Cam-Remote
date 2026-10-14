@@ -8,6 +8,7 @@ import json
 import math
 import mimetypes
 import queue
+import shutil
 import struct
 import subprocess
 import threading
@@ -21,7 +22,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -111,6 +112,9 @@ class JobRequest(BaseModel):
     max_width: int = 420
     output_max_width: int | None = None
     quality: int = 18
+    detector_size: int = Field(default=640, ge=160, le=1280)
+    face_model_pack: str = "buffalo_l"
+    swapper_precision: str = "fp32"
     encoder: str = "auto"
     start_pct: float = 0.0
     end_pct: float = 100.0
@@ -133,6 +137,7 @@ class JobState:
     job_id: str
     kind: str
     status: str = "queued"
+    input_dir: str | None = None
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     exit_code: int | None = None
@@ -183,6 +188,8 @@ class JobWriter(io.TextIOBase):
 JOBS: dict[str, JobState] = {}
 CREATED_ARCHIVES: dict[str, Path] = {}
 ENGINE_LOCK = threading.Lock()
+# Serializes job registration with batch cleanup's active-job check and delete.
+JOBS_LOCK = threading.Lock()
 app = FastAPI(title="Deep-Live-Cam Remote API", version="1.0")
 
 
@@ -325,9 +332,32 @@ def get_tailscale_hostname() -> str | None:
 
 
 async def write_upload(file: UploadFile, dest: Path) -> int:
-    content = await file.read()
-    dest.write_bytes(content)
-    return len(content)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    with dest.open("wb") as handle:
+        while chunk := await file.read(1024 * 1024):
+            handle.write(chunk)
+            size += len(chunk)
+    return size
+
+
+def relative_upload_destinations(root: Path, paths: list[str], count: int) -> list[Path]:
+    """Validate the full relative-path manifest before writing any upload."""
+    if len(paths) != count or count > 1000:
+        raise HTTPException(status_code=400, detail="relative_paths must match files (maximum 1000)")
+    destinations = []
+    seen: set[str] = set()
+    for value in paths:
+        normalized = value.replace("\\", "/")
+        parts = normalized.split("/")
+        if not normalized or any(part in {"", ".", ".."} for part in parts) or ":" in normalized or "\x00" in normalized:
+            raise HTTPException(status_code=400, detail="invalid relative upload path")
+        dest = (root / normalized).resolve()
+        if root.resolve() not in dest.parents or normalized.casefold() in seen:
+            raise HTTPException(status_code=400, detail="unsafe or duplicate relative upload path")
+        seen.add(normalized.casefold())
+        destinations.append(dest)
+    return destinations
 
 
 def bool_arg(name: str, value: bool) -> list[str]:
@@ -377,8 +407,10 @@ def run_job(job: JobState, argv: list[str]) -> None:
 
 
 def start_job(kind: str, argv: list[str]) -> JobState:
-    job = JobState(job_id=uuid.uuid4().hex, kind=kind)
-    JOBS[job.job_id] = job
+    input_dir = argv[argv.index("--input-dir") + 1] if "--input-dir" in argv else None
+    job = JobState(job_id=uuid.uuid4().hex, kind=kind, input_dir=input_dir)
+    with JOBS_LOCK:
+        JOBS[job.job_id] = job
     threading.Thread(target=run_job, args=(job, argv), daemon=True).start()
     return job
 
@@ -736,6 +768,7 @@ def health() -> dict[str, Any]:
         "api_version": API_VERSION,
         "paths": paths,
         "local_paths": ensure_local_layout(),
+        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True},
         "active_jobs": [job.snapshot() for job in JOBS.values() if job.status in {"queued", "running"}],
     }
 
@@ -745,6 +778,65 @@ def list_outputs(kind: str) -> dict[str, Any]:
     files = output_file_entries(kind)
     public_files = [{key: value for key, value in item.items() if key != "path"} for item in files]
     return {"ok": True, "kind": kind, "count": len(public_files), "files": public_files}
+
+
+class OutputPreflightRequest(BaseModel):
+    output_dir: str
+    relative_paths: list[str] = Field(default_factory=list)
+    input_dir: str | None = None
+    recursive: bool = True
+    ss: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    duration: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+def preflight_roots() -> list[Path]:
+    return [DRIVE_ROOT, LOCAL_ROOT, LOCAL_OUTPUT_PHOTOS_DIR, LOCAL_OUTPUT_VIDEOS_DIR]
+
+
+def confined_dir(value: str | Path, label: str, roots: list[Path] | None = None) -> Path:
+    """Resolve a client-supplied directory and require it to sit under a layout root."""
+    path = Path(value).resolve()
+    for root in roots if roots is not None else preflight_roots():
+        resolved = root.resolve()
+        if path == resolved or resolved in path.parents:
+            return path
+    raise HTTPException(status_code=400, detail=f"{label} is outside the allowed folders")
+
+
+@app.post("/outputs/{kind}/preflight")
+def output_preflight(kind: str, request: OutputPreflightRequest) -> dict[str, Any]:
+    if kind not in {"photos", "videos"}:
+        raise HTTPException(status_code=404, detail="unknown kind")
+    output_root = confined_dir(request.output_dir, "output_dir")
+    relative_paths = request.relative_paths
+    if request.input_dir is not None:
+        if relative_paths:
+            raise HTTPException(status_code=400, detail="choose input_dir or relative_paths")
+        input_root = confined_dir(request.input_dir, "input_dir")
+        if not input_root.is_dir():
+            raise HTTPException(status_code=400, detail="remote input directory not found")
+        discover = colab_batch.discover_images if kind == "photos" else colab_batch.discover_videos
+        # Existing POSIX filenames may contain ':' or a literal backslash. This
+        # is an existence check, not upload filename normalization.
+        relative_paths = [path.relative_to(input_root).as_posix()
+                          for path in discover(input_root, request.recursive)
+                          if path.resolve().is_relative_to(input_root)]
+    processed = []
+    for relative in relative_paths:
+        path = Path(relative)
+        if not relative or path.is_absolute() or ".." in path.parts or "\x00" in relative:
+            raise HTTPException(status_code=400, detail="invalid preflight relative path")
+        if kind == "videos":
+            output = colab_batch.video_output_path(output_root, relative, request.ss, request.duration)
+        else:
+            output = output_root / path.parent / f"{path.stem}_face_swapped{path.suffix.lower()}"
+        output = confined_dir(output, "output path", [output_root])
+        if output.is_file():
+            processed.append(relative)
+    result = {"processed": processed}
+    if request.input_dir is not None:
+        result.update({"total": len(relative_paths), "remaining": len(relative_paths) - len(processed)})
+    return result
 
 
 @app.get("/outputs/{kind}/zip")
@@ -847,28 +939,79 @@ async def upload_source(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"ok": True, "path": str(dest), "size": size}
 
 
-@app.post("/upload/photos")
-async def upload_photos(files: list[UploadFile] = File(...), batch_id: str | None = None) -> dict[str, Any]:
+# One lock per (storage, batch); entries are dropped once nobody holds or awaits them,
+# so unrelated batches never block each other and the table cannot grow.
+UPLOAD_LOCKS: dict[tuple[str, str], list[Any]] = {}
+
+
+@contextlib.asynccontextmanager
+async def upload_lock(base_dir: Path, batch_id: str | None):
+    key = (str(base_dir), safe_batch_id(batch_id))
+    entry = UPLOAD_LOCKS.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] == 0:
+            UPLOAD_LOCKS.pop(key, None)
+
+
+async def upload_media(kind: str, files: list[UploadFile], batch_id: str | None, relative_paths: list[str] | None) -> dict[str, Any]:
     paths = ensure_local_layout()
-    upload_dir = batch_upload_dir(LOCAL_PHOTOS_DIR, batch_id)
-    uploaded = []
-    for file in files:
-        dest = upload_dir / safe_upload_name(file.filename, f"photo_{len(uploaded)}.jpg")
-        size = await write_upload(file, dest)
-        uploaded.append({"path": str(dest), "size": size})
-    return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": str(upload_dir), "output_dir": paths["output_photos_dir"], "batch_id": safe_batch_id(batch_id)}
+    base = LOCAL_PHOTOS_DIR if kind == "photos" else LOCAL_VIDEOS_DIR
+    async with upload_lock(base, batch_id):
+        upload_dir = batch_upload_dir(base, batch_id)
+        destinations = relative_upload_destinations(upload_dir, relative_paths, len(files)) if relative_paths is not None else None
+        uploaded = []
+        for index, file in enumerate(files):
+            fallback = f"photo_{index}.jpg" if kind == "photos" else f"video_{index}.mp4"
+            dest = destinations[index] if destinations is not None else upload_dir / safe_upload_name(file.filename, fallback)
+            size = await write_upload(file, dest)
+            uploaded.append({"path": str(dest), "size": size})
+        return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": str(upload_dir), "output_dir": paths[f"output_{kind}_dir"], "batch_id": safe_batch_id(batch_id)}
+
+
+@app.post("/upload/photos")
+async def upload_photos(files: list[UploadFile] = File(...), batch_id: str | None = None, relative_paths: list[str] | None = Form(default=None)) -> dict[str, Any]:
+    return await upload_media("photos", files, batch_id, relative_paths)
 
 
 @app.post("/upload/videos")
-async def upload_videos(files: list[UploadFile] = File(...), batch_id: str | None = None) -> dict[str, Any]:
-    paths = ensure_local_layout()
-    upload_dir = batch_upload_dir(LOCAL_VIDEOS_DIR, batch_id)
-    uploaded = []
-    for file in files:
-        dest = upload_dir / safe_upload_name(file.filename, f"video_{len(uploaded)}.mp4")
-        size = await write_upload(file, dest)
-        uploaded.append({"path": str(dest), "size": size})
-    return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": str(upload_dir), "output_dir": paths["output_videos_dir"], "batch_id": safe_batch_id(batch_id)}
+async def upload_videos(files: list[UploadFile] = File(...), batch_id: str | None = None, relative_paths: list[str] | None = Form(default=None)) -> dict[str, Any]:
+    return await upload_media("videos", files, batch_id, relative_paths)
+
+
+def delete_batch_if_idle(destination: Path) -> None:
+    """Check for active jobs and delete under JOBS_LOCK so no job can start in between."""
+    with JOBS_LOCK:
+        target = destination.resolve()
+        for job in list(JOBS.values()):
+            if job.status not in {"queued", "running"} or not job.input_dir:
+                continue
+            job_root = Path(job.input_dir).resolve()
+            # A job rooted at an ancestor (e.g. recursive over all batches) also consumes this batch.
+            if job_root.is_relative_to(target) or target.is_relative_to(job_root):
+                raise HTTPException(status_code=409, detail="batch is used by an active job")
+        if destination.exists():
+            shutil.rmtree(destination)
+
+
+@app.delete("/upload/{kind}/batches/{batch_id}")
+async def cleanup_upload_batch(kind: str, batch_id: str) -> dict[str, Any]:
+    if kind not in {"photos", "videos"}:
+        raise HTTPException(status_code=400, detail="invalid upload kind")
+    if batch_id != safe_batch_id(batch_id):
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+    base = LOCAL_PHOTOS_DIR if kind == "photos" else LOCAL_VIDEOS_DIR
+    async with upload_lock(base, batch_id):
+        root = base / "batches"
+        destination = root / batch_id
+        if root.is_symlink() or destination.is_symlink() or destination.resolve().parent != root.resolve():
+            raise HTTPException(status_code=400, detail="invalid batch directory")
+        await asyncio.to_thread(delete_batch_if_idle, destination)
+        return {"ok": True, "batch_id": batch_id}
 
 
 @app.delete("/upload/clear")
@@ -883,10 +1026,29 @@ def clear_uploads() -> dict[str, Any]:
     return {"ok": True, "cleared": len(cleared)}
 
 
+def model_args(request: JobRequest, always_detector_size: bool) -> list[str]:
+    """Apply identical model validation to both batch workflows.
+
+    Videos forward detector_size only when the client set it: an omitted value
+    stays None in the CLI config signature, so existing manifests keep matching.
+    """
+    if request.detector_size % 32 or request.face_model_pack not in LIVE_FACE_MODEL_PACKS or request.swapper_precision not in LIVE_SWAPPER_PRECISIONS:
+        raise HTTPException(status_code=400, detail="invalid detector size, model pack, or precision")
+    args = ["--face-model-pack", request.face_model_pack,
+            "--swapper-precision", request.swapper_precision]
+    if always_detector_size or "detector_size" in request.model_fields_set:
+        args = ["--detector-size", str(request.detector_size), *args]
+    return args
+
+
 @app.post("/jobs/photos")
 def start_photos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
-    argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR)]
+    if not 1 <= request.quality <= 100:
+        raise HTTPException(status_code=400, detail="invalid photo quality")
+    argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request, True)]
+    if "quality" in request.model_fields_set:
+        argv.extend(["--image-quality", str(request.quality)])
     if request.output_max_width is not None:
         argv.extend(["--output-max-width", str(request.output_max_width)])
     job = start_job("photos", argv)
@@ -896,9 +1058,12 @@ def start_photos(request: JobRequest) -> dict[str, Any]:
 @app.post("/jobs/videos")
 def start_videos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
+    if not 0 <= request.start_pct < request.end_pct <= 100:
+        raise HTTPException(status_code=400, detail="start percentage must be lower than end percentage")
     argv = [
         "process",
         *common_args(request, VIDEOS_DIR, OUTPUT_VIDEOS_DIR),
+        *model_args(request, False),
         "--max-fps", str(request.max_fps),
         "--max-width", str(request.max_width),
         "--quality", str(request.quality),
