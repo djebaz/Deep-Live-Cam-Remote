@@ -29,9 +29,14 @@ uploads, exact nested preflight, video MP4 naming/range, photo option plumbing,
 WebP quality and output dimensions, listing/download, cancellation flag and remote
 preflight. Existing geometry/manifest tests also run. No GPU quality is inferred.
 
-Latest results: **13 web tests passed; 9 Python tests passed**. The Python run
-reported one Starlette/httpx deprecation warning. Production build, syntax and
-whitespace checks passed.
+Latest results at `4e51d24` (final combined commit): **25 web tests passed;
+34 Python tests passed**; `npm --prefix web_app run build` (strict TypeScript check
+and Vite production build) passed; `python -m py_compile colab_api.py colab_batch.py`
+and `git diff --check` passed. The Python run reported one Starlette/httpx
+deprecation warning. `tests/test_ui_live_preview.py` and
+`tests/test_remote_live_preview.py` were excluded because they need PySide6, which
+is not installed in the validation environment; they cover the Windows app, which
+this PR does not change.
 
 ## Acceptance still unverified
 
@@ -55,16 +60,13 @@ primary production setup. Sites publication verifies frontend hosting only.
 
 ## PR #15 review follow-up
 
-Pulled user commit `aaf6de1` before committing the review follow-up. Its detector
-reset, Windows path guard and known-layout-root policy are retained. See
-[review resolutions](review-15.md).
+The follow-up commits (`aaf6de1`, `17795e5`, `c628a28`, `bbad51d`, `95fc01c`,
+`4e51d24`) were validated as above on the final commit. Each fix has a regression
+test; the starvation test for bounded preview eviction was confirmed to fail on the
+previous code. See [review resolutions](review-15.md) for the per-finding outcomes.
 
-Before that pull: 20 web tests, 15 focused Python tests and the production build
-passed. After reconciliation, the already-started web run passed 20 tests and the
-production build passed. An attempted full Python run could not collect the two
-PySide6 desktop preview modules. A run excluding them reported 29 passed and one
-failure: the new review fixture put input folders outside its mocked LOCAL_ROOT.
-The fixture now mirrors real local root nesting; that correction has **not been
-rerun**. Final validation was stopped at the user's explicit request to push.
-Do not treat the final combined commit as fully validated. No further tests or
-validation were started after that instruction. Hardware gaps above still apply.
+Ruff: `ruff check` reports errors in files unrelated to this PR (for example
+`colab_batch.py` E701/F401, notebook sources, `windows_app/*` re-exports) and on
+`main`; the cleanup is deliberately left to a separate PR. That includes an unused
+`io` import in `tests/test_web_controller_api.py`, which this PR touches. Hardware
+gaps above still apply.
