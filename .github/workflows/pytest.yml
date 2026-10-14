@@ -46,6 +46,15 @@ jobs:
           echo "QT_QPA_PLATFORM=offscreen" >> $GITHUB_ENV
           echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
 
+      - name: Install newer libstdc++ (GCC toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common gnupg2
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt-get update
+          # Upgrade libstdc++6 from the PPA to provide GLIBCXX_3.4.32 required by some wheels
+          sudo apt-get install -y libstdc++6
+
       - name: Cache pip
         uses: actions/cache@v4
         with:
