@@ -2,7 +2,6 @@ import { Api, uploadSource } from "./api";
 import { HOT, type Values } from "./settings";
 import {
   pack,
-  packetSize,
   unpack,
   PACKET_LIMIT,
   PreviewQueue,
@@ -287,7 +286,10 @@ export class LiveSession {
         },
         bytes,
       };
-      const size = packetSize([f]) - 8;
+      // The capture metadata has a fixed set of scalar keys. Reserve a
+      // conservative header budget while batching; serialize once at flush
+      // after setting the actual send_time, then reuse those encoded bytes.
+      const size = 8 + bytes.length + 1024;
       if (size + 8 > PACKET_LIMIT)
         throw new Error("Frame exceeds 4 MiB. Reduce Send scale or quality.");
       if (this.batchBytes + size > PACKET_LIMIT) this.flush();
@@ -326,8 +328,14 @@ export class LiveSession {
       return;
     }
     this.batch.forEach((f) => (f.meta.send_time = Date.now() / 1000));
-    const packet = pack(this.batch);
-    this.socket.send(packet);
+    let packet: ArrayBuffer;
+    try {
+      packet = pack(this.batch);
+      this.socket.send(packet);
+    } catch (error) {
+      this.fail(String(error));
+      return;
+    }
     this.sentBytes += packet.byteLength;
     const now = performance.now();
     for (const f of this.batch) this.inFlight.set(Number(f.meta.seq), now);

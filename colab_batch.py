@@ -651,6 +651,15 @@ def scan_identities(args: argparse.Namespace) -> int:
     return 0
 
 
+def video_output_path(output_root: Path, relative: str, ss: float = 0.0, duration: float | None = None) -> Path:
+    """Mirror the input folder and preserve the CLI's explicit segment suffix."""
+    path = Path(relative)
+    suffix = f"_ss{ss:g}" if ss else ""
+    if duration is not None:
+        suffix += f"_dur{duration:g}"
+    return output_root / path.parent / f"{path.stem}_face_swapped{suffix}.mp4"
+
+
 def process_batch(args: argparse.Namespace) -> int:
     config = ProcessConfig(
         input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
@@ -665,6 +674,8 @@ def process_batch(args: argparse.Namespace) -> int:
         opacity=args.opacity, sharpness=args.sharpness, mouth_mask_size=args.mouth_mask_size,
         poisson_blend=args.poisson_blend, color_correction=args.color_correction,
         interpolation_weight=args.interpolation_weight, enhancer=args.enhancer,
+        detector_size=args.detector_size, face_model_pack=args.face_model_pack,
+        swapper_precision=args.swapper_precision,
     )
     if not config.input_dir.is_dir(): raise NotADirectoryError(config.input_dir)
     if config.source_face and not config.source_face.is_file(): raise FileNotFoundError(config.source_face)
@@ -678,15 +689,13 @@ def process_batch(args: argparse.Namespace) -> int:
     manifest = load_json(manifest_path, {"version": 1, "items": {}})
     items = manifest.setdefault("items", {})
     report: dict[str, Any] = {"engine": ENGINE_VERSION, "config_signature": signature, "completed": [], "skipped": [], "failed": []}
-    suffix = f"_ss{config.ss:g}" if config.ss else ""
-    if config.duration is not None: suffix += f"_dur{config.duration:g}"
     cancel_event = getattr(args, "cancel_event", None)
     for number, video in enumerate(videos, 1):
         if cancel_event is not None and cancel_event.is_set():
             print("  cancel requested; stopping before next video")
             break
         relative = video.relative_to(config.input_dir).as_posix()
-        output = config.output_dir / Path(relative).parent / f"{video.stem}_face_swapped{suffix}.mp4"
+        output = video_output_path(config.output_dir, relative, config.ss, config.duration)
         key = manifest_key(video, config.input_dir, signature)
         print(f"\n[{number}/{len(videos)}] {relative}")
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
@@ -837,6 +846,9 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--color-correction", action=argparse.BooleanOptionalAction, default=False)
         command.add_argument("--interpolation-weight", type=float, default=0.0)
         command.add_argument("--enhancer", choices=["none", "gfpgan", "gpen256", "gpen512"], default="none")
+        command.add_argument("--detector-size", type=int, default=None)
+        command.add_argument("--face-model-pack", choices=["buffalo_l", "buffalo_m", "buffalo_s"], default="buffalo_l")
+        command.add_argument("--swapper-precision", choices=["fp32", "fp16"], default="fp32")
 
     process = subparsers.add_parser("process", help="process every input video through the modern engine")
     add_common_process_args(process)
@@ -854,9 +866,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_process_args(photos)
     photos.add_argument("--output-max-width", type=int, default=None, help="scale output to max width (preserves aspect ratio)")
     photos.add_argument("--image-quality", type=int, default=None, help="JPEG/WebP quality; PNG/BMP are lossless")
-    photos.add_argument("--detector-size", type=int, default=None)
-    photos.add_argument("--face-model-pack", choices=["buffalo_l", "buffalo_m", "buffalo_s"], default="buffalo_l")
-    photos.add_argument("--swapper-precision", choices=["fp32", "fp16"], default="fp32")
     photos.set_defaults(func=process_photos)
     return parser
 

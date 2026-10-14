@@ -5,6 +5,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { resolve, dirname, extname, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { relayWebSockets } from "./relay.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export function createGateway({
   backends,
@@ -66,6 +67,7 @@ export function createGateway({
     res.end(JSON.stringify(value));
   };
   const allowed = (path, method) => {
+    if (method === "DELETE" && /^\/upload\/(photos|videos)\/batches\/[a-zA-Z0-9_-]{1,80}$/.test(path)) return true;
     if (
       method === "GET" &&
       (/^\/health$/.test(path) ||
@@ -127,7 +129,7 @@ export function createGateway({
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
       res.setHeader(
         "Access-Control-Allow-Headers",
         "Authorization, Content-Type, X-DLCR-Backend, Range",
@@ -325,30 +327,10 @@ export function createGateway({
         wss.handleUpgrade(req, socket, head, (client) => {
           sessions.add(client);
           remote.removeListener("error", deny);
-          const close = () => {
+          relayWebSockets(client, remote, () => {
             sessions.delete(client);
             sessions.delete(remote);
-            client.terminate();
-            remote.terminate();
-          };
-          client.on("close", close);
-          remote.on("close", close);
-          client.on("error", close);
-          remote.on("error", close);
-          const forward = (to, data, binary) => {
-            if (
-              to.readyState !== WebSocket.OPEN ||
-              to.bufferedAmount > 8 * 1024 * 1024
-            ) {
-              close();
-              return;
-            }
-            to.send(data, { binary }, (err) => {
-              if (err) close();
-            });
-          };
-          client.on("message", (data, binary) => forward(remote, data, binary));
-          remote.on("message", (data, binary) => forward(client, data, binary));
+          });
         }),
       );
       remote.on("close", () => sessions.delete(remote));

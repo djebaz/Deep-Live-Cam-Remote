@@ -6,39 +6,26 @@ export interface Frame {
 export const PACKET_LIMIT = 4 * 1024 * 1024;
 const encoder = new TextEncoder(),
   decoder = new TextDecoder("utf-8", { fatal: true });
-export function packetSize(frames: Frame[]) {
-  return (
-    8 +
-    frames.reduce(
-      (n, f) =>
-        n + 8 + encoder.encode(JSON.stringify(f.meta)).length + f.bytes.length,
-      0,
-    )
-  );
+export interface EncodedFrame { header: Uint8Array; bytes: Uint8Array; }
+export function encodeFrames(frames: Frame[]): EncodedFrame[] {
+  return frames.map(frame => ({header: encoder.encode(JSON.stringify(frame.meta)), bytes: frame.bytes}));
+}
+export function packetSize(frames: EncodedFrame[]) {
+  return 8 + frames.reduce((total, frame) => total + 8 + frame.header.length + frame.bytes.length, 0);
 }
 export function pack(frames: Frame[]): ArrayBuffer {
-  if (!frames.length || frames.length > 256)
-    throw new Error("Invalid frame count");
-  const length = packetSize(frames);
+  if (!frames.length || frames.length > 256) throw new Error("Invalid frame count");
+  const encoded = encodeFrames(frames);
+  const length = packetSize(encoded);
   if (length > PACKET_LIMIT) throw new Error("Live packet exceeds 4 MiB");
-  const buffer = new ArrayBuffer(length),
-    view = new DataView(buffer),
-    bytes = new Uint8Array(buffer);
-  bytes.set(encoder.encode("DLCR"));
-  view.setUint16(4, 1);
-  view.setUint16(6, frames.length);
+  const buffer = new ArrayBuffer(length), view = new DataView(buffer), bytes = new Uint8Array(buffer);
+  bytes.set([68, 76, 67, 82]);view.setUint16(4, 1);view.setUint16(6, frames.length);
   let offset = 8;
-  for (const f of frames) {
-    const header = encoder.encode(JSON.stringify(f.meta));
-    if (header.length > 1000000 || f.bytes.length > 50000000)
-      throw new Error("Frame exceeds protocol limits");
-    view.setUint32(offset, header.length);
-    view.setUint32(offset + 4, f.bytes.length);
-    offset += 8;
-    bytes.set(header, offset);
-    offset += header.length;
-    bytes.set(f.bytes, offset);
-    offset += f.bytes.length;
+  for (const frame of encoded) {
+    if (frame.header.length > 1000000 || frame.bytes.length > 50000000) throw new Error("Frame exceeds protocol limits");
+    view.setUint32(offset, frame.header.length);view.setUint32(offset + 4, frame.bytes.length);offset += 8;
+    bytes.set(frame.header, offset);offset += frame.header.length;
+    bytes.set(frame.bytes, offset);offset += frame.bytes.length;
   }
   return buffer;
 }
@@ -81,8 +68,9 @@ export function unpack(buffer: ArrayBuffer, fallback: Meta = {}): Frame[] {
 interface Scheduled extends Frame {
   at: number;
   seq: number;
+  order: number;
 }
-/** Sequence identifies frames. Only relative monotonic capture offsets schedule them. */
+/** Source sequences are diagnostics; local arrival order and monotonic offsets govern playback. */
 export class PreviewQueue {
   queue: Scheduled[] = [];
   dropped = 0;
@@ -90,6 +78,8 @@ export class PreviewQueue {
   private anchor?: number;
   private last = -1;
   private synthetic = 0;
+  private order = 0;
+  private previousCapture?: number;
   bytes = 0;
   constructor(
     public delay = 1,
@@ -102,6 +92,11 @@ export class PreviewQueue {
       typeof raw === "number" && Number.isFinite(raw) && raw >= 0
         ? raw
         : undefined;
+    // A new capture epoch must not inherit deadlines from a previous counter.
+    if(capture !== undefined && this.previousCapture !== undefined && capture < this.previousCapture) {
+      this.dropped += this.queue.length;this.queue = [];this.bytes = 0;this.anchor = undefined;
+    }
+    if(capture !== undefined)this.previousCapture = capture;
     if (this.anchor === undefined) {
       this.anchor = now + this.delay;
       this.firstCapture = capture;
@@ -117,11 +112,7 @@ export class PreviewQueue {
       Number.isFinite(rawSeq)
         ? rawSeq
         : this.synthetic++;
-    if (seq <= this.last) {
-      this.dropped++;
-      return;
-    }
-    this.queue.push({ ...frame, at, seq });
+    this.queue.push({ ...frame, at, seq, order: this.order++ });
     this.bytes += frame.bytes.length;
     while (this.queue.length > this.capacity || this.bytes > this.maxBytes) {
       this.bytes -= this.queue.shift()!.bytes.length;
@@ -133,14 +124,14 @@ export class PreviewQueue {
     while (this.queue.length && this.queue[0].at <= now) {
       const f = this.queue.shift()!;
       this.bytes -= f.bytes.length;
-      if (f.seq <= this.last) {
+      if (f.order <= this.last) {
         this.dropped++;
         continue;
       }
       if (chosen) this.dropped++;
       chosen = f;
     }
-    if (chosen) this.last = chosen.seq;
+    if (chosen) this.last = chosen.order;
     return chosen;
   }
   setDelay(delay: number) {
@@ -156,6 +147,8 @@ export class PreviewQueue {
     this.firstCapture = undefined;
     this.last = -1;
     this.synthetic = 0;
+    this.order = 0;
+    this.previousCapture = undefined;
     this.dropped = 0;
   }
 }

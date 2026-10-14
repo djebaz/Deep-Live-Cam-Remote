@@ -60,11 +60,14 @@ backend is required; private same-origin deployment is the supported baseline.
 
 Photos/Videos support source normalization, local file/folder uploads, remote
 paths, independent processing options, progress/logs, cancellation and recovery.
-Local preflight checks exact output names in the requested output directory;
+Preflight checks exact output names in the requested output directory under the
+known Drive/local layout roots (including subfolders);
 all-processed selection creates no upload and no job. It intentionally checks
 output existence like desktop preflight, not processing-config equivalence.
 Uploads preserve paths relative to the selected folder; remote output naming
-follows the real CLI. Source and local selections must be reselected after reload,
+follows the real CLI through a shared output-path helper. Preparation cancellation
+cleans the isolated input batch; an ambiguous job submission retains inputs.
+Source and local selections must be reselected after reload,
 while preferences and known active job IDs persist. The access token does not.
 
 Live uses browser cameras, including OBS Virtual Camera when exposed as an input,
@@ -72,6 +75,9 @@ DLCR v1 binary packets, hot configuration messages, bounded transport and previe
 queues, monotonic timing and separate capture/send/receive/display FPS. Restart-only
 controls are disabled during a run. Stop releases browser resources. A prolonged
 15-second acknowledgement gap stops the session instead of filling memory.
+The gateway pauses socket reads above 8 MiB queued writes, resumes below 4 MiB,
+and terminates a persistent 30-second write stall. Source sequence resets or
+missing sequence metadata cannot lock preview playback.
 
 Outputs browse only fixed Drive/local roots, support WebP/photo zoom/autoplay,
 load-based visible duration, bounded prefetch/cache, streamed video, downloads and

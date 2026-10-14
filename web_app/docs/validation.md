@@ -52,3 +52,19 @@ capability is unavailable. Real GPU processing, Tailscale HTTPS deployment, came
 permissions, OBS device enumeration and live resource profiling remain unverified.
 Private-network permission policies vary; same-origin gateway hosting is the
 primary production setup. Sites publication verifies frontend hosting only.
+
+## PR #15 review follow-up
+
+Pulled user commit `aaf6de1` before committing the review follow-up. Its detector
+reset, Windows path guard and known-layout-root policy are retained. See
+[review resolutions](review-15.md).
+
+Before that pull: 20 web tests, 15 focused Python tests and the production build
+passed. After reconciliation, the already-started web run passed 20 tests and the
+production build passed. An attempted full Python run could not collect the two
+PySide6 desktop preview modules. A run excluding them reported 29 passed and one
+failure: the new review fixture put input folders outside its mocked LOCAL_ROOT.
+The fixture now mirrors real local root nesting; that correction has **not been
+rerun**. Final validation was stopped at the user's explicit request to push.
+Do not treat the final combined commit as fully validated. No further tests or
+validation were started after that instruction. Hardware gaps above still apply.

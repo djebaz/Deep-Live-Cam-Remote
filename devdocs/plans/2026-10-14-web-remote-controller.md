@@ -29,3 +29,9 @@ Progress: implementation pushed and draft PR #15 opened for early review. Browse
 workflows, gateway and additive backend changes are present. Windows files and
 notebooks remain unchanged. Final local checks and publication proceed in the same
 PR; native companion implementation excluded by user instruction.
+
+Review follow-up: pulled user commit aaf6de1 and retained its three priority fixes.
+Reconciled video option plumbing, shared segment naming, POSIX preflight names,
+relay backpressure, sequence-independent preview, one-pass packet encoding and
+cancelled preparation cleanup. Review table: web_app/docs/review-15.md.
+Final tests/validation stopped at explicit user request; push only, no merge.

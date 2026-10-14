@@ -139,38 +139,53 @@ export async function startBatch(
     signal,
     progress,
   );
-  if (files !== null) {
-    const batch = crypto.randomUUID();
-    // Upload sequentially to bound memory and make preparation cancellation prompt.
-    for (let i = 0; i < selected.length; i++) {
-      signal.throwIfAborted();
-      const x = selected[i];
-      log(`Uploading ${i + 1}/${selected.length}: ${x.relative}`);
-      const form = new FormData();
-      form.append("files", x.file, x.file.name);
-      form.append("relative_paths", x.relative);
-      const r = await api.upload<{ input_dir: string }>(
-        `/upload/${kind}?batch_id=${batch}`,
-        form,
-        signal,
-        (l, t) => progress(i + (t ? l / t : 0), selected.length),
-      );
-      if (!r.input_dir?.endsWith("/" + batch))
-        throw new Error("Backend did not return an isolated upload directory.");
-      input = r.input_dir;
+  let batch: string | undefined;
+  let submissionAttempted = false;
+  try {
+    if (files !== null) {
+      batch = crypto.randomUUID();
+      // Upload sequentially to bound memory and make preparation cancellation prompt.
+      for (let i = 0; i < selected.length; i++) {
+        signal.throwIfAborted();
+        const x = selected[i];
+        log(`Uploading ${i + 1}/${selected.length}: ${x.relative}`);
+        const form = new FormData();
+        form.append("files", x.file, x.file.name);
+        form.append("relative_paths", x.relative);
+        const r = await api.upload<{ input_dir: string }>(
+          `/upload/${kind}?batch_id=${batch}`,
+          form,
+          signal,
+          (l, t) => progress(i + (t ? l / t : 0), selected.length),
+        );
+        if (!r.input_dir?.endsWith("/" + batch))
+          throw new Error("Backend did not return an isolated upload directory.");
+        input = r.input_dir;
+      }
+    }
+    signal.throwIfAborted();
+    log(
+      "Submitting job once. A lost response will not be automatically retried.",
+    );
+    // Do not abort a submission midway: cancellation is sent once the id is known.
+    submissionAttempted = true;
+    const job = await api.request<{ job_id: string; status: string }>(
+      `/jobs/${kind}`,
+      "POST",
+      jobPayload(p, kind, sourcePath, input),
+    );
+    if (!job.job_id)
+      throw new Error("No job id returned. Check active jobs before retrying.");
+    return job;
+  } finally {
+    // A lost submission response may hide a running job: retain its inputs.
+    if (batch && !submissionAttempted && health.web_capabilities?.batch_cleanup) {
+      try {
+        await api.request(`/upload/${kind}/batches/${batch}`, "DELETE");
+        log("Removed the unsubmitted upload batch.");
+      } catch {
+        log(`Upload cleanup could not be confirmed for batch ${batch}. Retry cleanup after reconnecting.`);
+      }
     }
   }
-  signal.throwIfAborted();
-  log(
-    "Submitting job once. A lost response will not be automatically retried.",
-  );
-  // Do not abort a submission midway: cancellation is sent once the id is known.
-  const job = await api.request<{ job_id: string; status: string }>(
-    `/jobs/${kind}`,
-    "POST",
-    jobPayload(p, kind, sourcePath, input),
-  );
-  if (!job.job_id)
-    throw new Error("No job id returned. Check active jobs before retrying.");
-  return job;
 }

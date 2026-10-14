@@ -128,3 +128,10 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
   Windows upload requests. Wire photo quality/detector/model/precision to processing.
 - Native virtual-camera output and other Windows-only features remain omitted;
   future companion requirements are documented. Real GPU/camera/tailnet checks pending.
+
+## Web controller review follow-up
+- Forward video detector/model/precision controls and share CLI/preflight segment naming.
+- Preserve remote POSIX filenames within confined preflight roots.
+- Pause/resume binary WebSocket relay under temporary backpressure; prevent preview freezes from missing/reset sequences and encode packet headers once.
+- Clean cancelled unsubmitted upload batches while retaining potentially submitted inputs.
+- Preserve the user's detector reset, Windows static path guard and root confinement fixes.
