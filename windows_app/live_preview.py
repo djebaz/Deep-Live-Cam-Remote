@@ -12,7 +12,6 @@ from windows_app.live_options import (
     DEFAULT_LIVE_FPS,
     DEFAULT_LIVE_PREVIEW_BUFFER_SECONDS,
     DEFAULT_LIVE_PREVIEW_SCALE,
-    LIVE_PREVIEW_SCALES,
     _live_options,
     _live_setting,
 )

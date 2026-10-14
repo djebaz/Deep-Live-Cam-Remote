@@ -12,12 +12,12 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem
 
 from windows_app.api_client import ApiClient, format_size, is_local_path, job_payload, local_files
 from windows_app.task_runner import (
-    OutputTaskWorker,
-    _download_bytes_with_progress,
+    OutputTaskWorker,  # noqa: F401 - re-exported for output_browser
+    _download_bytes_with_progress,  # noqa: F401 - re-exported for output_browser
     _download_file_fast,
     _ensure_output_worker_state,
     _start_output_task,
-    _start_output_task_with_progress,
+    _start_output_task_with_progress,  # noqa: F401 - re-exported for output_browser
 )
 from windows_app.settings import AppSettings, PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 from windows_app.window_core import WindowCore as MainWindow

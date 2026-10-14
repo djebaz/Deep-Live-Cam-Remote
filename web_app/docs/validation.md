@@ -65,8 +65,5 @@ The follow-up commits (`aaf6de1`, `17795e5`, `c628a28`, `bbad51d`, `95fc01c`,
 test; the starvation test for bounded preview eviction was confirmed to fail on the
 previous code. See [review resolutions](review-15.md) for the per-finding outcomes.
 
-Ruff: `ruff check` reports errors in files unrelated to this PR (for example
-`colab_batch.py` E701/F401, notebook sources, `windows_app/*` re-exports) and on
-`main`; the cleanup is deliberately left to a separate PR. That includes an unused
-`io` import in `tests/test_web_controller_api.py`, which this PR touches. Hardware
-gaps above still apply.
+Ruff: errors that predated this PR were fixed in a follow-up PR (see
+`devdocs/releases/unreleased.md`). Hardware gaps above still apply.

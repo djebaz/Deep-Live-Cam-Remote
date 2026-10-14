@@ -1,5 +1,4 @@
 """API/CLI integration checks using temporary media and an identity engine, no GPU."""
-import io
 from pathlib import Path
 from types import SimpleNamespace
 
