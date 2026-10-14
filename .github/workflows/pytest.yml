@@ -34,6 +34,18 @@ jobs:
           git fetch origin "refs/pull/${PR}/head:refs/remotes/origin/pr-${PR}"
           git checkout -q "refs/remotes/origin/pr-${PR}"
 
+      - name: Install system dependencies (libEGL / Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1-mesa-dri libxkbcommon0 xvfb
+
+      - name: Start Xvfb and set environment
+        run: |
+          Xvfb :99 -screen 0 1280x1024x24 & sleep 2
+          echo "DISPLAY=:99.0" >> $GITHUB_ENV
+          echo "QT_QPA_PLATFORM=offscreen" >> $GITHUB_ENV
+          echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
+
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -53,7 +65,7 @@ jobs:
       - name: Install dependencies
         run: |
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
-          python -m pip install pytest
+          python -m pip install pytest httpx2
 
       - name: Run tests
         run: pytest -q
