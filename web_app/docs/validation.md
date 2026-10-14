@@ -19,7 +19,9 @@ validation and requested a browser-only first PR without a companion.
 The gateway integration test runs the actual production gateway against a local
 HTTP/WebSocket fixture. It verifies auth, exact origins and backend allowlist,
 private-network preflight, Range relay, media ticket scope, binary/text relay and
-single-use WebSocket tickets. It does not contact Colab or Tailscale.
+single-use WebSocket tickets. Resource tests cover bounded/cancelled photo fetches,
+object URL release, camera permission resolving after Stop, and preference restore.
+It does not contact Colab or Tailscale.
 
 Python checks exercise actual API handlers/parser with temporary media and an
 identity engine. They verify folder paths, traversal rejection, legacy flat
@@ -27,7 +29,7 @@ uploads, exact nested preflight, video MP4 naming/range, photo option plumbing,
 WebP quality and output dimensions, listing/download, cancellation flag and remote
 preflight. Existing geometry/manifest tests also run. No GPU quality is inferred.
 
-Latest results: **10 web tests passed; 9 Python tests passed**. The Python run
+Latest results: **13 web tests passed; 9 Python tests passed**. The Python run
 reported one Starlette/httpx deprecation warning. Production build, syntax and
 whitespace checks passed.
 

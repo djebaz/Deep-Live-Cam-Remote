@@ -213,6 +213,32 @@ function App() {
       shutdown();
     };
   }, []);
+  useEffect(() => {
+    if (!connected) return;
+    const controller = new AbortController();
+    const timer = window.setInterval(async () => {
+      try {
+        setHealth(
+          await api.request<Health>(
+            "/health",
+            "GET",
+            undefined,
+            controller.signal,
+          ),
+        );
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          setConnected(false);
+          setError(String(e));
+          log("Connection lost; running jobs are not resubmitted.");
+        }
+      }
+    }, 15000);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, [api, connected]);
   async function check() {
     setError("");
     setStatus("Checking private gateway…");
@@ -291,6 +317,15 @@ function App() {
         }
       } catch (e) {
         if (!disposed) {
+          if (String(e).includes("unknown job")) {
+            setJob({ ...job, status: "unavailable" });
+            localStorage.removeItem("dlcr.activeJob");
+            setStatus(
+              "Job no longer exists on backend. Check Outputs before starting another job.",
+            );
+            setError(String(e));
+            return;
+          }
           setStatus(
             "Polling interrupted; retrying without submitting another job.",
           );
