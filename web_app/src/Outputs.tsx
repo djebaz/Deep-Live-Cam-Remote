@@ -174,6 +174,7 @@ export function Outputs({
     setMedia("");
     setLoaded(false);
     setStatus("Refresh to browse backend outputs.");
+    setBusy(false);
   }, [api, kind]);
   const next = (delta = 1) => {
     if (files.length < 2) return;
@@ -181,6 +182,8 @@ export function Outputs({
     setIndex((i) => (i + delta + files.length) % Math.max(1, files.length));
   };
   async function refresh() {
+    cache.current?.dispose();
+    cache.current = new PhotoCache(api);
     const g = ++generation.current;
     setBusy(true);
     setLoaded(false);
