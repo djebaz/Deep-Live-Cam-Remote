@@ -65,7 +65,7 @@ jobs:
       - name: Install dependencies
         run: |
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
-          python -m pip install pytest httpx2
+          python -m pip install pytest httpx2 python-multipart
 
       - name: Run tests
         run: pytest -q
