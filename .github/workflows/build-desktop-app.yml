@@ -53,14 +53,31 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
+      - name: Restore pip cache and wheelhouse
+        uses: actions/cache@v6
         with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-build-${{ hashFiles('requirements-build.txt') }}
+          path: |
+            ~\AppData\Local\pip\Cache
+            .\.wheels
+          key: ${{ runner.os }}-pip-build-${{ hashFiles('requirements-build.txt') }}-py${{ env.PYTHON_VERSION }}
           restore-keys: |
             ${{ runner.os }}-pip-build-
             ${{ runner.os }}-pip-
+
+      - name: Build wheelhouse for build dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\.wheels | Out-Null
+          if (Test-Path '.\requirements-build.txt') {
+            python -m pip wheel -r .\requirements-build.txt -w .\.wheels
+          }
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          if (Test-Path '.\requirements-build.txt') {
+            python -m pip install --no-index --find-links .\.wheels -r .\requirements-build.txt
+          }
 
       - name: Resolve build metadata
         shell: pwsh
@@ -152,16 +169,6 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "- Package mode: ``${{ inputs.package_mode }}``"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value ''
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '### Outputs'
-
-          $items = @(Get-ChildItem -LiteralPath $distPath -Recurse -File | Sort-Object FullName)
-          if ($items.Count -eq 0) {
-            throw "No files produced under $distPath"
-          }
-          foreach ($item in $items) {
-            $relative = Resolve-Path -LiteralPath $item.FullName -Relative
-            $mb = [math]::Round($item.Length / 1MB, 2)
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "- ``$relative`` ($mb MB)"
-          }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
