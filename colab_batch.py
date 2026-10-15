@@ -629,6 +629,14 @@ def _process_one_into(
                 encoder.stdin.write(raw)
         except BaseException as exc:
             errors.put(("encode", exc))
+        finally:
+            # Flush and close here, not on the job thread: with the large pipe buffer this
+            # flush can block if ffmpeg stops reading, and the job thread's timed join plus
+            # terminate/kill path only covers work done by this thread.
+            try:
+                encoder.stdin.close()
+            except (OSError, ValueError):
+                pass
 
     decode_thread = threading.Thread(target=decoder_worker, daemon=True)
     encode_thread = threading.Thread(target=encoder_worker, daemon=True)
@@ -733,7 +741,6 @@ def _process_one_into(
                 encoder.wait(timeout=5)
             encode_thread.join(timeout=5)
             raise EncoderFailed(selected_encoder, f"FFmpeg encoder ({selected_encoder}) stopped accepting frames at the end of the video:\n{encoder_err.text()[-4000:]}")
-        encoder.stdin.close(); encoder.stdin = None
         if stop.is_set() and decoder.poll() is None:
             decoder.terminate()
         decoder.wait(timeout=20)
