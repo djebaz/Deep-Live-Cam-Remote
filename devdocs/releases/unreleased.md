@@ -154,3 +154,4 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Photo previews use the Colab API's 1600 px server previews (`/outputs/photos/thumb/...`) when zoom is Fit and load the original only for fixed zooms; older Colab APIs fall back to full files automatically.
 - The prefetch cache is now byte-bounded (96 MB LRU, was unbounded) and prefetching runs at most 3 downloads at a time; refreshing the list clears stale cached pictures.
 - Large output lists are inserted in one batch instead of repainting per item.
+- Windows app: closing the window now stops and waits for its worker threads (output downloads/prefetch, job poller, live worker) so Qt no longer aborts with "QThread: Destroyed while thread is still running".

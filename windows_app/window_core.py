@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from windows_app.api_client import ApiClient
 from windows_app.settings import load_settings, save_settings
-from windows_app.workers import LiveWorker, PollWorker
+from windows_app.workers import LiveWorker, PollWorker, stop_thread
 
 
 def set_dark_title_bar(window: QMainWindow) -> None:
@@ -232,9 +232,18 @@ class WindowCore(QMainWindow):
             save_settings(self.settings)
         except Exception as exc:
             self.log(f"settings save on close failed: {exc}")
+        if getattr(self, "output_prefetch_queue", None) is not None:
+            self.output_prefetch_queue.clear()
         if self.poller:
             self.poller.stop()
         if self.live_worker:
             self.live_worker.stop()
         self.stop_output_video()
+        # Never exit with a running QThread: Qt aborts the process, which looked like a crash on close.
+        stop_thread(self.poller)
+        stop_thread(self.live_worker)
+        workers = list(getattr(self, "output_workers", {}).values())
+        for worker in workers:
+            stop_thread(worker, grace_ms=1500)
+        getattr(self, "output_workers", {}).clear()
         super().closeEvent(event)
