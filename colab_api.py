@@ -155,10 +155,12 @@ class JobState:
     log_queue: "queue.Queue[str]" = field(default_factory=queue.Queue)
     logs: list[str] = field(default_factory=list)
     progress: dict[str, Any] | None = None
+    stage: str = ""  # what the job is doing before the first progress arrives
 
     def set_progress(self, fields: dict[str, Any]) -> None:
         """Merge structured progress from the batch and derive percentages / ETA."""
         self.progress = {**merge_progress(self.progress, fields), "updated_at": time.time()}
+        self.stage = ""
 
     def append(self, text: str) -> None:
         if not text:
@@ -179,6 +181,8 @@ class JobState:
             "error": self.error,
             "logs": self.logs[-300:],
             "progress": self.progress,
+            "stage": self.stage,
+            "cancel_requested": self.cancel_event.is_set(),
             "server_time": time.time(),
         }
 
@@ -450,23 +454,42 @@ def common_args(request: JobRequest, input_default: Path, output_default: Path) 
     return args
 
 
+def acquire_engine(job: JobState) -> bool:
+    """Wait for the single engine, leaving at once if the job is cancelled while it waits."""
+    job.stage = "Waiting for another job to finish"
+    while not ENGINE_LOCK.acquire(timeout=0.5):
+        if job.cancel_event.is_set():
+            return False
+    return True
+
+
 def run_job(job: JobState, argv: list[str]) -> None:
-    job.status = "running"
+    job.status = "queued"
     writer = JobWriter(job)
     try:
-        with ENGINE_LOCK:
+        if not acquire_engine(job):
+            job.append("cancelled while waiting for another job")
+            job.status = "cancelled"
+            job.stage = ""
+            return
+        try:
+            job.status = "running"
+            job.stage = "Loading models"
             parser = colab_batch.build_parser()
             args = parser.parse_args(argv)
             args.cancel_event = job.cancel_event
             args.progress_cb = job.set_progress
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 job.exit_code = args.func(args)
+        finally:
+            ENGINE_LOCK.release()
         job.status = "cancelled" if job.cancel_event.is_set() else ("completed" if job.exit_code == 0 else "failed")
     except BaseException as exc:
         job.error = str(exc)
         job.status = "cancelled" if job.cancel_event.is_set() else "failed"
         job.append(f"ERROR: {exc}")
     finally:
+        job.stage = ""
         writer.flush()
         job.finished_at = time.time()
 

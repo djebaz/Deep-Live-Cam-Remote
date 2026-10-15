@@ -23,6 +23,8 @@ export interface Job {
   error?: string;
   progress?: JobProgress | null;
   server_time?: number;
+  stage?: string;
+  cancel_requested?: boolean;
 }
 export interface JobProgress {
   updated_at?: number;

@@ -1020,6 +1020,8 @@ function App() {
                     itemProgress &&
                     ` · Item ${itemProgress[1]} / ${itemProgress[2]}`}
                   {batchProgress && ` · ${batchProgress.text}`}
+                  {!batchProgress && batchRunning && job?.stage && ` · ${job.stage}`}
+                  {batchRunning && job?.cancel_requested && " · cancelling: stops at the next safe point"}
                 </p>
                 {!progress && batchProgress && (
                   <progress
