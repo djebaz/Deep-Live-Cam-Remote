@@ -722,6 +722,17 @@ def _process_one_into(
                 if encoder.poll() is not None or not errors.empty():
                     raise encoder_failed()
         encode_thread.join(timeout=60)
+        if encode_thread.is_alive():
+            # The writer is stuck in a pipe write: closing stdin would block on its lock. Kill
+            # ffmpeg (bounded waits) so the write fails and the thread ends, then report it.
+            encoder.terminate()
+            try:
+                encoder.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                encoder.kill()
+                encoder.wait(timeout=5)
+            encode_thread.join(timeout=5)
+            raise EncoderFailed(selected_encoder, f"FFmpeg encoder ({selected_encoder}) stopped accepting frames at the end of the video:\n{encoder_err.text()[-4000:]}")
         encoder.stdin.close(); encoder.stdin = None
         if stop.is_set() and decoder.poll() is None:
             decoder.terminate()
