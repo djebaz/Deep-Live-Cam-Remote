@@ -105,6 +105,18 @@ cleans the isolated input batch; an ambiguous job submission retains inputs.
 Source and local selections must be reselected after reload,
 while preferences and known active job IDs persist. The access token does not.
 
+After a successful connection check, health monitoring and active-job polling
+automatically retry temporary network failures, timeouts, HTTP 5xx, 408 and 429.
+Requests have a 15-second deadline; retry delays increase from 1 to 2, 4, 8 and
+then at most 15 seconds. During an outage the header shows **Reconnecting** and a
+notice explains that the job may still be running on Colab. The current job ID
+is retained and polling resumes automatically; uploads and job submissions are
+never automatically repeated. The notice clears on recovery, and Activity logs
+one interruption and one recovery per outage. Authentication/configuration errors
+still require fixing the connection settings. If Colab no longer knows the job,
+check Outputs before starting another batch. Reconnection cannot restore jobs
+lost when the Colab runtime or API restarts.
+
 Live uses browser cameras, including OBS Virtual Camera when exposed as an input,
 DLCR v1 binary packets, hot configuration messages, bounded transport and preview
 queues, monotonic timing and separate capture/send/receive/display FPS. Restart-only
@@ -138,6 +150,11 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
   play, and refresh failures (logged once per outage, then once when it recovers).
 - Videos show the browser's own first frame as the tile and play in the viewer; formats
   the browser cannot play stay downloadable.
+
+Opening a video in Detail (including previous/next navigation) starts playback
+muted, independently of the slideshow setting. Enable sound using the player
+controls. Slideshow still controls whether playback advances to the next file
+when the video ends. Browser autoplay restrictions can still require pressing Play.
 
 **Speed**: the Colab API makes small cached JPEG thumbnails (320 px) and video poster
 frames, and 1600 px previews for the viewer, so the gallery downloads kilobytes instead

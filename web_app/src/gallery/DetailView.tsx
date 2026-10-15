@@ -404,8 +404,8 @@ export function DetailView(p: DetailProps) {
                 src={media}
                 controls
                 playsInline
-                autoPlay={p.autoplay}
-                muted={p.autoplay}
+                autoPlay
+                muted
                 onLoadedMetadata={(e) => {
                   setLoaded(true);
                   p.onMeta(id, {

@@ -1,5 +1,9 @@
 # Unreleased
 
+## Web connection recovery and video playback
+- Keep monitoring an existing photo/video job across temporary gateway/Colab outages, including HTTP 502: bounded read requests retry automatically with delays capped at 15 seconds. Show a Reconnecting notice instead of a raw transient error, restore Connected on recovery, and retain the current job without repeating uploads or submission. Idle health monitoring also recovers automatically after an established connection. Authentication/configuration errors remain actionable failures.
+- Start videos muted when opening or navigating the Outputs detail viewer, independently of slideshow; player controls can enable sound, and slideshow still controls advancing at the end.
+
 ## Added
 - Add an Outputs photo auto-play seconds control and prefetch a configurable number of upcoming photos while photo auto-play is enabled.
 - Add Outputs photo preview zoom choices for fit, 0.5x, 0.8x, 1x, 1.5x, and 2x.
