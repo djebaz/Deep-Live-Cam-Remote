@@ -142,3 +142,8 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 
 ## Web controller launcher
 - Add `scripts/start_web_controller.py` and `start-web-controller.bat`: one command that checks Node/Tailscale, auto-detects the online Colab machine, builds only when stale, keeps a per-user gateway token, starts the gateway in the background, publishes it with `tailscale serve`, and supports `--status`, `--stop`, `--rotate-token`, `--foreground` and Windows login autostart.
+
+## Web Outputs library
+- Rebuild the web Outputs tab as a media library styled after the DTFlow Images viewer: Grid/List/Detail views, in-browser thumbnails, search/source/date/sort filters, multi-select with client-side ZIP download, auto-refresh that keeps the selection, a viewer with zoom/pan/swipe/keyboard/slideshow/full screen, and a phone layout.
+- Fix slideshow stalls on a broken file, muted video autoplay, and stale option handling in the old viewer. No backend change; delete and backend thumbnails are intentionally not included.
+

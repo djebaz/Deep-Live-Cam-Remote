@@ -135,15 +135,28 @@ Desktop automatic perf sweep includes batch sizes 1/8/16/32, 12-second cases, 3-
 
 ## Outputs
 
+The web Outputs tab intentionally goes beyond the desktop browser (Grid/List/Detail,
+search and filters, multi-select, auto-refresh, mobile viewer), following the DTFlow
+Images viewer. Desktop behaviors are all kept.
+
 | Control | Default | Range/options |
 | --- | --- | --- |
 | Kind | photos | photos, videos |
-| Refresh / previous / next | Actions | Load actual backend list; select first entry; wrap navigation |
-| Auto-play | false | Boolean |
-| Photo visible seconds | 3.5 | 0.25–60, step 0.25; starts only after load |
-| Photo preload | 10 | 1–50 upcoming photos |
-| Photo zoom | fit | fit, 0.5x, 0.8x, 1x, 1.5x, 2x |
-| Download current / all | Actions | Actual item download / kind ZIP |
+| View | grid | grid, list, detail (remembered) |
+| Thumbnail / row / filmstrip size | 100 % | 25-250 % of a 160 px tile (remembered) |
+| Auto-refresh | on | Poll the listing every 8 s while the tab is visible (remembered) |
+| Refresh / previous / next | Actions | Load actual backend list; wrap navigation |
+| Search / source / date / sort | none / all / all time / newest | Client-side on the loaded listing; sort remembered |
+| Select / Select all / Download selected | Actions | Client-side ZIP, 5,000 files / 512 MB limit |
+| Auto-play (slideshow) | false | Boolean; videos advance when they end (muted) |
+| Photo visible seconds | 3.5 | 0.25-60; starts only after load; failed items are skipped |
+| Photo preload | 10 | 1-50 upcoming photos |
+| Zoom | Fit | Fit, 25-400 % steps, wheel, pan; double-click toggles Fit/100 % |
+| Download current / all / archive | Actions | Actual item / backend kind ZIP / retained archive |
+
+Not implemented: delete or rename (no backend route; intentionally omitted), backend
+thumbnails and metadata (width/height/duration come from the decoded image or video
+element), indexing of custom output folders, side-by-side source/output comparison.
 
 GET /outputs/{kind} returns files sorted by modified descending, then name descending, from Drive and local roots only. Each entry contains name, relative_path, source (`drive`/`local`), size, modified and download_path. Fixed roots: D/outputs/photos, D/outputs/videos, /content/outputs/photos, /content/outputs/videos. Custom processing output paths remain valid processing destinations but are not automatically indexed. Preview/download use the returned path, not a newly invented arbitrary filesystem endpoint. Browser video codec support may differ from Qt/OpenCV; offer download with clear errors. Bound photo cache by count and bytes, evict unused object URLs/bitmaps, ignore stale selection responses, abort obsolete fetches; desktop prefetch cache itself lacks an eviction bound and should not be copied unchanged.
 

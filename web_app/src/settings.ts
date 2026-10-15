@@ -82,10 +82,13 @@ export const defaults: Preferences = {
   live: liveDefaults,
   output: {
     kind: "photos",
+    view: "grid",
+    thumb: 100,
+    sort: "newest",
+    autorefresh: true,
     autoplay: false,
     seconds: 3.5,
     prefetch: 10,
-    zoom: "fit",
   },
 };
 export function restore(): Preferences {

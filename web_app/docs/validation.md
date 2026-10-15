@@ -80,3 +80,31 @@ backend and reported that it works; Live and photo/video batch sessions were run
 it. Windows DPAPI, autostart and `taskkill` specifics were not separately inspected.
 Live tuning observations from those sessions are summarized in the web README.
 
+## Outputs library
+
+Unit tests (`tests/outputs.test.ts`, 8) cover filtering/search/date ranges and every sort
+order, list reconciliation by stable identity (an identical refresh keeps the same
+array), selection helpers, formatting, the thumbnail cache (bounded concurrency,
+newest-first queue, cancellation of tiles that leave the screen, de-duplication,
+eviction that never drops a held thumbnail, oversize/decoder errors) and the client
+ZIP writer (CRC32 vector, central directory, UTF-8 names, and read back by Python's
+`zipfile`). The full web suite passes (33) with `tsc --noEmit` and the Vite build.
+
+Browser checks were run in headless Chromium against the **real** Colab API (generated
+sample outputs, no GPU) behind the **real** gateway: 44 photos in Drive/local roots and
+nested folders, 4 WebM videos. 19 behaviour checks passed: search, empty state, clear
+filters, source filter, sort by name, valid ZIP of selected files (verified with Python),
+keyboard navigation, zoom, double-click Fit/100 %, slideshow, full screen and Esc, video
+listing/badges/playback, and auto-refresh picking up and dropping files on disk. A touch
+context verified the phone layout and swipe navigation. This testing found and fixed a
+bug: a parent callback re-created every render re-ran the loader, so changing a view,
+size or sort cleared the selection and reloaded the list; a regression check confirms
+those changes now cause no new listing requests and keep the selection. Screenshots are
+in `docs/screenshots/`.
+
+Not verified: Safari/iOS and Firefox (Chromium only; full screen falls back to a CSS
+overlay where the Fullscreen API is missing), a real Colab/Drive with thousands of
+files or large originals over Tailscale/mobile data, pinch-to-zoom (double-click and
+buttons only), and H.264 video (headless Chromium has no H.264 codec, so playback was
+checked with WebM).
+

@@ -17,8 +17,8 @@ import {
 } from "./settings";
 import { chooseJob } from "./recover";
 import { LiveSession, type LiveStats } from "./live";
-import { Outputs, saveBlob } from "./Outputs";
 import "./style.css";
+import { Outputs, saveBlob } from "./Outputs";
 function Fields({
   controls,
   values,
