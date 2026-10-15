@@ -39,6 +39,13 @@ export interface JobProgress {
   overall_percent?: number | null;
   eta_seconds?: number | null;
 }
+export class HttpError extends Error {
+  constructor(public status: number, detail: string) {
+    super(`HTTP ${status}: ${detail}`);
+    this.name = "HttpError";
+  }
+}
+export class ConnectionError extends Error {}
 export class Api {
   constructor(
     public preferences: Preferences,
@@ -84,9 +91,10 @@ export class Api {
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
+    const url = this.url(path);
     let response: Response;
     try {
-      response = await fetch(this.url(path), {
+      response = await fetch(url, {
         method,
         headers: {
           ...this.headers(),
@@ -96,14 +104,18 @@ export class Api {
         signal: signal || AbortSignal.timeout(30000),
       });
     } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") throw e;
-      throw new Error(
+      if (
+        signal?.aborted ||
+        (e instanceof DOMException &&
+          ["AbortError", "TimeoutError"].includes(e.name))
+      ) throw e;
+      throw new ConnectionError(
         "Gateway unreachable. Check Tailscale, HTTPS, allowed origin, browser local-network permission, and gateway service.",
       );
     }
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${text.slice(0, 600)}`);
+      throw new HttpError(response.status, text.slice(0, 600));
     }
     const result = await response.json();
     if (result.error) throw new Error(String(result.error));

@@ -121,6 +121,12 @@ publishes it on your tailnet (Node 22.12+ and Tailscale required):
 See [`web_app/README.md`](web_app/README.md#one-command-launch-on-your-pc) for options
 (`--status`, `--stop`, `--backend`, `--install-autostart`) and recommended Live settings.
 
+After connecting, the browser automatically retries temporary connection failures.
+During a batch it keeps the existing job ID, shows a Reconnecting notice, and
+resumes progress when Colab responds again. It never resubmits the batch.
+Videos opened in the Outputs detail viewer start playing muted; use the player
+controls to enable sound. Slideshow remains optional.
+
 ## Desktop remote controller
 
 The current controller app connects to `colab_api.py` running in Colab over Tailscale.

@@ -419,6 +419,7 @@ export function Outputs({
         files={shown}
         index={index}
         kind={kind}
+        thumb={thumb}
         api={api}
         thumbs={caches.thumbs}
         photos={caches.photos}

@@ -17,6 +17,7 @@ import {
 } from "./settings";
 import { chooseJob } from "./recover";
 import { describeProgress } from "./progress";
+import { pollRead } from "./polling";
 import { LiveSession, type LiveStats } from "./live";
 import "./style.css";
 import { Outputs, saveBlob } from "./Outputs";
@@ -108,6 +109,8 @@ function App() {
     [tab, setTab] = useState("Photos"),
     [token, setToken] = useState(""),
     [connected, setConnected] = useState(false),
+    [monitoringApi, setMonitoringApi] = useState<Api | null>(null),
+    [connectionNotice, setConnectionNotice] = useState(""),
     [health, setHealth] = useState<Health | null>(null),
     [logs, setLogs] = useState<string[]>([]),
     [error, setError] = useState(""),
@@ -140,6 +143,12 @@ function App() {
     [p.gateway, p.host, p.port, token],
   );
   api.preferences = p;
+  const currentApi = useRef(api);
+  currentApi.current = api;
+  const reconnecting = useRef(false);
+  const batchRunning = Boolean(
+    job && ["queued", "running"].includes(job.status),
+  );
   const log = (text: string) =>
     setLogs((v) =>
       [...v, `${new Date().toLocaleTimeString()}  ${sanitizeLog(text)}`].slice(
@@ -163,6 +172,9 @@ function App() {
   useEffect(() => {
     setConnected(false);
     setHealth(null);
+    setMonitoringApi(null);
+    setConnectionNotice("");
+    reconnecting.current = false;
   }, [api]);
   useEffect(() => {
     if (!source) {
@@ -215,32 +227,51 @@ function App() {
       shutdown();
     };
   }, []);
+  function connectionLost(cause: unknown) {
+    setConnected(false);
+    setConnectionNotice(
+      "Connection to Colab interrupted. Reconnecting automatically. " +
+      (batchRunning
+        ? "Your job may still be running; it will not be submitted again."
+        : "Check Tailscale and the Colab API if the interruption continues."),
+    );
+    if (!reconnecting.current)
+      log(`Connection interrupted; reconnecting automatically. ${String(cause)}`);
+    reconnecting.current = true;
+  }
+  function connectionRestored() {
+    setConnected(true);
+    setConnectionNotice("");
+    if (reconnecting.current) {
+      log(batchRunning
+        ? "Connection restored; resumed monitoring the existing job."
+        : "Connection restored.");
+    }
+    reconnecting.current = false;
+  }
+  function monitoringFailed(cause: unknown) {
+    setConnected(false);
+    setMonitoringApi(null);
+    setConnectionNotice("");
+    reconnecting.current = false;
+    setError(String(cause));
+    log(`Monitoring stopped. Check connection settings. ${String(cause)}`);
+  }
   useEffect(() => {
-    if (!connected) return;
-    const controller = new AbortController();
-    const timer = window.setInterval(async () => {
-      try {
-        setHealth(
-          await api.request<Health>(
-            "/health",
-            "GET",
-            undefined,
-            controller.signal,
-          ),
-        );
-      } catch (e) {
-        if (!controller.signal.aborted) {
-          setConnected(false);
-          setError(String(e));
-          log("Connection lost; running jobs are not resubmitted.");
-        }
-      }
-    }, 15000);
-    return () => {
-      controller.abort();
-      clearInterval(timer);
-    };
-  }, [api, connected]);
+    // The job endpoint itself checks connectivity while a batch is active. Keeping
+    // one monitor avoids a healthy response racing a failed health check.
+    if (monitoringApi !== api || batchRunning) return;
+    return pollRead<Health>(api, "/health", {
+      intervalMs: 15000,
+      initialDelayMs: 15000,
+      onValue: (h) => {
+        setHealth(h);
+        connectionRestored();
+      },
+      onRetry: connectionLost,
+      onError: monitoringFailed,
+    });
+  }, [api, monitoringApi, batchRunning]);
   async function check() {
     setError("");
     setStatus("Checking private gateway…");
@@ -249,8 +280,10 @@ function App() {
         backends: { host: string; port: number }[];
       }>("/gateway/info");
       const h = await api.request<Health>("/health");
+      if (currentApi.current !== api) return;
       setHealth(h);
-      setConnected(true);
+      setMonitoringApi(api);
+      connectionRestored();
       setStatus(`Connected · ${h.api_version}`);
       log(`Connected: ${h.api_version}`);
       setUncertain(false);
@@ -273,6 +306,7 @@ function App() {
         } catch (e) {
           log(`Saved job unavailable: ${String(e)}`);
         }
+        if (currentApi.current !== api) return;
         if (!existing || !["queued", "running"].includes(existing.status))
           localStorage.removeItem("dlcr.activeJob");
       }
@@ -283,6 +317,7 @@ function App() {
           log(`Attached to active ${choice.job.kind} job ${choice.job.job_id}`);
       }
     } catch (e) {
+      if (currentApi.current !== api) return;
       setConnected(false);
       setError(String(e));
       setStatus("Connection failed");
@@ -290,30 +325,17 @@ function App() {
     }
   }
   useEffect(() => {
-    if (!job?.job_id || !["queued", "running"].includes(job.status)) return;
-    let disposed = false,
-      timer: number | undefined;
-    const controller = new AbortController();
+    if (!job?.job_id || !batchRunning || monitoringApi !== api) return;
     try {
       localStorage.setItem(
         "dlcr.activeJob",
         JSON.stringify({ backend: `${p.gateway}|${p.host}:${p.port}`, job }),
       );
     } catch {}
-    const poll = async () => {
-      try {
-        // A hung request must not end the polling loop: time out and retry.
-        const signal =
-          typeof AbortSignal.any === "function"
-            ? AbortSignal.any([controller.signal, AbortSignal.timeout(15000)])
-            : controller.signal;
-        const r = await api.request<Job>(
-          `/jobs/${job.job_id}`,
-          "GET",
-          undefined,
-          signal,
-        );
-        if (disposed) return;
+    return pollRead<Job>(api, `/jobs/${job.job_id}`, {
+      intervalMs: 1000,
+      onValue: (r) => {
+        connectionRestored();
         setJob(r);
         setStatus(`${r.kind}: ${r.status}`);
         if (!["running", "queued"].includes(r.status)) {
@@ -322,34 +344,25 @@ function App() {
           setBusy(false);
           if (r.error) setError(r.error);
           log(`Job ${r.status}`);
-          return;
+          return false;
         }
-      } catch (e) {
-        if (!disposed) {
-          if (String(e).includes("unknown job")) {
-            setJob({ ...job, status: "unavailable" });
-            localStorage.removeItem("dlcr.activeJob");
-            setStatus(
-              "Job no longer exists on backend. Check Outputs before starting another job.",
-            );
-            setError(String(e));
-            return;
-          }
+      },
+      onRetry: connectionLost,
+      onError: (e) => {
+        if (String(e).includes("unknown job")) {
+          connectionRestored();
+          setJob({ ...job, status: "unavailable" });
+          localStorage.removeItem("dlcr.activeJob");
           setStatus(
-            "Polling interrupted; retrying without submitting another job.",
+            "Job no longer exists on backend. Check Outputs before starting another job.",
           );
           setError(String(e));
+          return;
         }
-      }
-      if (!disposed) timer = window.setTimeout(poll, 1000);
-    };
-    void poll();
-    return () => {
-      disposed = true;
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [job?.job_id, api, job?.status]);
+        monitoringFailed(e);
+      },
+    });
+  }, [job?.job_id, api, job?.status, monitoringApi]);
   async function stopBatch() {
     stopRequested.current = true;
     if (job && ["queued", "running"].includes(job.status)) {
@@ -509,16 +522,14 @@ function App() {
     };
     advance();
   }
-  const batchRunning = Boolean(
-    job && ["queued", "running"].includes(job.status),
-  );
   const locked = busy || batchRunning || liveRunning;
   const allLogs = [...logs, ...(job?.logs || []).map((s) => sanitizeLog(s))];
   const itemProgress = (job?.logs || [])
     .map((s) => s.match(/\[(\d+)\/(\d+)\]/))
     .filter(Boolean)
     .at(-1);
-  const batchProgress = batchRunning ? describeProgress(job?.progress, job?.server_time) : null;
+  const batchProgress = batchRunning && connected
+    ? describeProgress(job?.progress, job?.server_time) : null;
   let selected = 0;
   try {
     selected = inputs[kind]
@@ -572,7 +583,7 @@ function App() {
         </div>
         <div className="connection-pill">
           <span className={connected ? "dot online" : "dot"} />
-          {connected ? "Connected" : "Offline"}
+          {connected ? "Connected" : connectionNotice ? "Reconnecting" : "Offline"}
           <span className="connection-address">
             {p.host ? `${p.host}:${p.port}` : "Configure private gateway"}
           </span>
@@ -628,6 +639,11 @@ function App() {
                   : "IDLE"}
           </span>
         </div>
+        {connectionNotice && (
+          <div role="status" className="connection-notice">
+            {connectionNotice}
+          </div>
+        )}
         {error && (
           <div role="alert" className="error">
             {error}
@@ -1015,12 +1031,12 @@ function App() {
               )}
               <div className="stage-footer">
                 <p role="status">
-                  {status}
+                  {connectionNotice ? "Reconnecting to Colab…" : status}
                   {!batchProgress &&
                     itemProgress &&
                     ` · Item ${itemProgress[1]} / ${itemProgress[2]}`}
                   {batchProgress && ` · ${batchProgress.text}`}
-                  {!batchProgress && batchRunning && job?.stage && ` · ${job.stage}`}
+                  {!connectionNotice && !batchProgress && batchRunning && job?.stage && ` · ${job.stage}`}
                   {batchRunning && job?.cancel_requested && " · cancelling: stops at the next safe point"}
                 </p>
                 {!progress && batchProgress && (

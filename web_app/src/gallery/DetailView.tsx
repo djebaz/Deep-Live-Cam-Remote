@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { Api, Output } from "../api";
 import { Icon } from "./icons";
 import {
   clamp,
   folderOf,
   formatDate,
+  formatDuration,
   formatSize,
   outputId,
   sourceLabel,
@@ -18,11 +19,14 @@ import { dimensionsText } from "./Views";
 
 const ZOOMS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4];
 const SECONDS = [1, 2, 3.5, 5, 10, 20, 30];
+const VIDEO_STARTUP_BUFFER_SECONDS = 2;
 
 export interface DetailProps {
   files: Output[];
   index: number;
   kind: "photos" | "videos";
+  /** Saved thumbnail-size percentage, shared with the gallery size slider. */
+  thumb: number;
   api: Api;
   thumbs: ThumbnailCache;
   /** Full-size originals. */
@@ -66,6 +70,7 @@ export function DetailView(p: DetailProps) {
   const [natural, setNatural] = useState({ w: 0, h: 0 });
   const canvas = useRef<HTMLDivElement>(null);
   const filmstrip = useRef<HTMLDivElement>(null);
+  const videoStartup = useRef<HTMLVideoElement | null>(null);
   const media = mediaFor && mediaFor.id === id ? mediaFor.url : "";
   const loaded = loadedFor === id;
   const isPreview = Boolean(mediaFor && mediaFor.id === id && mediaFor.preview);
@@ -76,6 +81,25 @@ export function DetailView(p: DetailProps) {
   const generation = useRef(0);
   const latest = useRef(p);
   latest.current = p;
+
+  // Native autoplay may wait for a large safety buffer. Ask to play once two
+  // seconds are available, but never restart a video the user has already paused.
+  const startBufferedVideo = (video: HTMLVideoElement) => {
+    if (videoStartup.current === video || !video.paused || video.ended ||
+        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    const remaining = Number.isFinite(video.duration)
+      ? Math.max(0, video.duration - video.currentTime) : Infinity;
+    const target = Math.min(VIDEO_STARTUP_BUFFER_SECONDS, remaining);
+    for (let i = 0; i < video.buffered.length; i++) {
+      if (video.buffered.start(i) <= video.currentTime &&
+          video.buffered.end(i) - video.currentTime + 0.05 >= target) {
+        videoStartup.current = video;
+        // Some browser policies still require a gesture; keep native controls usable.
+        void video.play().catch(() => {});
+        return;
+      }
+    }
+  };
 
   // Server preview first; an older backend without previews falls back to the original.
   const usingPreviews = useRef(true);
@@ -201,7 +225,7 @@ export function DetailView(p: DetailProps) {
     filmstrip.current
       ?.querySelector<HTMLElement>("[aria-current='true']")
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [id]);
+  }, [id, p.thumb]);
 
   // ---- zoom helpers
   const fitScale = () => {
@@ -353,7 +377,10 @@ export function DetailView(p: DetailProps) {
       : { width: natural.w * zoom, height: natural.h * zoom, maxWidth: "none", maxHeight: "none" };
 
   return (
-    <div className="og-detail">
+    <div
+      className="og-detail"
+      style={{ "--og-film-scale": p.thumb / 100 } as CSSProperties}
+    >
       <div className="og-detail-main">
         <div className="og-preview">
           <div
@@ -404,8 +431,14 @@ export function DetailView(p: DetailProps) {
                 src={media}
                 controls
                 playsInline
-                autoPlay={p.autoplay}
-                muted={p.autoplay}
+                preload="auto"
+                autoPlay
+                muted
+                onLoadedData={(e) => startBufferedVideo(e.currentTarget)}
+                onCanPlay={(e) => startBufferedVideo(e.currentTarget)}
+                onProgress={(e) => startBufferedVideo(e.currentTarget)}
+                onPlay={(e) => { videoStartup.current = e.currentTarget; }}
+                onDurationChange={(e) => p.onMeta(id, { duration: e.currentTarget.duration })}
                 onLoadedMetadata={(e) => {
                   setLoaded(true);
                   p.onMeta(id, {
@@ -520,6 +553,11 @@ export function DetailView(p: DetailProps) {
           <Block icon="ruler" label="Dimensions">
             {dims}
           </Block>
+          {p.kind === "videos" && (
+            <Block icon="clock" label="Duration">
+              {formatDuration(m?.duration ?? NaN) || "—"}
+            </Block>
+          )}
           <Block icon="calendar" label="Modified">
             {formatDate(current.modified)}
           </Block>

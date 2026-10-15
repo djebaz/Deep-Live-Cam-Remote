@@ -81,6 +81,12 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   ruler: <path d="M4 16 16 4l4 4L8 20zM8 12l2 2M11 9l2 2M14 6l2 2" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </>
+  ),
   chevron: <path d="m6 9 6 6 6-6" />,
 };
 
