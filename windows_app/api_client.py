@@ -121,6 +121,19 @@ def taildrop_receive_file(remote_host: str, remote_path: str, local_destination:
 DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64KB for smooth progress updates
 
 
+def _never_abort() -> bool:
+    return False
+
+
+# The Windows app points this at "is the current worker thread asked to stop?" so a download
+# can end quickly on app close instead of the thread having to be killed.
+abort_requested: Callable[[], bool] = _never_abort
+
+
+class DownloadAborted(RuntimeError):
+    pass
+
+
 def _download_bytes_with_progress(
     client: "ApiClient",
     path: str,
@@ -132,6 +145,8 @@ def _download_bytes_with_progress(
         chunks = []
         downloaded = 0
         while True:
+            if abort_requested():
+                raise DownloadAborted("download cancelled")
             chunk = response.read(DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break

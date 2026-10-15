@@ -8,6 +8,7 @@ from typing import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
+from windows_app import api_client
 from windows_app.api_client import (  # noqa: F401 - _download_bytes_with_progress re-exported
     DOWNLOAD_CHUNK_SIZE,
     ApiClient,
@@ -29,6 +30,8 @@ def _download_file_fast(
         total_size = int(response.headers.get("Content-Length", 0))
         downloaded = 0
         while True:
+            if api_client.abort_requested():
+                raise api_client.DownloadAborted("download cancelled")
             chunk = response.read(DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break

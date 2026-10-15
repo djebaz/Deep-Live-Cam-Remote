@@ -165,3 +165,5 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - A stalled video job now reports where it is stuck in the job log (queue sizes, ffmpeg exit state and the stack of the job, decoder and encoder threads) after 20 s without a finished frame, and the per-frame `\r` progress lines reach the log immediately instead of arriving in a batch.
 - Fix video jobs hanging forever when the ffmpeg encoder dies mid-file: the job now fails immediately with ffmpeg's own error message, and when the encoder was auto-selected NVENC the video is redone once with libx264.
 - After an NVENC failure the libx264 fallback is used for the remaining videos of the run, and ffmpeg's error text is printed in the job log.
+- Reprocessing a file that fails or is cancelled no longer deletes its previous complete output (only the hidden partial is removed).
+- Windows app shutdown no longer terminates threads: workers are asked to stop (downloads check for it), and if one is still blocked in a network call the process exits directly after the window closes. Downloads started before a list refresh can no longer repopulate the photo cache with stale bytes.

@@ -240,10 +240,9 @@ class WindowCore(QMainWindow):
             self.live_worker.stop()
         self.stop_output_video()
         # Never exit with a running QThread: Qt aborts the process, which looked like a crash on close.
-        stop_thread(self.poller)
-        stop_thread(self.live_worker)
-        workers = list(getattr(self, "output_workers", {}).values())
-        for worker in workers:
-            stop_thread(worker, grace_ms=1500)
+        threads = [self.poller, self.live_worker, *getattr(self, "output_workers", {}).values()]
+        # Workers still blocked in a network call after their grace period are recorded so the
+        # process can leave without Qt destroying a running thread (see app.main).
+        self.stuck_threads = [t for t in threads if t is not None and not stop_thread(t, grace_ms=1500)]
         getattr(self, "output_workers", {}).clear()
         super().closeEvent(event)

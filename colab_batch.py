@@ -923,11 +923,9 @@ def process_batch(args: argparse.Namespace) -> int:
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
             report_progress(engine, state="done")
         except BatchCancelled:
-            output.unlink(missing_ok=True)
             print("  cancelled")
             break
         except Exception as exc:
-            output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
             print(f"  FAILED: {exc}")
             report_progress(engine, state="failed")
@@ -1035,11 +1033,9 @@ def process_photos(args: argparse.Namespace) -> int:
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
             report_progress(engine, state="done")
         except BatchCancelled:
-            output.unlink(missing_ok=True)
             print("  cancelled")
             break
         except Exception as exc:
-            output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
             print(f"  FAILED: {exc}")
             report_progress(engine, state="failed")

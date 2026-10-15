@@ -237,6 +237,8 @@ def refresh_outputs(self: MainWindow) -> None:
     self.output_current_loaded = False
     self.stop_output_video()
     # Files may have been replaced on the server; forget cached pictures and queued prefetches.
+    # Downloads already in flight belong to the old generation and must not repopulate the cache.
+    self.output_cache_gen = getattr(self, "output_cache_gen", 0) + 1
     if hasattr(self, "output_photo_cache"):
         self.output_photo_cache.clear()
     if hasattr(self, "output_prefetch_queue"):

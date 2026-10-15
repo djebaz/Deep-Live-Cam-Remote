@@ -33,6 +33,8 @@ def _ensure_prefetch_state(window: MainWindow) -> None:
         window.output_photo_cache = ByteLRU()
     if not hasattr(window, "output_prefetch_queue"):
         window.output_prefetch_queue = deque()
+    if not hasattr(window, "output_cache_gen"):
+        window.output_cache_gen = 0
     if not hasattr(window, "output_photo_is_preview"):
         window.output_photo_is_preview = False
 
@@ -96,6 +98,7 @@ def _upgrade_to_original(window: MainWindow) -> None:
         _display_photo(window, item, cached, False)
         return
     task_id = uuid.uuid4().hex
+    generation = window.output_cache_gen
     window.output_upgrade_task_id = task_id
     window.output_status.setText(f"Loading original of {item.get('relative_path')}...")
 
@@ -108,7 +111,8 @@ def _upgrade_to_original(window: MainWindow) -> None:
         current = getattr(window, "output_photo_item", None)
         if not isinstance(data, (bytes, bytearray)) or not current or _cache_key(current) != key:
             return
-        window.output_photo_cache.put((key, False), bytes(data))
+        if generation == window.output_cache_gen:
+            window.output_photo_cache.put((key, False), bytes(data))
         if not _zoom_is_fit(window):
             _display_photo(window, item, bytes(data), False)
 
@@ -176,6 +180,7 @@ def _start_prefetch(window: MainWindow, item: dict[str, Any], kind: str, preview
         return
     window.output_prefetching.add(key)
     task_id = uuid.uuid4().hex
+    generation = window.output_cache_gen
 
     def task() -> object:
         if kind == "photos":
@@ -189,6 +194,9 @@ def _start_prefetch(window: MainWindow, item: dict[str, Any], kind: str, preview
         if done_task_id != task_id:
             return
         window.output_prefetching.discard(key)
+        if generation != window.output_cache_gen:
+            _pump_prefetch(window)
+            return
         if kind == "photos" and isinstance(result, tuple):
             data, is_preview = result
             window.output_photo_cache.put((key, is_preview), data)
@@ -280,6 +288,8 @@ def show_output_at(self: MainWindow, index: int) -> None:
             self.outputs_progress.setValue(0)
             self.outputs_progress.show()
 
+        generation = self.output_cache_gen
+
         def load_photo(progress_cb: Callable[[int, int], None]) -> tuple[bytes, bool]:
             return fetch_photo(self.client, item, preview, progress_cb)
 
@@ -290,7 +300,8 @@ def show_output_at(self: MainWindow, index: int) -> None:
                 self.outputs_progress.hide()
             if isinstance(result, tuple):
                 data, is_preview = result
-                self.output_photo_cache.put((key, is_preview), data)
+                if generation == self.output_cache_gen:
+                    self.output_photo_cache.put((key, is_preview), data)
                 _display_photo(self, item, data, is_preview)
                 _prefetch_neighbors(self, index)
             self.output_current_loaded = True

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +97,15 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
-    return app.exec()
+    code = app.exec()
+    if getattr(window, "stuck_threads", None):
+        # A worker is still blocked in a network call. Destroying a running QThread aborts the
+        # process, so end it directly (settings were saved in closeEvent) instead of terminating
+        # the thread, which could leave locks held.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    return code
 
 
 if __name__ == "__main__":

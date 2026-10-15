@@ -161,22 +161,31 @@ def _detach(signal: object) -> None:
         pass
 
 
-def stop_thread(thread: QThread | None, grace_ms: int = 3000) -> None:
-    """Stop a QThread before its owner is destroyed.
+def _install_abort_hook() -> None:
+    from windows_app import api_client
+
+    api_client.abort_requested = lambda: QThread.currentThread().isInterruptionRequested()
+
+
+_install_abort_hook()
+
+
+def stop_thread(thread: QThread | None, grace_ms: int = 3000) -> bool:
+    """Ask a QThread to stop and wait for it; True when it is no longer running.
 
     Qt aborts the process ("QThread: Destroyed while thread is still running") if the app exits
-    while a worker is still running. Detach its signals so it cannot touch closed widgets, give it
-    a moment to finish, then terminate it as a last resort (a download cannot be interrupted).
+    while a worker is still running. Detach its signals so it cannot touch closed widgets, request
+    interruption (downloads and loops check it) and wait. Threads are never terminated: that can
+    leave locks held. Callers handle a thread that is still blocked in a network call.
     """
     if thread is None:
-        return
+        return True
     for name in ("succeeded", "failed", "progress", "message", "frame", "frame_packet", "finished", "finished_status"):
         signal = getattr(thread, name, None)
         if signal is not None:
             _detach(signal)
-    if thread.isRunning() and not thread.wait(grace_ms):
-        thread.terminate()
-        thread.wait(1000)
+    thread.requestInterruption()
+    return (not thread.isRunning()) or bool(thread.wait(grace_ms))
 
 
 __all__ = ["LiveWorker", "OutputTaskWorker", "PollWorker", "stop_thread"]
