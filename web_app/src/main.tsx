@@ -1094,7 +1094,12 @@ function App() {
                   )}
                   <button
                     disabled={liveRunning}
-                    onClick={() => setTab("Outputs")}
+                    onClick={() => {
+                      // Open Outputs on the kind of the page the button was clicked on.
+                      if (tab === "Photos" || tab === "Videos")
+                        options("output", "kind", tab.toLowerCase());
+                      setTab("Outputs");
+                    }}
                   >
                     Browse outputs →
                   </button>
