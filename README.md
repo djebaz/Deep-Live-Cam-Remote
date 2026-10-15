@@ -36,8 +36,9 @@ This variant keeps the upstream Deep-Live-Cam local pipeline, then adds:
 MyDrive/DeepLiveCamRemote/source/source.png
 MyDrive/DeepLiveCamRemote/photos/
 MyDrive/DeepLiveCamRemote/videos/
-MyDrive/DeepLiveCamRemote/outputs/
 ```
+
+Outputs default to the fast Colab disk (`/content/outputs/photos` and `/videos`), not Drive. They are lost when the runtime resets, so download or copy them to Drive when you want to keep them.
 
 5. Run the photo or video batch cells.
 
@@ -74,7 +75,7 @@ From a Colab/runtime checkout:
 python colab_batch.py process \
   --source-face /content/drive/MyDrive/DeepLiveCamRemote/source/source.png \
   --input-dir /content/drive/MyDrive/DeepLiveCamRemote/videos \
-  --output-dir /content/drive/MyDrive/DeepLiveCamRemote/outputs/videos
+  --output-dir /content/outputs/videos
 ```
 
 Photo batch example:
@@ -83,7 +84,7 @@ Photo batch example:
 python colab_batch.py photos \
   --source-face /content/drive/MyDrive/DeepLiveCamRemote/source/source.png \
   --input-dir /content/drive/MyDrive/DeepLiveCamRemote/photos \
-  --output-dir /content/drive/MyDrive/DeepLiveCamRemote/outputs/photos
+  --output-dir /content/outputs/photos
 ```
 
 Face mapping workflow:
