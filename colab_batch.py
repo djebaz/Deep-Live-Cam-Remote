@@ -714,8 +714,13 @@ def _process_one_into(
                 encoded.put(sentinel, timeout=0.1)
                 break
             except queue.Full:
-                if cancelled:
-                    break
+                # Same exits as the frame loop: a dead encoder never drains the queue, and a
+                # cancel must not wait for it either.
+                if cancel_requested():
+                    print("  cancel requested; stopping current video")
+                    raise BatchCancelled("cancel requested")
+                if encoder.poll() is not None or not errors.empty():
+                    raise encoder_failed()
         encode_thread.join(timeout=60)
         encoder.stdin.close(); encoder.stdin = None
         if stop.is_set() and decoder.poll() is None:
