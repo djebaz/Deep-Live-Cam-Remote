@@ -417,6 +417,35 @@ def effective_segment(info: dict[str, Any], config: ProcessConfig, path: Path) -
     return start, clip
 
 
+class StderrTail:
+    """Drain a child's stderr continuously, keeping only the last few KB.
+
+    An unread stderr pipe fills at ~64 KB; ffmpeg then blocks forever on its next warning
+    (typical for damaged or odd source files), which froze jobs mid-video.
+    """
+
+    KEEP = 16 * 1024
+
+    def __init__(self, process: subprocess.Popen):
+        self._tail = b""
+        self._thread = threading.Thread(target=self._drain, args=(process.stderr,), daemon=True)
+        self._thread.start()
+
+    def _drain(self, stream: Any) -> None:
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                self._tail = (self._tail + chunk)[-self.KEEP:]
+        except (OSError, ValueError):
+            pass
+
+    def text(self) -> str:
+        self._thread.join(timeout=5)
+        return self._tail.decode(errors="replace")
+
+
 def _start_decoder(path: Path, config: ProcessConfig, start: float, clip: float | None, fps: float, width: int, height: int, cuda: bool) -> subprocess.Popen:
     return subprocess.Popen(decoder_command(path, cuda, start, clip, fps, width, height), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
 
@@ -467,18 +496,20 @@ def _process_one_into(
     print(f"  {info['width']}x{info['height']} @ {info['fps']:.3f} -> {width}x{height} @ {fps:.3f}")
 
     decoder = _start_decoder(path, config, start, clip, fps, width, height, config.cuda_decode)
+    decoder_err = StderrTail(decoder)
     first = read_exact(decoder.stdout, frame_size)
     if not first and config.cuda_decode:
-        error = decoder.stderr.read().decode(errors="replace")
         decoder.wait()
+        error = decoder_err.text()
         print("  ! CUDA decode unavailable; using software decode")
         if error.strip():
             print("    " + error.strip().splitlines()[-1])
         decoder = _start_decoder(path, config, start, clip, fps, width, height, False)
+        decoder_err = StderrTail(decoder)
         first = read_exact(decoder.stdout, frame_size)
     if not first:
-        error = decoder.stderr.read().decode(errors="replace")
         decoder.wait()
+        error = decoder_err.text()
         raise RuntimeError("FFmpeg produced no frames:\n" + error[-4000:])
 
     selected_encoder = config.encoder
@@ -487,6 +518,7 @@ def _process_one_into(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
     encoder = subprocess.Popen(encoder_command(path, output, start, encode_duration, fps, width, height, selected_encoder, config.preset, config.quality), stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
+    encoder_err = StderrTail(encoder)
 
     decoded: queue.Queue[Any] = queue.Queue(config.decode_queue)
     encoded: queue.Queue[Any] = queue.Queue(config.encode_queue)
@@ -611,7 +643,7 @@ def _process_one_into(
             decoder.terminate()
         decoder.wait(timeout=20)
         rc = encoder.wait(timeout=120)
-        error = encoder.stderr.read().decode(errors="replace")
+        error = encoder_err.text()
         if rc:
             raise RuntimeError("FFmpeg encode failed:\n" + error[-4000:])
     finally:

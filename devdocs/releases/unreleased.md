@@ -161,3 +161,4 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - The prefetch cache is now byte-bounded (96 MB LRU, was unbounded) and prefetching runs at most 3 downloads at a time; refreshing the list clears stale cached pictures.
 - Large output lists are inserted in one batch instead of repainting per item.
 - Windows app: closing the window now stops and waits for its worker threads (output downloads/prefetch, job poller, live worker) so Qt no longer aborts with "QThread: Destroyed while thread is still running".
+- Fix video jobs freezing mid-file: ffmpeg's error output is now drained continuously (last 16 KB kept for error messages) instead of filling an unread pipe, which blocked ffmpeg on damaged or unusual source videos.
