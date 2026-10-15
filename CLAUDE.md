@@ -53,6 +53,9 @@ python -m ruff check --select E701,E711,E712,F401,F541 .
 # Desktop remote app (Windows)
 .\run_windows_remote_app.ps1
 
+# Browser remote controller gateway on this PC (Node 22.12+, Tailscale)
+.\start-web-controller.bat   # or: python scripts/start_web_controller.py [--status|--stop]
+
 # Colab batch from command line (example)
 python colab_batch.py process --source-face source.png --input-dir ./videos --output-dir ./output
 

@@ -139,3 +139,6 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Keep Live preview playing under frame/byte bounds, and attach to the backend's active job when a saved job is stale.
 - Guard batch cleanup against ancestor-rooted active jobs and use per-batch upload locks.
 - Fix all repository-wide `ruff check` errors (unused imports, one-line compound statements) and exclude the generated Colab notebook sources (`google-colab/`) from linting.
+
+## Web controller launcher
+- Add `scripts/start_web_controller.py` and `start-web-controller.bat`: one command that checks Node/Tailscale, auto-detects the online Colab machine, builds only when stale, keeps a per-user gateway token, starts the gateway in the background, publishes it with `tailscale serve`, and supports `--status`, `--stop`, `--rotate-token`, `--foreground` and Windows login autostart.

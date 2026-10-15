@@ -111,6 +111,16 @@ with binary WebSocket support. Photos, Videos, Live inputs and Outputs use the
 real backend. The Windows application is unchanged. See the [parity audit](web_app/docs/parity.md)
 for controls and native limitations; no companion is required for ordinary workflows.
 
+On the PC that hosts the gateway, one command does the setup, starts the gateway and
+publishes it on your tailnet (Node 22.12+ and Tailscale required):
+
+```powershell
+.\start-web-controller.bat        # or: python scripts/start_web_controller.py
+```
+
+See [`web_app/README.md`](web_app/README.md#one-command-launch-on-your-pc) for options
+(`--status`, `--stop`, `--backend`, `--install-autostart`) and recommended Live settings.
+
 ## Desktop remote controller
 
 The current controller app connects to `colab_api.py` running in Colab over Tailscale.

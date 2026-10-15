@@ -67,3 +67,16 @@ previous code. See [review resolutions](review-15.md) for the per-finding outcom
 
 Ruff: errors that predated this PR were fixed in a follow-up PR (see
 `devdocs/releases/unreleased.md`). Hardware gaps above still apply.
+
+## Launcher (`scripts/start_web_controller.py`)
+
+Unit tests (16) cover backend detection, Node version parsing, install/build staleness,
+token create/keep/rotate/replace, gateway environment, stale-PID safety, port check and
+arguments; the full Python suite passed (50) with ruff and the path-leak check clean.
+A Linux end-to-end run with a stub `tailscale` and real Node verified build, start,
+authenticated requests, token reuse across restarts, `serve`, `--status` and `--stop`.
+The maintainer then ran it on their Windows PC against a real Tailscale tailnet and Colab
+backend and reported that it works; Live and photo/video batch sessions were run through
+it. Windows DPAPI, autostart and `taskkill` specifics were not separately inspected.
+Live tuning observations from those sessions are summarized in the web README.
+
