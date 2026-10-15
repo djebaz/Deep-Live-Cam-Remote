@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -9,6 +10,7 @@ from PySide6.QtGui import QImage, QPixmap
 
 from windows_app import output_tasks as output_tasks_base
 from windows_app.api_client import format_size
+from windows_app.output_cache import MAX_PREFETCH_WORKERS, ByteLRU, fetch_photo
 from windows_app.window_core import WindowCore as MainWindow
 
 OUTPUT_PHOTO_ZOOM_FACTORS = {
@@ -27,10 +29,39 @@ def _ensure_prefetch_state(window: MainWindow) -> None:
         window.output_prefetch_cache = {}
     if not hasattr(window, "output_prefetching"):
         window.output_prefetching = set()
+    if not hasattr(window, "output_photo_cache"):
+        window.output_photo_cache = ByteLRU()
+    if not hasattr(window, "output_prefetch_queue"):
+        window.output_prefetch_queue = deque()
+    if not hasattr(window, "output_photo_is_preview"):
+        window.output_photo_is_preview = False
 
 
 def _cache_key(item: dict[str, Any]) -> str:
     return str(item.get("download_path") or "")
+
+
+def _zoom_is_fit(window: MainWindow) -> bool:
+    control = getattr(window, "outputs_photo_zoom", None)
+    return control is None or str(control.currentText()).lower() == "fit"
+
+
+def _wants_preview(window: MainWindow) -> bool:
+    """Fit only needs a screen-sized preview; fixed zooms use original pixels."""
+    return _zoom_is_fit(window) and getattr(window.client, "thumbs_supported", True)
+
+
+def _cache_get(window: MainWindow, key: str, preview: bool) -> tuple[bytes, bool] | None:
+    """Best cached bytes for this view: the original always works, a preview only for Fit."""
+    cache: ByteLRU = window.output_photo_cache
+    original = cache.get((key, False))
+    if original is not None:
+        return original, False
+    if preview:
+        data = cache.get((key, True))
+        if data is not None:
+            return data, True
+    return None
 
 
 def _video_cache_path(window: MainWindow, item: dict[str, Any]) -> Path:
@@ -39,7 +70,7 @@ def _video_cache_path(window: MainWindow, item: dict[str, Any]) -> Path:
     return window.output_temp_dir / f"{item.get('source', 'output')}_{safe_relative}"
 
 
-def _display_photo(window: MainWindow, item: dict[str, Any], data: bytes) -> None:
+def _display_photo(window: MainWindow, item: dict[str, Any], data: bytes, is_preview: bool = False) -> None:
     if window.output_video is not None:
         window.output_video.hide()
     window.output_preview.show()
@@ -49,13 +80,56 @@ def _display_photo(window: MainWindow, item: dict[str, Any], data: bytes) -> Non
         return
     window.output_photo_pixmap = QPixmap.fromImage(image)
     window.output_photo_item = dict(item)
+    window.output_photo_is_preview = is_preview
     apply_output_photo_zoom(window)
     window.output_status.setText(f"Showing {item.get('relative_path')} from {item.get('source')}")
+
+
+def _upgrade_to_original(window: MainWindow) -> None:
+    """The shown picture is a reduced preview but the zoom needs original pixels."""
+    item = getattr(window, "output_photo_item", None)
+    if not item:
+        return
+    key = _cache_key(item)
+    cached = window.output_photo_cache.get((key, False))
+    if cached is not None:
+        _display_photo(window, item, cached, False)
+        return
+    task_id = uuid.uuid4().hex
+    window.output_upgrade_task_id = task_id
+    window.output_status.setText(f"Loading original of {item.get('relative_path')}...")
+
+    def task() -> object:
+        return output_tasks_base._download_bytes_with_progress(window.client, key, timeout=120.0)
+
+    def succeeded(done_id: str, data: object) -> None:
+        if done_id != task_id or window.output_upgrade_task_id != task_id:
+            return
+        current = getattr(window, "output_photo_item", None)
+        if not isinstance(data, (bytes, bytearray)) or not current or _cache_key(current) != key:
+            return
+        window.output_photo_cache.put((key, False), bytes(data))
+        if not _zoom_is_fit(window):
+            _display_photo(window, item, bytes(data), False)
+
+    def failed(done_id: str, error: str) -> None:
+        if done_id == task_id:
+            window.output_status.setText(f"original failed to load: {error}")
+
+    worker = output_tasks_base.OutputTaskWorker(task_id, task)
+    window.output_workers[task_id] = worker
+    worker.succeeded.connect(succeeded)
+    worker.failed.connect(failed)
+    worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
+    worker.start()
 
 
 def apply_output_photo_zoom(window: MainWindow) -> None:
     pixmap = getattr(window, "output_photo_pixmap", None)
     if not isinstance(pixmap, QPixmap) or pixmap.isNull():
+        return
+    if getattr(window, "output_photo_is_preview", False) and not _zoom_is_fit(window):
+        _upgrade_to_original(window)
         return
     zoom = "fit"
     if hasattr(window, "outputs_photo_zoom"):
@@ -89,21 +163,23 @@ def _display_video(window: MainWindow, item: dict[str, Any], local_path: Path) -
     window.output_status.setText(f"Playing {relative}")
 
 
-def _prefetch_output(window: MainWindow, index: int) -> None:
-    _ensure_prefetch_state(window)
-    if index < 0 or index >= len(window.output_files):
-        return
-    item = dict(window.output_files[index])
+def _pump_prefetch(window: MainWindow) -> None:
+    """Start queued prefetches, at most MAX_PREFETCH_WORKERS at a time."""
+    while window.output_prefetch_queue and len(window.output_prefetching) < MAX_PREFETCH_WORKERS:
+        item, kind, preview = window.output_prefetch_queue.popleft()
+        _start_prefetch(window, item, kind, preview)
+
+
+def _start_prefetch(window: MainWindow, item: dict[str, Any], kind: str, preview: bool) -> None:
     key = _cache_key(item)
-    if not key or key in window.output_prefetch_cache or key in window.output_prefetching:
+    if not key or key in window.output_prefetching:
         return
-    kind = window.outputs_kind.currentText()
     window.output_prefetching.add(key)
     task_id = uuid.uuid4().hex
 
     def task() -> object:
         if kind == "photos":
-            return window.client.download_bytes(key, timeout=30.0)
+            return fetch_photo(window.client, item, preview)
         local_path = _video_cache_path(window, item)
         if not local_path.exists() or local_path.stat().st_size != int(item.get("size") or -1):
             output_tasks_base._download_file_fast(window.client, key, local_path, timeout=900.0)
@@ -113,11 +189,17 @@ def _prefetch_output(window: MainWindow, index: int) -> None:
         if done_task_id != task_id:
             return
         window.output_prefetching.discard(key)
-        window.output_prefetch_cache[key] = Path(result) if kind == "videos" else result
+        if kind == "photos" and isinstance(result, tuple):
+            data, is_preview = result
+            window.output_photo_cache.put((key, is_preview), data)
+        elif kind == "videos":
+            window.output_prefetch_cache[key] = Path(result)
+        _pump_prefetch(window)
 
     def failed(done_task_id: str, _error: str) -> None:
         if done_task_id == task_id:
             window.output_prefetching.discard(key)
+            _pump_prefetch(window)
 
     worker = output_tasks_base.OutputTaskWorker(task_id, task)
     window.output_workers[task_id] = worker
@@ -125,6 +207,27 @@ def _prefetch_output(window: MainWindow, index: int) -> None:
     worker.failed.connect(failed)
     worker.finished.connect(lambda task_id=task_id: window.output_workers.pop(task_id, None))
     worker.start()
+
+
+def _prefetch_output(window: MainWindow, index: int) -> None:
+    _ensure_prefetch_state(window)
+    if index < 0 or index >= len(window.output_files):
+        return
+    item = dict(window.output_files[index])
+    key = _cache_key(item)
+    kind = window.outputs_kind.currentText()
+    preview = kind == "photos" and _wants_preview(window)
+    if not key or key in window.output_prefetching:
+        return
+    if kind == "photos":
+        if _cache_get(window, key, preview) is not None:
+            return
+    elif key in window.output_prefetch_cache:
+        return
+    if any(_cache_key(queued) == key for queued, _k, _p in window.output_prefetch_queue):
+        return
+    window.output_prefetch_queue.append((item, kind, preview))
+    _pump_prefetch(window)
 
 
 def _prefetch_neighbors(window: MainWindow, index: int, count: int | None = None) -> None:
@@ -160,13 +263,15 @@ def show_output_at(self: MainWindow, index: int) -> None:
         self.output_photo_pixmap = None
         self.output_photo_item = None
         self.output_preview.setPixmap(QPixmap())
-        if isinstance(cached, (bytes, bytearray)):
-            _display_photo(self, item, bytes(cached))
+        preview = _wants_preview(self)
+        hit = _cache_get(self, key, preview)
+        if hit is not None:
+            _display_photo(self, item, hit[0], hit[1])
             _prefetch_neighbors(self, index)
             self.output_current_loaded = True
             self.schedule_outputs_autoplay()
             return
-        size_str = format_size(file_size) if file_size > 0 else ""
+        size_str = format_size(file_size) if file_size > 0 and not preview else ""
         self.output_preview.setText(f"Loading photo preview... {size_str}")
         # Show progress bar
         if hasattr(self, "outputs_progress"):
@@ -175,17 +280,18 @@ def show_output_at(self: MainWindow, index: int) -> None:
             self.outputs_progress.setValue(0)
             self.outputs_progress.show()
 
-        def fetch_photo(progress_cb: Callable[[int, int], None]) -> bytes:
-            return output_tasks_base._download_bytes_with_progress(self.client, key, timeout=20.0, progress_callback=progress_cb)
+        def fetch_photo(progress_cb: Callable[[int, int], None]) -> tuple[bytes, bool]:
+            return fetch_photo(self.client, item, preview, progress_cb)
 
-        def photo_ready(task_id: str, data: object) -> None:
+        def photo_ready(task_id: str, result: object) -> None:
             if task_id != self.output_preview_task_id:
                 return
             if hasattr(self, "outputs_progress"):
                 self.outputs_progress.hide()
-            if isinstance(data, (bytes, bytearray)):
-                self.output_prefetch_cache[key] = bytes(data)
-                _display_photo(self, item, bytes(data))
+            if isinstance(result, tuple):
+                data, is_preview = result
+                self.output_photo_cache.put((key, is_preview), data)
+                _display_photo(self, item, data, is_preview)
                 _prefetch_neighbors(self, index)
             self.output_current_loaded = True
             self.schedule_outputs_autoplay()

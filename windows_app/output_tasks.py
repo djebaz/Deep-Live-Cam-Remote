@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtGui import QImageReader, QPixmap
-from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from windows_app.api_client import ApiClient, format_size, is_local_path, job_payload, local_files
 from windows_app.task_runner import (
@@ -236,6 +236,11 @@ def refresh_outputs(self: MainWindow) -> None:
     self.output_files = []
     self.output_current_loaded = False
     self.stop_output_video()
+    # Files may have been replaced on the server; forget cached pictures and queued prefetches.
+    if hasattr(self, "output_photo_cache"):
+        self.output_photo_cache.clear()
+    if hasattr(self, "output_prefetch_queue"):
+        self.output_prefetch_queue.clear()
     self.output_preview.setText("Loading outputs...")
     # Indeterminate progress bar during network fetch (min=max=0)
     if hasattr(self, "outputs_progress"):
@@ -253,26 +258,18 @@ def refresh_outputs(self: MainWindow) -> None:
             return
         self.outputs_list.setEnabled(True)
         self.output_files = list((payload if isinstance(payload, dict) else {}).get("files") or [])
-        total = len(self.output_files)
-        has_progress = hasattr(self, "outputs_progress")
-        # Switch to determinate mode for list population
-        if has_progress:
-            self.outputs_progress.setMaximum(100)
-            self.outputs_progress.setValue(0)
-            self.outputs_progress.repaint()
-        for idx, item in enumerate(self.output_files):
-            label = f"[{item.get('source')}] {item.get('relative_path')} ({format_size(item.get('size'))})"
-            self.outputs_list.addItem(QListWidgetItem(label))
-            if has_progress:
-                progress = int((idx + 1) / total * 100) if total > 0 else 0
-                self.outputs_progress.setValue(progress)
-            self.output_status.setText(f"Loading... {idx + 1}/{total}")
-            # Update UI every 10 items or on last item
-            if idx % 10 == 0 or idx == total - 1:
-                if has_progress:
-                    self.outputs_progress.repaint()
-                QApplication.processEvents()
-        if has_progress:
+        # One batched insert with repaints suspended: per-item processEvents made big lists slow.
+        self.outputs_list.setUpdatesEnabled(False)
+        try:
+            self.outputs_list.addItems(
+                [
+                    f"[{item.get('source')}] {item.get('relative_path')} ({format_size(item.get('size'))})"
+                    for item in self.output_files
+                ]
+            )
+        finally:
+            self.outputs_list.setUpdatesEnabled(True)
+        if hasattr(self, "outputs_progress"):
             self.outputs_progress.hide()
         self.output_status.setText(f"{len(self.output_files)} {kind} output file(s)")
         if self.output_files:
