@@ -53,6 +53,19 @@ export async function startBatch(
   progress: (l: number, t: number) => void,
 ) {
   const health = await api.request<Health>("/health", "GET", undefined, signal);
+  // Fail before any upload when the declared remote source image does not exist.
+  if (!source && p.source_face && health.web_capabilities?.source_check) {
+    const found = await api.request<{ exists: boolean }>(
+      "/sources/check",
+      "POST",
+      { path: p.source_face },
+      signal,
+    );
+    if (!found.exists)
+      throw new Error(
+        `Source face not found on Colab: ${p.source_face}. Select a local source image or fix the remote source path.`,
+      );
+  }
   let input = p[`${kind}_input`];
   let selected: Input[] = [];
   if (files !== null) {

@@ -134,6 +134,16 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
         response = client.upload_file("/upload/file?kind=source", upload_path, timeout=30.0)
         source_face = str(response.get("path") or source_face)
         logs.append(f"source uploaded to: {source_face}")
+    elif source_face:
+        # Fail before uploading any inputs when the remote source image does not exist.
+        try:
+            found = client.request_json("POST", "/sources/check", {"path": source_face}, timeout=10.0)
+        except RuntimeError:
+            found = {"exists": True}  # an older Colab API has no check; the job reports it instead
+        if not found.get("exists", True):
+            raise FileNotFoundError(
+                f"Source face not found on Colab: {source_face}. Select a local source image or fix the remote path."
+            )
 
     input_path = settings.photos_input if kind == "photos" else settings.videos_input
     output_path = settings.photos_output if kind == "photos" else settings.videos_output

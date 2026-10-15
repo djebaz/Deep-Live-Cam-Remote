@@ -877,7 +877,7 @@ def health() -> dict[str, Any]:
         "api_version": API_VERSION,
         "paths": paths,
         "local_paths": ensure_local_layout(),
-        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True},
+        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True, "source_check": True},
         "active_jobs": [job.snapshot() for job in JOBS.values() if job.status in {"queued", "running"}],
     }
 
@@ -887,6 +887,17 @@ def list_outputs(kind: str) -> dict[str, Any]:
     files = output_file_entries(kind)
     public_files = [{key: value for key, value in item.items() if key != "path"} for item in files]
     return {"ok": True, "kind": kind, "count": len(public_files), "files": public_files}
+
+
+class SourceCheckRequest(BaseModel):
+    path: str
+
+
+@app.post("/sources/check")
+def check_source(request: SourceCheckRequest) -> dict[str, Any]:
+    """Cheap pre-upload check that a remote source image exists (answers only yes/no)."""
+    path = request.path.strip()
+    return {"path": path, "exists": bool(path) and Path(path).is_file()}
 
 
 class OutputPreflightRequest(BaseModel):
