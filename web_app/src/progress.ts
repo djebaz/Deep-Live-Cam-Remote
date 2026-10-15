@@ -9,7 +9,12 @@ export function formatEta(seconds: number): string {
 }
 
 /** One status line plus bar value (0-100, or null when unknown) for the running batch. */
-export function describeProgress(p: JobProgress | null | undefined): {
+export const STALL_SECONDS = 20;
+
+export function describeProgress(
+  p: JobProgress | null | undefined,
+  serverTime?: number,
+): {
   text: string;
   percent: number | null;
 } | null {
@@ -23,5 +28,10 @@ export function describeProgress(p: JobProgress | null | undefined): {
     if (p.eta_seconds != null) parts.push(`~${formatEta(p.eta_seconds)} left`);
   } else if (p.state === "skipped") parts.push("skipped");
   else if (p.state === "failed") parts.push("failed");
+  // Both stamps come from the server's clock, so browser clock skew does not matter.
+  if (p.state === "processing" && serverTime != null && p.updated_at != null) {
+    const quiet = serverTime - p.updated_at;
+    if (quiet >= STALL_SECONDS) parts.push(`⚠ no progress for ${formatEta(quiet)}`);
+  }
   return { text: parts.join(" · "), percent: p.overall_percent ?? null };
 }

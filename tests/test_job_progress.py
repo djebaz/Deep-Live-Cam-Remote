@@ -65,3 +65,11 @@ def test_report_progress_never_raises():
 
     batch.report_progress(Bad(), frames=1)
     batch.report_progress(object(), frames=1)
+
+
+def test_progress_carries_server_clock_stamps_for_stall_detection():
+    job = api.JobState(job_id="j", kind="videos")
+    job.set_progress({"item": 1, "items": 1, "frames": 1, "total": 2, "fps": 1.0})
+    snapshot = job.snapshot()
+    assert snapshot["progress"]["updated_at"] <= snapshot["server_time"]
+    assert snapshot["server_time"] - snapshot["progress"]["updated_at"] < 5

@@ -33,3 +33,10 @@ test("describeProgress copes with unknown totals, skips and missing progress", (
   assert.equal(unknown?.text, "Item 1 / 1 · 30 frames · 6.0 fps");
   assert.equal(describeProgress({ item: 3, items: 3, name: "a.png", state: "skipped" })?.text, "Item 3 / 3 · a.png · skipped");
 });
+
+test("describeProgress warns when the backend stopped reporting", () => {
+  const base = { item: 1, items: 1, name: "a.mp4", state: "processing", file_percent: 1, fps: 39.5, updated_at: 1000 };
+  assert.ok(!describeProgress(base, 1010)?.text.includes("no progress"));
+  assert.ok(describeProgress(base, 1065)?.text.endsWith("⚠ no progress for 1m 05s"));
+  assert.ok(!describeProgress({ ...base, state: "done" }, 5000)?.text.includes("no progress"));
+});

@@ -22,8 +22,10 @@ export interface Job {
   logs?: string[];
   error?: string;
   progress?: JobProgress | null;
+  server_time?: number;
 }
 export interface JobProgress {
+  updated_at?: number;
   item: number;
   items: number;
   name?: string;

@@ -157,7 +157,7 @@ class JobState:
 
     def set_progress(self, fields: dict[str, Any]) -> None:
         """Merge structured progress from the batch and derive percentages / ETA."""
-        self.progress = merge_progress(self.progress, fields)
+        self.progress = {**merge_progress(self.progress, fields), "updated_at": time.time()}
 
     def append(self, text: str) -> None:
         if not text:
@@ -178,6 +178,7 @@ class JobState:
             "error": self.error,
             "logs": self.logs[-300:],
             "progress": self.progress,
+            "server_time": time.time(),
         }
 
 

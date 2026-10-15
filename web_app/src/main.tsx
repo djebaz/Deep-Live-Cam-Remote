@@ -302,11 +302,16 @@ function App() {
     } catch {}
     const poll = async () => {
       try {
+        // A hung request must not end the polling loop: time out and retry.
+        const signal =
+          typeof AbortSignal.any === "function"
+            ? AbortSignal.any([controller.signal, AbortSignal.timeout(15000)])
+            : controller.signal;
         const r = await api.request<Job>(
           `/jobs/${job.job_id}`,
           "GET",
           undefined,
-          controller.signal,
+          signal,
         );
         if (disposed) return;
         setJob(r);
@@ -513,7 +518,7 @@ function App() {
     .map((s) => s.match(/\[(\d+)\/(\d+)\]/))
     .filter(Boolean)
     .at(-1);
-  const batchProgress = batchRunning ? describeProgress(job?.progress) : null;
+  const batchProgress = batchRunning ? describeProgress(job?.progress, job?.server_time) : null;
   let selected = 0;
   try {
     selected = inputs[kind]
