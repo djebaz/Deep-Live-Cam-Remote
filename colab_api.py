@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import queue
+import re
 import shutil
 import struct
 import subprocess
@@ -153,6 +154,13 @@ class JobState:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     log_queue: "queue.Queue[str]" = field(default_factory=queue.Queue)
     logs: list[str] = field(default_factory=list)
+    progress: dict[str, Any] | None = None
+    stage: str = ""  # what the job is doing before the first progress arrives
+
+    def set_progress(self, fields: dict[str, Any]) -> None:
+        """Merge structured progress from the batch and derive percentages / ETA."""
+        self.progress = {**merge_progress(self.progress, fields), "updated_at": time.time()}
+        self.stage = ""
 
     def append(self, text: str) -> None:
         if not text:
@@ -172,7 +180,37 @@ class JobState:
             "exit_code": self.exit_code,
             "error": self.error,
             "logs": self.logs[-300:],
+            "progress": self.progress,
+            "stage": self.stage,
+            "cancel_requested": self.cancel_event.is_set(),
+            "server_time": time.time(),
         }
+
+
+def merge_progress(previous: dict[str, Any] | None, fields: dict[str, Any]) -> dict[str, Any]:
+    """Per-file fields (frames/total/fps) restart with each new item; percentages are derived."""
+    base = previous or {}
+    if fields.get("item") != base.get("item"):
+        base = {}
+    merged = {**base, **fields}
+    state = str(merged.get("state") or "processing")
+    frames, total = merged.get("frames"), merged.get("total")
+    if state in {"done", "skipped", "failed"}:
+        fraction = 1.0
+    elif frames is not None and total:
+        fraction = max(0.0, min(1.0, frames / total))
+    else:
+        fraction = 0.0
+    items = max(1, int(merged.get("items") or 1))
+    item = max(1, int(merged.get("item") or 1))
+    merged["file_percent"] = round(fraction * 100, 1) if (total or state != "processing") else None
+    merged["overall_percent"] = round(min(100.0, ((item - 1) + fraction) / items * 100), 1)
+    fps = merged.get("fps") or 0
+    if state == "processing" and total and frames is not None and fps > 0:
+        merged["eta_seconds"] = round(max(0.0, (total - frames) / fps), 1)
+    else:
+        merged["eta_seconds"] = None
+    return merged
 
 
 class JobWriter(io.TextIOBase):
@@ -181,10 +219,14 @@ class JobWriter(io.TextIOBase):
         self._buffer = ""
 
     def write(self, text: str) -> int:
+        # "\r" ends a line too: batch progress ("\r  frames 30/900") has no newline and
+        # would otherwise sit in the buffer until some unrelated message arrives.
         self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            self.job.append(line)
+        parts = re.split(r"\r\n|\r|\n", self._buffer)
+        self._buffer = parts.pop()
+        for line in parts:
+            if line.strip():
+                self.job.append(line)
         return len(text)
 
     def flush(self) -> None:
@@ -302,6 +344,9 @@ def _scan_output_files(kind: str, roots: list[tuple[str, Path]], extensions: set
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in extensions:
                 continue
+            # Hidden ".name.partial.ext" files are outputs still being written.
+            if path.name.startswith("."):
+                continue
             stat = path.stat()
             relative_path = path.relative_to(root).as_posix()
             files.append({
@@ -325,6 +370,8 @@ def safe_output_path(kind: str, source: str, relative_path: str) -> Path:
         raise HTTPException(status_code=400, detail="invalid output path")
     if candidate.suffix.lower() not in extensions:
         raise HTTPException(status_code=400, detail="unsupported output file type")
+    if candidate.name.startswith("."):
+        raise HTTPException(status_code=404, detail="output file not found")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="output file not found")
     return candidate
@@ -407,22 +454,42 @@ def common_args(request: JobRequest, input_default: Path, output_default: Path) 
     return args
 
 
+def acquire_engine(job: JobState) -> bool:
+    """Wait for the single engine, leaving at once if the job is cancelled while it waits."""
+    job.stage = "Waiting for another job to finish"
+    while not ENGINE_LOCK.acquire(timeout=0.5):
+        if job.cancel_event.is_set():
+            return False
+    return True
+
+
 def run_job(job: JobState, argv: list[str]) -> None:
-    job.status = "running"
+    job.status = "queued"
     writer = JobWriter(job)
     try:
-        with ENGINE_LOCK:
+        if not acquire_engine(job):
+            job.append("cancelled while waiting for another job")
+            job.status = "cancelled"
+            job.stage = ""
+            return
+        try:
+            job.status = "running"
+            job.stage = "Loading models"
             parser = colab_batch.build_parser()
             args = parser.parse_args(argv)
             args.cancel_event = job.cancel_event
+            args.progress_cb = job.set_progress
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 job.exit_code = args.func(args)
+        finally:
+            ENGINE_LOCK.release()
         job.status = "cancelled" if job.cancel_event.is_set() else ("completed" if job.exit_code == 0 else "failed")
     except BaseException as exc:
         job.error = str(exc)
         job.status = "cancelled" if job.cancel_event.is_set() else "failed"
         job.append(f"ERROR: {exc}")
     finally:
+        job.stage = ""
         writer.flush()
         job.finished_at = time.time()
 
@@ -810,7 +877,7 @@ def health() -> dict[str, Any]:
         "api_version": API_VERSION,
         "paths": paths,
         "local_paths": ensure_local_layout(),
-        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True},
+        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True, "source_check": True},
         "active_jobs": [job.snapshot() for job in JOBS.values() if job.status in {"queued", "running"}],
     }
 
@@ -820,6 +887,17 @@ def list_outputs(kind: str) -> dict[str, Any]:
     files = output_file_entries(kind)
     public_files = [{key: value for key, value in item.items() if key != "path"} for item in files]
     return {"ok": True, "kind": kind, "count": len(public_files), "files": public_files}
+
+
+class SourceCheckRequest(BaseModel):
+    path: str
+
+
+@app.post("/sources/check")
+def check_source(request: SourceCheckRequest) -> dict[str, Any]:
+    """Cheap pre-upload check that a remote source image exists (answers only yes/no)."""
+    path = request.path.strip()
+    return {"path": path, "exists": bool(path) and Path(path).is_file()}
 
 
 class OutputPreflightRequest(BaseModel):
@@ -1193,9 +1271,23 @@ def model_args(request: JobRequest, always_detector_size: bool) -> list[str]:
     return args
 
 
+def require_source_face(request: JobRequest) -> None:
+    """Refuse a job whose source image is missing instead of starting one that fails at once."""
+    if "source_face" not in request.model_fields_set:
+        return  # not chosen by the client: the batch falls back to its own default
+    source = (request.source_face or "").strip()
+    if source and not Path(source).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"source face not found on the Colab machine: {source}. "
+            "Select a local source image or fix the remote source path.",
+        )
+
+
 @app.post("/jobs/photos")
 def start_photos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
+    require_source_face(request)
     if not 1 <= request.quality <= 100:
         raise HTTPException(status_code=400, detail="invalid photo quality")
     argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request, True)]
@@ -1210,6 +1302,7 @@ def start_photos(request: JobRequest) -> dict[str, Any]:
 @app.post("/jobs/videos")
 def start_videos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
+    require_source_face(request)
     if not 0 <= request.start_pct < request.end_pct <= 100:
         raise HTTPException(status_code=400, detail="start percentage must be lower than end percentage")
     argv = [

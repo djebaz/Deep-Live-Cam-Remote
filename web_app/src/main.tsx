@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Api, sanitizeLog, type Health, type Job } from "./api";
-import { startBatch, selectedInputs } from "./batch";
+import { startBatch, selectedInputs, SubmissionRejected } from "./batch";
 import {
   restore,
   commonControls,
@@ -16,6 +16,7 @@ import {
   type Control,
 } from "./settings";
 import { chooseJob } from "./recover";
+import { describeProgress } from "./progress";
 import { LiveSession, type LiveStats } from "./live";
 import "./style.css";
 import { Outputs, saveBlob } from "./Outputs";
@@ -301,11 +302,16 @@ function App() {
     } catch {}
     const poll = async () => {
       try {
+        // A hung request must not end the polling loop: time out and retry.
+        const signal =
+          typeof AbortSignal.any === "function"
+            ? AbortSignal.any([controller.signal, AbortSignal.timeout(15000)])
+            : controller.signal;
         const r = await api.request<Job>(
           `/jobs/${job.job_id}`,
           "GET",
           undefined,
-          controller.signal,
+          signal,
         );
         if (disposed) return;
         setJob(r);
@@ -405,7 +411,7 @@ function App() {
       else {
         setError(String(e));
         log(String(e));
-        if (submitStarted.current) {
+        if (submitStarted.current && !(e instanceof SubmissionRejected)) {
           setUncertain(true);
           setStatus(
             "Submission response uncertain. Check connection / active jobs before starting again.",
@@ -512,6 +518,7 @@ function App() {
     .map((s) => s.match(/\[(\d+)\/(\d+)\]/))
     .filter(Boolean)
     .at(-1);
+  const batchProgress = batchRunning ? describeProgress(job?.progress, job?.server_time) : null;
   let selected = 0;
   try {
     selected = inputs[kind]
@@ -1009,9 +1016,19 @@ function App() {
               <div className="stage-footer">
                 <p role="status">
                   {status}
-                  {itemProgress &&
+                  {!batchProgress &&
+                    itemProgress &&
                     ` · Item ${itemProgress[1]} / ${itemProgress[2]}`}
+                  {batchProgress && ` · ${batchProgress.text}`}
+                  {!batchProgress && batchRunning && job?.stage && ` · ${job.stage}`}
+                  {batchRunning && job?.cancel_requested && " · cancelling: stops at the next safe point"}
                 </p>
+                {!progress && batchProgress && (
+                  <progress
+                    max={100}
+                    value={batchProgress.percent ?? undefined}
+                  />
+                )}
                 {progress && (
                   <progress
                     max={progress.t || 1}
@@ -1079,7 +1096,12 @@ function App() {
                   )}
                   <button
                     disabled={liveRunning}
-                    onClick={() => setTab("Outputs")}
+                    onClick={() => {
+                      // Open Outputs on the kind of the page the button was clicked on.
+                      if (tab === "Photos" || tab === "Videos")
+                        options("output", "kind", tab.toLowerCase());
+                      setTab("Outputs");
+                    }}
                   >
                     Browse outputs →
                   </button>

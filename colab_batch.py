@@ -11,15 +11,18 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
-from dataclasses import asdict, dataclass
+import traceback
+from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -416,11 +419,121 @@ def effective_segment(info: dict[str, Any], config: ProcessConfig, path: Path) -
     return start, clip
 
 
+STALL_REPORT_SECONDS = 20.0
+# A live encoder that has not accepted a single frame for this long is hung: fail the video.
+ENCODER_NO_DRAIN_SECONDS = 90.0
+
+
+def start_stall_watchdog(
+    heartbeat: dict[str, float],
+    stop: threading.Event,
+    describe: Callable[[], str],
+    threads: dict[str, int | None],
+) -> threading.Thread:
+    """Report where a job is stuck: queue sizes, ffmpeg state and the stack of each worker.
+
+    Runs beside the frame loop (which may itself be blocked inside the swapper) and prints to the
+    job log, so a stall can be diagnosed from the web/Windows Activity log instead of guessed.
+    """
+
+    def run() -> None:
+        reported = 0.0
+        while not stop.wait(5.0):
+            now = time.monotonic()
+            idle = now - heartbeat["last_frame"]
+            if idle < STALL_REPORT_SECONDS or now - reported < 60.0:
+                continue
+            reported = now
+            lines = [f"  ! no frame finished for {idle:.0f}s: {describe()}"]
+            frames = sys._current_frames()
+            for name, ident in threads.items():
+                frame = frames.get(ident) if ident is not None else None
+                if frame is None:
+                    lines.append(f"    [{name}] not running")
+                    continue
+                stack = traceback.format_stack(frame, limit=4)
+                lines.append(f"    [{name}] " + " <- ".join(
+                    part.strip().splitlines()[0].strip() + " @ " + part.strip().splitlines()[-1].strip()
+                    for part in reversed(stack)
+                ))
+            print("\n".join(lines), flush=True)
+
+    thread = threading.Thread(target=run, name="StallWatchdog", daemon=True)
+    thread.start()
+    return thread
+
+
+# Set once NVENC has died mid-video so later videos in the run go straight to libx264.
+_NVENC_BROKEN = False
+
+
+class EncoderFailed(RuntimeError):
+    """The ffmpeg encoder process died or reported an error; `encoder` names which one."""
+
+    def __init__(self, encoder: str, message: str):
+        super().__init__(message)
+        self.encoder = encoder
+
+
+class StderrTail:
+    """Drain a child's stderr continuously, keeping only the last few KB.
+
+    An unread stderr pipe fills at ~64 KB; ffmpeg then blocks forever on its next warning
+    (typical for damaged or odd source files), which froze jobs mid-video.
+    """
+
+    KEEP = 16 * 1024
+
+    def __init__(self, process: subprocess.Popen):
+        self._tail = b""
+        self._thread = threading.Thread(target=self._drain, args=(process.stderr,), daemon=True)
+        self._thread.start()
+
+    def _drain(self, stream: Any) -> None:
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                self._tail = (self._tail + chunk)[-self.KEEP:]
+        except (OSError, ValueError):
+            pass
+
+    def text(self) -> str:
+        self._thread.join(timeout=5)
+        return self._tail.decode(errors="replace")
+
+
 def _start_decoder(path: Path, config: ProcessConfig, start: float, clip: float | None, fps: float, width: int, height: int, cuda: bool) -> subprocess.Popen:
     return subprocess.Popen(decoder_command(path, cuda, start, clip, fps, width, height), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
 
 
-def process_one(
+def _bind_progress(engine: Any, args: argparse.Namespace, number: int, count: int, name: str) -> None:
+    """Route per-file progress to args.progress_cb, tagged with the item position."""
+    sink = getattr(args, "progress_cb", None)
+    if sink is None:
+        return
+    base = {"item": number, "items": count, "name": name, "state": "processing"}
+
+    def progress(fields: dict[str, Any]) -> None:
+        sink({**base, **fields})
+
+    engine.progress = progress
+    progress({})
+
+
+def report_progress(engine: Any, **fields: Any) -> None:
+    """Send structured progress to whoever set engine.progress (the API); never fail the job."""
+    callback = getattr(engine, "progress", None)
+    if callback is None:
+        return
+    try:
+        callback(fields)
+    except Exception:
+        pass
+
+
+def _process_one_into(
     path: Path,
     output: Path,
     relative: str,
@@ -433,31 +546,65 @@ def process_one(
     start, clip = effective_segment(info, config, path)
     expected = max(1, int(round(clip * fps))) if clip is not None else None
     encode_duration = clip or max(1 / fps, ((info["frames"] or 86400 * info["fps"]) / info["fps"]) - start)
+    # Frames to expect for progress: the clip, or the rest of the video when its length is known.
+    known_length = info["frames"] / info["fps"] if info["frames"] else info.get("duration")
+    progress_total = expected or (max(1, int(round(max(0.0, known_length - start) * fps))) if known_length else None)
     frame_size = width * height * 3
     engine.reset_video_state()
     print(f"  {info['width']}x{info['height']} @ {info['fps']:.3f} -> {width}x{height} @ {fps:.3f}")
 
     decoder = _start_decoder(path, config, start, clip, fps, width, height, config.cuda_decode)
+    decoder_err = StderrTail(decoder)
     first = read_exact(decoder.stdout, frame_size)
     if not first and config.cuda_decode:
-        error = decoder.stderr.read().decode(errors="replace")
         decoder.wait()
+        error = decoder_err.text()
         print("  ! CUDA decode unavailable; using software decode")
         if error.strip():
             print("    " + error.strip().splitlines()[-1])
         decoder = _start_decoder(path, config, start, clip, fps, width, height, False)
+        decoder_err = StderrTail(decoder)
         first = read_exact(decoder.stdout, frame_size)
     if not first:
-        error = decoder.stderr.read().decode(errors="replace")
         decoder.wait()
+        error = decoder_err.text()
         raise RuntimeError("FFmpeg produced no frames:\n" + error[-4000:])
 
     selected_encoder = config.encoder
     if selected_encoder == "auto":
-        selected_encoder = "h264_nvenc" if ffmpeg_has_encoder("h264_nvenc") else "libx264"
+        selected_encoder = "h264_nvenc" if not _NVENC_BROKEN and ffmpeg_has_encoder("h264_nvenc") else "libx264"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
     encoder = subprocess.Popen(encoder_command(path, output, start, encode_duration, fps, width, height, selected_encoder, config.preset, config.quality), stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
+    encoder_err = StderrTail(encoder)
+
+    def kill_encoder() -> None:
+        encoder.terminate()
+        try:
+            encoder.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            encoder.kill()
+            encoder.wait(timeout=5)
+
+    def encoder_blocked(since: float | None) -> float:
+        """Track how long the queue has been full; a live but silent encoder fails the video."""
+        now = time.monotonic()
+        if since is None:
+            return now
+        if now - since > ENCODER_NO_DRAIN_SECONDS:
+            kill_encoder()
+            raise EncoderFailed(
+                selected_encoder,
+                f"FFmpeg encoder ({selected_encoder}) stopped reading frames for {now - since:.0f}s at frame {frames}:\n"
+                f"{encoder_err.text()[-4000:]}",
+            )
+        return since
+
+    def encoder_failed() -> EncoderFailed:
+        code = encoder.poll()
+        detail = encoder_err.text() if code is not None else ""
+        status = f"exited with code {code}" if code is not None else "failed"
+        return EncoderFailed(selected_encoder, f"FFmpeg encoder ({selected_encoder}) {status} at frame {frames}:\n{detail[-4000:]}")
 
     decoded: queue.Queue[Any] = queue.Queue(config.decode_queue)
     encoded: queue.Queue[Any] = queue.Queue(config.encode_queue)
@@ -506,6 +653,14 @@ def process_one(
                 encoder.stdin.write(raw)
         except BaseException as exc:
             errors.put(("encode", exc))
+        finally:
+            # Flush and close here, not on the job thread: with the large pipe buffer this
+            # flush can block if ffmpeg stops reading, and the job thread's timed join plus
+            # terminate/kill path only covers work done by this thread.
+            try:
+                encoder.stdin.close()
+            except (OSError, ValueError):
+                pass
 
     decode_thread = threading.Thread(target=decoder_worker, daemon=True)
     encode_thread = threading.Thread(target=encoder_worker, daemon=True)
@@ -513,6 +668,18 @@ def process_one(
     frames = fallbacks = 0
     started = time.monotonic()
     cancelled = False
+    heartbeat = {"last_frame": time.monotonic()}
+    start_stall_watchdog(
+        heartbeat,
+        stop,
+        lambda: (
+            f"frames={frames} decoded_queue={decoded.qsize()}/{config.decode_queue} "
+            f"encoded_queue={encoded.qsize()}/{config.encode_queue} "
+            f"decoder_exit={decoder.poll()} encoder_exit={encoder.poll()}"
+        ),
+        {"job": threading.get_ident(), "decoder": decode_thread.ident, "encoder": encode_thread.ident},
+    )
+    report_progress(engine, frames=0, total=progress_total, fps=0.0)
     try:
         while True:
             if cancel_requested():
@@ -522,6 +689,8 @@ def process_one(
                 break
             if not errors.empty():
                 stage, exc = errors.get()
+                if stage == "encode":
+                    raise encoder_failed() from exc
                 raise RuntimeError(f"{stage} pipeline failed: {exc}") from exc
             try:
                 raw = decoded.get(timeout=0.2)
@@ -543,44 +712,65 @@ def process_one(
                     print(f"  ! frame fallback: {exc}")
             if result.shape[:2] != (height, width):
                 result = cv2.resize(result, (width, height))
+            blocked_since: float | None = None
             while not stop.is_set():
                 try:
                     encoded.put(np.ascontiguousarray(result).tobytes(), timeout=0.1)
                     break
                 except queue.Full:
+                    blocked_since = encoder_blocked(blocked_since)
                     if cancel_requested():
                         cancelled = True
                         print("  cancel requested; stopping current video")
                         stop.set()
                         break
+                    # A dead encoder never drains the queue: fail now instead of waiting forever.
+                    if encoder.poll() is not None or not errors.empty():
+                        raise encoder_failed()
             if cancelled:
                 break
             frames += 1
+            heartbeat["last_frame"] = time.monotonic()
             if frames % 30 == 0 or frames == expected:
                 suffix = f"/{expected}" if expected else ""
                 print(f"\r  frames {frames}{suffix}", end="", flush=True)
+            if frames % 5 == 0 or frames == expected:
+                elapsed = max(time.monotonic() - started, 1e-6)
+                report_progress(engine, frames=frames, total=progress_total, fps=frames / elapsed)
             if expected and frames >= expected:
                 stop.set(); break
         print()
         if cancelled:
             output.unlink(missing_ok=True)
             raise BatchCancelled("cancel requested")
+        blocked_since = None
         while True:
             try:
                 encoded.put(sentinel, timeout=0.1)
                 break
             except queue.Full:
-                if cancelled:
-                    break
+                blocked_since = encoder_blocked(blocked_since)
+                # Same exits as the frame loop: a dead encoder never drains the queue, and a
+                # cancel must not wait for it either.
+                if cancel_requested():
+                    print("  cancel requested; stopping current video")
+                    raise BatchCancelled("cancel requested")
+                if encoder.poll() is not None or not errors.empty():
+                    raise encoder_failed()
         encode_thread.join(timeout=60)
-        encoder.stdin.close(); encoder.stdin = None
+        if encode_thread.is_alive():
+            # The writer is stuck in a pipe write: closing stdin would block on its lock. Kill
+            # ffmpeg (bounded waits) so the write fails and the thread ends, then report it.
+            kill_encoder()
+            encode_thread.join(timeout=5)
+            raise EncoderFailed(selected_encoder, f"FFmpeg encoder ({selected_encoder}) stopped accepting frames at the end of the video:\n{encoder_err.text()[-4000:]}")
         if stop.is_set() and decoder.poll() is None:
             decoder.terminate()
         decoder.wait(timeout=20)
         rc = encoder.wait(timeout=120)
-        error = encoder.stderr.read().decode(errors="replace")
+        error = encoder_err.text()
         if rc:
-            raise RuntimeError("FFmpeg encode failed:\n" + error[-4000:])
+            raise EncoderFailed(selected_encoder, "FFmpeg encode failed:\n" + error[-4000:])
     finally:
         stop.set()
         for process in (decoder, encoder):
@@ -595,6 +785,62 @@ def process_one(
     if not output.is_file() or output.stat().st_size == 0:
         raise RuntimeError(f"Output not created: {output}")
     return {"frames": frames, "fallback_frames": fallbacks, "fps": fps, "width": width, "height": height, "seconds": time.monotonic() - started, "size_mb": output.stat().st_size / 1048576}
+
+
+PARTIAL_MARKER = ".partial"
+
+
+def partial_output_path(final: Path) -> Path:
+    """Hidden sibling used while an output is being written, so viewers never see a half file."""
+    return final.with_name(f".{final.stem}{PARTIAL_MARKER}{final.suffix}")
+
+
+def _publish_atomically(writer: Callable[[Path], dict[str, Any]], final: Path) -> dict[str, Any]:
+    """Run writer(partial), then rename into place only after it succeeded completely."""
+    partial = partial_output_path(final)
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.unlink(missing_ok=True)
+    try:
+        result = writer(partial)
+        os.replace(partial, final)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return result
+
+
+def process_one(
+    path: Path,
+    output: Path,
+    relative: str,
+    config: ProcessConfig,
+    engine: ModernEngine,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    def write(partial: Path) -> dict[str, Any]:
+        try:
+            return _process_one_into(path, partial, relative, config, engine, cancel_event)
+        except EncoderFailed as exc:
+            # "auto" picks NVENC when present; if it dies mid-video, redo the file with libx264.
+            if config.encoder != "auto" or exc.encoder != "h264_nvenc":
+                raise
+            global _NVENC_BROKEN
+            _NVENC_BROKEN = True
+            print(f"  ! {str(exc)[-1200:].strip()}\n  ! retrying this video with libx264 (NVENC is skipped for the rest of this run)")
+            return _process_one_into(path, partial, relative, replace(config, encoder="libx264"), engine, cancel_event)
+
+    return _publish_atomically(write, output)
+
+
+def process_image_one(
+    path: Path,
+    output: Path,
+    relative: str,
+    config: ProcessConfig,
+    engine: ModernEngine,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    return _publish_atomically(lambda partial: _process_image_into(path, partial, relative, config, engine, cancel_event), output)
 
 
 def scan_identities(args: argparse.Namespace) -> int:
@@ -708,9 +954,12 @@ def process_batch(args: argparse.Namespace) -> int:
         output = video_output_path(config.output_dir, relative, config.ss, config.duration)
         key = manifest_key(video, config.input_dir, signature)
         print(f"\n[{number}/{len(videos)}] {relative}")
+        _bind_progress(engine, args, number, len(videos), relative)
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
             print("  skipped: matching input + source/model/config manifest entry")
-            report["skipped"].append(relative); continue
+            report["skipped"].append(relative)
+            report_progress(engine, state="skipped")
+            continue
         try:
             result = process_one(video, output, relative, config, engine, cancel_event)
             record = {"input": relative, "output": str(output), **result}
@@ -718,14 +967,14 @@ def process_batch(args: argparse.Namespace) -> int:
             items[key] = {**record, "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             atomic_json(manifest_path, manifest)
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
+            report_progress(engine, state="done")
         except BatchCancelled:
-            output.unlink(missing_ok=True)
             print("  cancelled")
             break
         except Exception as exc:
-            output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
             print(f"  FAILED: {exc}")
+            report_progress(engine, state="failed")
     report_path = config.output_dir / REPORT_NAME
     atomic_json(report_path, report)
     if args.zip_output:
@@ -737,7 +986,7 @@ def process_batch(args: argparse.Namespace) -> int:
     return 1 if report["failed"] else 0
 
 
-def process_image_one(
+def _process_image_into(
     path: Path,
     output: Path,
     relative: str,
@@ -815,9 +1064,12 @@ def process_photos(args: argparse.Namespace) -> int:
         output = config.output_dir / Path(relative).parent / f"{image.stem}_face_swapped{image.suffix.lower()}"
         key = manifest_key(image, config.input_dir, signature)
         print(f"\n[{number}/{len(images)}] {relative}")
+        _bind_progress(engine, args, number, len(images), relative)
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
             print("  skipped: matching input + source/model/config manifest entry")
-            report["skipped"].append(relative); continue
+            report["skipped"].append(relative)
+            report_progress(engine, state="skipped")
+            continue
         try:
             result = process_image_one(image, output, relative, config, engine, cancel_event)
             record = {"input": relative, "output": str(output), **result}
@@ -825,14 +1077,14 @@ def process_photos(args: argparse.Namespace) -> int:
             items[key] = {**record, "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             atomic_json(manifest_path, manifest)
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
+            report_progress(engine, state="done")
         except BatchCancelled:
-            output.unlink(missing_ok=True)
             print("  cancelled")
             break
         except Exception as exc:
-            output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
             print(f"  FAILED: {exc}")
+            report_progress(engine, state="failed")
     report_path = config.output_dir / REPORT_NAME
     atomic_json(report_path, report)
     print(f"\nCompleted {len(report['completed'])}; skipped {len(report['skipped'])}; failed {len(report['failed'])}")

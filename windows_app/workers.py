@@ -123,6 +123,7 @@ class LiveWorker(QThread):
 class PollWorker(QThread):
     message = Signal(str)
     finished_status = Signal(str)
+    progress = Signal(object)  # structured batch progress dict from the job payload
 
     def __init__(self, client: ApiClient, job_id: str):
         super().__init__()
@@ -142,6 +143,8 @@ class PollWorker(QThread):
                 for line in logs[self._seen:]:
                     self.message.emit(str(line))
                 self._seen = len(logs)
+                if payload.get("progress"):
+                    self.progress.emit(payload["progress"])
                 status = payload.get("status", "unknown")
                 if status not in {"queued", "running"}:
                     self.finished_status.emit(status)
@@ -151,4 +154,38 @@ class PollWorker(QThread):
             time.sleep(1.0)
 
 
-__all__ = ["LiveWorker", "OutputTaskWorker", "PollWorker"]
+def _detach(signal: object) -> None:
+    try:
+        signal.disconnect()  # type: ignore[attr-defined]
+    except (RuntimeError, TypeError):
+        pass
+
+
+def _install_abort_hook() -> None:
+    from windows_app import api_client
+
+    api_client.abort_requested = lambda: QThread.currentThread().isInterruptionRequested()
+
+
+_install_abort_hook()
+
+
+def stop_thread(thread: QThread | None, grace_ms: int = 3000) -> bool:
+    """Ask a QThread to stop and wait for it; True when it is no longer running.
+
+    Qt aborts the process ("QThread: Destroyed while thread is still running") if the app exits
+    while a worker is still running. Detach its signals so it cannot touch closed widgets, request
+    interruption (downloads and loops check it) and wait. Threads are never terminated: that can
+    leave locks held. Callers handle a thread that is still blocked in a network call.
+    """
+    if thread is None:
+        return True
+    for name in ("succeeded", "failed", "progress", "message", "frame", "frame_packet", "finished", "finished_status"):
+        signal = getattr(thread, name, None)
+        if signal is not None:
+            _detach(signal)
+    thread.requestInterruption()
+    return (not thread.isRunning()) or bool(thread.wait(grace_ms))
+
+
+__all__ = ["LiveWorker", "OutputTaskWorker", "PollWorker", "stop_thread"]

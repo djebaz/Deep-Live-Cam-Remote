@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_DRIVE_ROOT = "/content/drive/MyDrive/DeepLiveCamRemote"
+PATHS_VERSION = 2  # 2: inputs/outputs default to the Colab disk instead of Drive
 APP_STATE = Path.home() / ".deep_live_cam_remote_windows_app.json"
 REMOTE_PREFIXES = ("/content/", "/drive/")
 PHOTO_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
@@ -95,6 +96,7 @@ class AppSettings:
     host: str = ""
     port: int = 7860
     drive_root: str = DEFAULT_DRIVE_ROOT
+    paths_version: int = PATHS_VERSION
     source_face: str = "/content/inputs/source/source.png"
     photos_input: str = "/content/inputs/photos"
     photos_output: str = "/content/outputs/photos"
@@ -273,9 +275,26 @@ def live_setting(settings: AppSettings, name: str, default: int) -> int:
     return max(1, value)
 
 
+_MIGRATED_PATH_FIELDS = ("source_face", "photos_input", "photos_output", "videos_input", "videos_output")
+
+
+def _migrate_drive_paths(data: dict[str, Any], settings: AppSettings) -> None:
+    """One-time move of saved Google Drive paths to the Colab disk defaults (Drive is slow).
+
+    Only paths under /content/drive are replaced; paths the user pointed elsewhere are kept.
+    """
+    if int(data.get("paths_version") or 0) >= PATHS_VERSION:
+        return
+    defaults = AppSettings()
+    for name in _MIGRATED_PATH_FIELDS:
+        if str(getattr(settings, name, "")).startswith("/content/drive"):
+            setattr(settings, name, getattr(defaults, name))
+
+
 def load_settings() -> AppSettings:
     data = _read_state()
     settings = AppSettings(**_app_settings_kwargs(data))
+    _migrate_drive_paths(data, settings)
 
     legacy = legacy_processing_options(data)
     settings.photos_options = coerce_processing_options(data.get("photos_options"), legacy)

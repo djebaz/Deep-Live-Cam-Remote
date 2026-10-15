@@ -8,12 +8,15 @@ from typing import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from windows_app.api_client import ApiClient, format_size
+from windows_app import api_client
+from windows_app.api_client import (  # noqa: F401 - _download_bytes_with_progress re-exported
+    DOWNLOAD_CHUNK_SIZE,
+    ApiClient,
+    _download_bytes_with_progress,
+    format_size,
+)
 from windows_app.window_core import WindowCore as MainWindow
 from windows_app.workers import OutputTaskWorker
-
-DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64KB for smooth progress updates
-
 
 def _download_file_fast(
     client: ApiClient,
@@ -27,6 +30,8 @@ def _download_file_fast(
         total_size = int(response.headers.get("Content-Length", 0))
         downloaded = 0
         while True:
+            if api_client.abort_requested():
+                raise api_client.DownloadAborted("download cancelled")
             chunk = response.read(DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break
@@ -35,27 +40,6 @@ def _download_file_fast(
             if progress_callback and total_size > 0:
                 progress_callback(downloaded, total_size)
     return destination
-
-
-def _download_bytes_with_progress(
-    client: ApiClient,
-    path: str,
-    timeout: float = 20.0,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> bytes:
-    with urllib.request.urlopen(client.url(path), timeout=timeout) as response:
-        total_size = int(response.headers.get("Content-Length", 0))
-        chunks = []
-        downloaded = 0
-        while True:
-            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            downloaded += len(chunk)
-            if progress_callback:
-                progress_callback(downloaded, total_size)
-        return b"".join(chunks)
 
 
 def _ensure_output_worker_state(window: MainWindow) -> None:

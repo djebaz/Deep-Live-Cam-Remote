@@ -29,6 +29,7 @@ except Exception:
     QMediaPlayer = None
     QVideoWidget = None
 
+from windows_app.progress_format import describe_progress
 from windows_app.window_core import WindowCore as MainWindow
 
 
@@ -55,6 +56,40 @@ def _status_label(text: str = "") -> QLabel:
     label.setObjectName("statusLabel")
     label.setWordWrap(True)
     return label
+
+
+def _batch_progress_bar() -> QProgressBar:
+    bar = QProgressBar()
+    bar.setRange(0, 1000)
+    bar.setTextVisible(True)
+    bar.hide()
+    return bar
+
+
+def _show_batch_starting(window: MainWindow, kind: str) -> None:
+    """Show the bar right away; the first real progress arrives once the models are loaded."""
+    bar = getattr(window, f"{kind}_progress", None)
+    if bar is None:
+        return
+    bar.setRange(0, 0)
+    bar.setFormat("Starting on Colab (loading models)...")
+    bar.show()
+
+
+def _show_batch_progress(window: MainWindow, kind: str, progress: object) -> None:
+    """Update the per-tab bar from the job's structured progress (item, file %, fps, ETA)."""
+    bar = getattr(window, f"{kind}_progress", None)
+    described = describe_progress(progress)
+    if bar is None or described is None:
+        return
+    text, percent = described
+    if percent is None:
+        bar.setRange(0, 0)
+    else:
+        bar.setRange(0, 1000)
+        bar.setValue(int(percent * 10))
+    bar.setFormat(text)
+    bar.show()
 
 
 def _set_process_status(window: MainWindow, kind: str, text: str) -> None:
@@ -91,6 +126,9 @@ def _set_batch_button_idle(window: MainWindow, kind: str) -> None:
     btn.setText(f"Start {kind[:-1] if kind.endswith('s') else kind} batch")
     btn.setObjectName("primaryButton")
     btn.setStyle(btn.style())  # Force style refresh
+    bar = getattr(window, f"{kind}_progress", None)
+    if bar is not None:
+        bar.hide()
 
 
 def _is_batch_running(window: MainWindow) -> bool:
@@ -211,6 +249,8 @@ def _build_photos_tab(self: MainWindow) -> None:
     layout.addWidget(self.photos_start_btn)
     self.photos_status = _status_label("Idle")
     layout.addWidget(self.photos_status)
+    self.photos_progress = _batch_progress_bar()
+    layout.addWidget(self.photos_progress)
     layout.addStretch(1)
     self.tabs.addTab(tab, "Photos")
 
@@ -326,6 +366,8 @@ def _build_videos_tab(self: MainWindow) -> None:
     layout.addWidget(self.videos_start_btn)
     self.videos_status = _status_label("Idle")
     layout.addWidget(self.videos_status)
+    self.videos_progress = _batch_progress_bar()
+    layout.addWidget(self.videos_progress)
     layout.addStretch(1)
     self.tabs.addTab(tab, "Videos")
 

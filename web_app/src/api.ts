@@ -21,6 +21,23 @@ export interface Job {
   status: string;
   logs?: string[];
   error?: string;
+  progress?: JobProgress | null;
+  server_time?: number;
+  stage?: string;
+  cancel_requested?: boolean;
+}
+export interface JobProgress {
+  updated_at?: number;
+  item: number;
+  items: number;
+  name?: string;
+  state?: string;
+  frames?: number | null;
+  total?: number | null;
+  fps?: number | null;
+  file_percent?: number | null;
+  overall_percent?: number | null;
+  eta_seconds?: number | null;
 }
 export class Api {
   constructor(

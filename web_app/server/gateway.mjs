@@ -87,6 +87,7 @@ export function createGateway({
       method === "POST" &&
       (/^\/jobs\/(photos|videos|cancel)$/.test(path) ||
         /^\/upload\/(file|source|photos|videos)$/.test(path) ||
+        path === "/sources/check" ||
         /^\/outputs\/(photos|videos)\/(create-zip|preflight)$/.test(path))
     );
   };

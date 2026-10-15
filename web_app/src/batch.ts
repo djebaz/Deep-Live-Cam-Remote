@@ -53,6 +53,19 @@ export async function startBatch(
   progress: (l: number, t: number) => void,
 ) {
   const health = await api.request<Health>("/health", "GET", undefined, signal);
+  // Fail before any upload when the declared remote source image does not exist.
+  if (!source && p.source_face && health.web_capabilities?.source_check) {
+    const found = await api.request<{ exists: boolean }>(
+      "/sources/check",
+      "POST",
+      { path: p.source_face },
+      signal,
+    );
+    if (!found.exists)
+      throw new Error(
+        `Source face not found on Colab: ${p.source_face}. Select a local source image or fix the remote source path.`,
+      );
+  }
   let input = p[`${kind}_input`];
   let selected: Input[] = [];
   if (files !== null) {
@@ -171,11 +184,22 @@ export async function startBatch(
     );
     // Do not abort a submission midway: cancellation is sent once the id is known.
     submissionAttempted = true;
-    const job = await api.request<{ job_id: string; status: string }>(
-      `/jobs/${kind}`,
-      "POST",
-      jobPayload(p, kind, sourcePath, input),
-    );
+    let job: { job_id: string; status: string };
+    try {
+      job = await api.request<{ job_id: string; status: string }>(
+        `/jobs/${kind}`,
+        "POST",
+        jobPayload(p, kind, sourcePath, input),
+      );
+    } catch (e) {
+      // The backend answered with a client error (for example a missing source path):
+      // no job exists, so this is a definite rejection and the upload can be cleaned up.
+      if (isRejection(e)) {
+        submissionAttempted = false;
+        throw new SubmissionRejected(e);
+      }
+      throw e;
+    }
     if (!job.job_id)
       throw new Error("No job id returned. Check active jobs before retrying.");
     return job;
@@ -189,5 +213,18 @@ export async function startBatch(
         log(`Upload cleanup could not be confirmed for batch ${batch}. Retry cleanup after reconnecting.`);
       }
     }
+  }
+}
+
+/** True for an HTTP 4xx answer: the request reached the backend and was refused. */
+export function isRejection(error: unknown): boolean {
+  return /^(Error: )?HTTP 4\d\d\b/.test(String(error instanceof Error ? error.message : error));
+}
+
+/** A job submission the backend refused; nothing was started. */
+export class SubmissionRejected extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "SubmissionRejected";
   }
 }
