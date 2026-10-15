@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 import colab_api as api
 import colab_batch as batch
 
-NAMES = ('DRIVE_ROOT', 'LOCAL_ROOT', 'LOCAL_OUTPUT_PHOTOS_DIR', 'LOCAL_OUTPUT_VIDEOS_DIR',
+NAMES = ('LOCAL_ROOT', 'LOCAL_SOURCE_DIR', 'LOCAL_PHOTOS_DIR', 'LOCAL_VIDEOS_DIR',
+         'LOCAL_OUTPUT_PHOTOS_DIR', 'LOCAL_OUTPUT_VIDEOS_DIR', 'DRIVE_ROOT',
          'SOURCE_DIR', 'PHOTOS_DIR', 'VIDEOS_DIR', 'OUTPUT_PHOTOS_DIR', 'OUTPUT_VIDEOS_DIR')
 
 
