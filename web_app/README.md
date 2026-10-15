@@ -3,6 +3,35 @@
 React/TypeScript remote controller for the existing Colab GPU backend. The Windows
 app is retained. This release has no native companion implementation.
 
+## One-command launch on your PC
+
+After a one-time `tailscale` sign-in (MagicDNS and HTTPS enabled; Tailscale Serve
+enabled once from the link it prints), start everything with:
+
+```powershell
+.\start-web-controller.bat          # or: python scripts/start_web_controller.py
+```
+
+It checks Node 22.12+ and Tailscale, finds your online `colab*` machine, runs
+`npm ci`/`npm run build` only when needed, creates a per-user gateway token (kept in
+your profile, DPAPI-protected on Windows, never in the repository), starts the
+gateway in the background, runs `tailscale serve`, copies the token to the clipboard
+and prints the HTTPS address. In Connection, leave the gateway URL blank, paste the
+token and press Check connection. Useful options:
+
+| Option | Effect |
+| --- | --- |
+| `--backend 100.x.y.z[:port]` | Use this Colab address instead of auto-detecting |
+| `--status` / `--stop` | Show state / stop the gateway and remove the Serve entry |
+| `--rotate-token` | Generate a new token |
+| `--foreground` | Run the gateway in this window (Ctrl+C stops it) |
+| `--no-browser`, `--no-serve`, `--rebuild`, `--port N` | As named |
+| `--install-autostart` / `--remove-autostart` | Start at Windows login (Startup folder) |
+
+Re-run it after restarting Colab: the Colab Tailscale address can change, and the
+gateway allowlist is rebuilt from the machine it finds. State and logs live in
+`%LOCALAPPDATA%\DeepLiveCamRemote`. The manual steps below remain valid.
+
 ## Private production setup
 
 Use Node 22.12+ or Node 24, and the existing Colab setup. On a machine connected
