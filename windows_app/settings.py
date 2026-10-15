@@ -95,10 +95,10 @@ class AppSettings:
     host: str = ""
     port: int = 7860
     drive_root: str = DEFAULT_DRIVE_ROOT
-    source_face: str = DEFAULT_DRIVE_ROOT + "/source/source.png"
-    photos_input: str = DEFAULT_DRIVE_ROOT + "/photos"
+    source_face: str = "/content/inputs/source/source.png"
+    photos_input: str = "/content/inputs/photos"
     photos_output: str = "/content/outputs/photos"
-    videos_input: str = DEFAULT_DRIVE_ROOT + "/videos"
+    videos_input: str = "/content/inputs/videos"
     videos_output: str = "/content/outputs/videos"
     recursive: bool = True
     overwrite: bool = False

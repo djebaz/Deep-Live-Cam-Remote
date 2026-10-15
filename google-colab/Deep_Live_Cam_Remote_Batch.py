@@ -533,9 +533,9 @@ except Exception:
 """CELL: Batch configuration"""
 # @title Batch configuration
 DRIVE_ROOT = "/content/drive/MyDrive/DeepLiveCamRemote"
-SOURCE_FACE = DRIVE_ROOT + "/source/source.png"
-INPUT_DIR = DRIVE_ROOT + "/videos"
-PHOTO_INPUT_DIR = DRIVE_ROOT + "/photos"
+SOURCE_FACE = "/content/inputs/source/source.png"
+INPUT_DIR = "/content/inputs/videos"
+PHOTO_INPUT_DIR = "/content/inputs/photos"
 OUTPUT_DIR = "/content/outputs/videos"  # Colab disk (fast); Drive is slow
 PHOTO_OUTPUT_DIR = "/content/outputs/photos"
 ZIP_PATH = "/content/outputs/face_swapped_outputs.zip"
