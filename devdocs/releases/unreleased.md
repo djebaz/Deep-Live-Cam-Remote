@@ -151,7 +151,7 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Outputs viewer: Fit now fills the viewer; the original loads only when zooming beyond Fit.
 
 ## Partial outputs
-- Batch jobs now write each photo/video to a hidden `.name.partial.ext` sibling and rename it into place only when it is complete, so the web gallery and Windows app never try to load or play a file that is still being generated. Failed or cancelled items leave nothing behind; the Outputs listing and file/thumbnail routes ignore hidden partial files.
+- Batch jobs now write each photo/video to a hidden `.name.partial.ext` sibling and rename it into place only when it is complete, so the web gallery and Windows app never try to load or play a file that is still being generated. Failure or cancellation removes the partial file and preserves any previous completed output; the Outputs listing and file/thumbnail routes ignore hidden partial files.
 
 ## Batch progress
 - Jobs now report structured progress (`progress` in `GET /jobs/{id}`): item N of M, file name, frames done/expected, fps, file and overall percent, and ETA for the current video. The web app and Windows app show it as a progress bar with "Item 2 / 4 · clip.mp4 · 45% · 8.3 fps · ~1m 20s left" instead of only the item counter. When a video's length is unknown the bar shows frames and fps only.
@@ -167,5 +167,5 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - After an NVENC failure the libx264 fallback is used for the remaining videos of the run, and ffmpeg's error text is printed in the job log.
 - Reprocessing a file that fails or is cancelled no longer deletes its previous complete output (only the hidden partial is removed).
 - Windows app shutdown no longer terminates threads: workers are asked to stop (downloads check for it), and if one is still blocked in a network call the process exits directly after the window closes. Downloads started before a list refresh can no longer repopulate the photo cache with stale bytes.
-- Windows app: saved input/output paths under `/content/drive` are moved once to the Colab-disk defaults (`/content/inputs/...`, `/content/outputs/...`); custom paths elsewhere are kept. The Photos/Videos progress bar now appears as soon as a batch starts ("Starting on Colab (loading models)...") instead of waiting for the first progress update.
+- Windows app: saved source-face, photo and video input/output paths under `/content/drive` are replaced once by the Colab-disk defaults (`/content/inputs/...`, `/content/outputs/...`); custom paths elsewhere are kept. This only changes saved settings: no files are copied. Colab-disk storage is temporary and disappears when the runtime is reset or deleted, so download the outputs you want to keep (or copy them to Drive) before that. The Photos/Videos progress bar now appears as soon as a batch starts ("Starting on Colab (loading models)...") instead of waiting for the first progress update.
 - A live but hung ffmpeg encoder (queue full and nothing accepted for 90 s) now fails the video, with the same libx264 fallback, instead of waiting forever.
