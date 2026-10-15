@@ -1260,9 +1260,23 @@ def model_args(request: JobRequest, always_detector_size: bool) -> list[str]:
     return args
 
 
+def require_source_face(request: JobRequest) -> None:
+    """Refuse a job whose source image is missing instead of starting one that fails at once."""
+    if "source_face" not in request.model_fields_set:
+        return  # not chosen by the client: the batch falls back to its own default
+    source = (request.source_face or "").strip()
+    if source and not Path(source).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"source face not found on the Colab machine: {source}. "
+            "Select a local source image or fix the remote source path.",
+        )
+
+
 @app.post("/jobs/photos")
 def start_photos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
+    require_source_face(request)
     if not 1 <= request.quality <= 100:
         raise HTTPException(status_code=400, detail="invalid photo quality")
     argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request, True)]
@@ -1277,6 +1291,7 @@ def start_photos(request: JobRequest) -> dict[str, Any]:
 @app.post("/jobs/videos")
 def start_videos(request: JobRequest) -> dict[str, Any]:
     ensure_drive_layout()
+    require_source_face(request)
     if not 0 <= request.start_pct < request.end_pct <= 100:
         raise HTTPException(status_code=400, detail="start percentage must be lower than end percentage")
     argv = [

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Api, sanitizeLog, type Health, type Job } from "./api";
-import { startBatch, selectedInputs } from "./batch";
+import { startBatch, selectedInputs, SubmissionRejected } from "./batch";
 import {
   restore,
   commonControls,
@@ -411,7 +411,7 @@ function App() {
       else {
         setError(String(e));
         log(String(e));
-        if (submitStarted.current) {
+        if (submitStarted.current && !(e instanceof SubmissionRejected)) {
           setUncertain(true);
           setStatus(
             "Submission response uncertain. Check connection / active jobs before starting again.",
