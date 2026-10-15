@@ -149,3 +149,6 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Write Outputs activity to the Activity log: loads, new/removed files, downloads and ZIP progress, skipped or undecodable files, and refresh failures/recovery (once per outage).
 - Fast Outputs gallery: the Colab API serves cached JPEG thumbnails, video posters and 1600 px previews (`GET /outputs/{kind}/thumb/...`, `web_capabilities.output_thumbs`) with a short listing cache; the web app uses them with a fallback to browser thumbnails on older APIs. Restart the Colab API to enable.
 - Outputs viewer: Fit now fills the viewer; the original loads only when zooming beyond Fit.
+
+## Partial outputs
+- Batch jobs now write each photo/video to a hidden `.name.partial.ext` sibling and rename it into place only when it is complete, so the web gallery and Windows app never try to load or play a file that is still being generated. Failed or cancelled items leave nothing behind; the Outputs listing and file/thumbnail routes ignore hidden partial files.

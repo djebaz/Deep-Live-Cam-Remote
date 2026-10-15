@@ -302,6 +302,9 @@ def _scan_output_files(kind: str, roots: list[tuple[str, Path]], extensions: set
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in extensions:
                 continue
+            # Hidden ".name.partial.ext" files are outputs still being written.
+            if path.name.startswith("."):
+                continue
             stat = path.stat()
             relative_path = path.relative_to(root).as_posix()
             files.append({
@@ -325,6 +328,8 @@ def safe_output_path(kind: str, source: str, relative_path: str) -> Path:
         raise HTTPException(status_code=400, detail="invalid output path")
     if candidate.suffix.lower() not in extensions:
         raise HTTPException(status_code=400, detail="unsupported output file type")
+    if candidate.name.startswith("."):
+        raise HTTPException(status_code=404, detail="output file not found")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="output file not found")
     return candidate

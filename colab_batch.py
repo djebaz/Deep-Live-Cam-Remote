@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import queue
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ import time
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -420,7 +421,7 @@ def _start_decoder(path: Path, config: ProcessConfig, start: float, clip: float 
     return subprocess.Popen(decoder_command(path, cuda, start, clip, fps, width, height), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
 
 
-def process_one(
+def _process_one_into(
     path: Path,
     output: Path,
     relative: str,
@@ -597,6 +598,50 @@ def process_one(
     return {"frames": frames, "fallback_frames": fallbacks, "fps": fps, "width": width, "height": height, "seconds": time.monotonic() - started, "size_mb": output.stat().st_size / 1048576}
 
 
+PARTIAL_MARKER = ".partial"
+
+
+def partial_output_path(final: Path) -> Path:
+    """Hidden sibling used while an output is being written, so viewers never see a half file."""
+    return final.with_name(f".{final.stem}{PARTIAL_MARKER}{final.suffix}")
+
+
+def _publish_atomically(writer: Callable[[Path], dict[str, Any]], final: Path) -> dict[str, Any]:
+    """Run writer(partial), then rename into place only after it succeeded completely."""
+    partial = partial_output_path(final)
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.unlink(missing_ok=True)
+    try:
+        result = writer(partial)
+        os.replace(partial, final)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return result
+
+
+def process_one(
+    path: Path,
+    output: Path,
+    relative: str,
+    config: ProcessConfig,
+    engine: ModernEngine,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    return _publish_atomically(lambda partial: _process_one_into(path, partial, relative, config, engine, cancel_event), output)
+
+
+def process_image_one(
+    path: Path,
+    output: Path,
+    relative: str,
+    config: ProcessConfig,
+    engine: ModernEngine,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    return _publish_atomically(lambda partial: _process_image_into(path, partial, relative, config, engine, cancel_event), output)
+
+
 def scan_identities(args: argparse.Namespace) -> int:
     import modules.globals as globals_module
     from modules.face_analyser import get_many_faces
@@ -737,7 +782,7 @@ def process_batch(args: argparse.Namespace) -> int:
     return 1 if report["failed"] else 0
 
 
-def process_image_one(
+def _process_image_into(
     path: Path,
     output: Path,
     relative: str,
