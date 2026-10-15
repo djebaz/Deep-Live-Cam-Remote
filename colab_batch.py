@@ -421,6 +421,31 @@ def _start_decoder(path: Path, config: ProcessConfig, start: float, clip: float 
     return subprocess.Popen(decoder_command(path, cuda, start, clip, fps, width, height), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
 
 
+def _bind_progress(engine: Any, args: argparse.Namespace, number: int, count: int, name: str) -> None:
+    """Route per-file progress to args.progress_cb, tagged with the item position."""
+    sink = getattr(args, "progress_cb", None)
+    if sink is None:
+        return
+    base = {"item": number, "items": count, "name": name, "state": "processing"}
+
+    def progress(fields: dict[str, Any]) -> None:
+        sink({**base, **fields})
+
+    engine.progress = progress
+    progress({})
+
+
+def report_progress(engine: Any, **fields: Any) -> None:
+    """Send structured progress to whoever set engine.progress (the API); never fail the job."""
+    callback = getattr(engine, "progress", None)
+    if callback is None:
+        return
+    try:
+        callback(fields)
+    except Exception:
+        pass
+
+
 def _process_one_into(
     path: Path,
     output: Path,
@@ -434,6 +459,9 @@ def _process_one_into(
     start, clip = effective_segment(info, config, path)
     expected = max(1, int(round(clip * fps))) if clip is not None else None
     encode_duration = clip or max(1 / fps, ((info["frames"] or 86400 * info["fps"]) / info["fps"]) - start)
+    # Frames to expect for progress: the clip, or the rest of the video when its length is known.
+    known_length = info["frames"] / info["fps"] if info["frames"] else info.get("duration")
+    progress_total = expected or (max(1, int(round(max(0.0, known_length - start) * fps))) if known_length else None)
     frame_size = width * height * 3
     engine.reset_video_state()
     print(f"  {info['width']}x{info['height']} @ {info['fps']:.3f} -> {width}x{height} @ {fps:.3f}")
@@ -514,6 +542,7 @@ def _process_one_into(
     frames = fallbacks = 0
     started = time.monotonic()
     cancelled = False
+    report_progress(engine, frames=0, total=progress_total, fps=0.0)
     try:
         while True:
             if cancel_requested():
@@ -560,6 +589,9 @@ def _process_one_into(
             if frames % 30 == 0 or frames == expected:
                 suffix = f"/{expected}" if expected else ""
                 print(f"\r  frames {frames}{suffix}", end="", flush=True)
+            if frames % 5 == 0 or frames == expected:
+                elapsed = max(time.monotonic() - started, 1e-6)
+                report_progress(engine, frames=frames, total=progress_total, fps=frames / elapsed)
             if expected and frames >= expected:
                 stop.set(); break
         print()
@@ -753,9 +785,12 @@ def process_batch(args: argparse.Namespace) -> int:
         output = video_output_path(config.output_dir, relative, config.ss, config.duration)
         key = manifest_key(video, config.input_dir, signature)
         print(f"\n[{number}/{len(videos)}] {relative}")
+        _bind_progress(engine, args, number, len(videos), relative)
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
             print("  skipped: matching input + source/model/config manifest entry")
-            report["skipped"].append(relative); continue
+            report["skipped"].append(relative)
+            report_progress(engine, state="skipped")
+            continue
         try:
             result = process_one(video, output, relative, config, engine, cancel_event)
             record = {"input": relative, "output": str(output), **result}
@@ -763,6 +798,7 @@ def process_batch(args: argparse.Namespace) -> int:
             items[key] = {**record, "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             atomic_json(manifest_path, manifest)
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
+            report_progress(engine, state="done")
         except BatchCancelled:
             output.unlink(missing_ok=True)
             print("  cancelled")
@@ -771,6 +807,7 @@ def process_batch(args: argparse.Namespace) -> int:
             output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
             print(f"  FAILED: {exc}")
+            report_progress(engine, state="failed")
     report_path = config.output_dir / REPORT_NAME
     atomic_json(report_path, report)
     if args.zip_output:
@@ -860,9 +897,12 @@ def process_photos(args: argparse.Namespace) -> int:
         output = config.output_dir / Path(relative).parent / f"{image.stem}_face_swapped{image.suffix.lower()}"
         key = manifest_key(image, config.input_dir, signature)
         print(f"\n[{number}/{len(images)}] {relative}")
+        _bind_progress(engine, args, number, len(images), relative)
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
             print("  skipped: matching input + source/model/config manifest entry")
-            report["skipped"].append(relative); continue
+            report["skipped"].append(relative)
+            report_progress(engine, state="skipped")
+            continue
         try:
             result = process_image_one(image, output, relative, config, engine, cancel_event)
             record = {"input": relative, "output": str(output), **result}
@@ -870,6 +910,7 @@ def process_photos(args: argparse.Namespace) -> int:
             items[key] = {**record, "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             atomic_json(manifest_path, manifest)
             print(f"  done: {output} ({result['size_mb']:.1f} MB)")
+            report_progress(engine, state="done")
         except BatchCancelled:
             output.unlink(missing_ok=True)
             print("  cancelled")
@@ -878,6 +919,7 @@ def process_photos(args: argparse.Namespace) -> int:
             output.unlink(missing_ok=True)
             report["failed"].append({"input": relative, "error": str(exc)})
             print(f"  FAILED: {exc}")
+            report_progress(engine, state="failed")
     report_path = config.output_dir / REPORT_NAME
     atomic_json(report_path, report)
     print(f"\nCompleted {len(report['completed'])}; skipped {len(report['skipped'])}; failed {len(report['failed'])}")

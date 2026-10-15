@@ -152,3 +152,6 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 
 ## Partial outputs
 - Batch jobs now write each photo/video to a hidden `.name.partial.ext` sibling and rename it into place only when it is complete, so the web gallery and Windows app never try to load or play a file that is still being generated. Failed or cancelled items leave nothing behind; the Outputs listing and file/thumbnail routes ignore hidden partial files.
+
+## Batch progress
+- Jobs now report structured progress (`progress` in `GET /jobs/{id}`): item N of M, file name, frames done/expected, fps, file and overall percent, and ETA for the current video. The web app and Windows app show it as a progress bar with "Item 2 / 4 · clip.mp4 · 45% · 8.3 fps · ~1m 20s left" instead of only the item counter. When a video's length is unknown the bar shows frames and fps only.

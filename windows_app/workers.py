@@ -123,6 +123,7 @@ class LiveWorker(QThread):
 class PollWorker(QThread):
     message = Signal(str)
     finished_status = Signal(str)
+    progress = Signal(object)  # structured batch progress dict from the job payload
 
     def __init__(self, client: ApiClient, job_id: str):
         super().__init__()
@@ -142,6 +143,8 @@ class PollWorker(QThread):
                 for line in logs[self._seen:]:
                     self.message.emit(str(line))
                 self._seen = len(logs)
+                if payload.get("progress"):
+                    self.progress.emit(payload["progress"])
                 status = payload.get("status", "unknown")
                 if status not in {"queued", "running"}:
                     self.finished_status.emit(status)

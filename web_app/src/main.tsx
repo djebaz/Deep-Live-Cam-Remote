@@ -16,6 +16,7 @@ import {
   type Control,
 } from "./settings";
 import { chooseJob } from "./recover";
+import { describeProgress } from "./progress";
 import { LiveSession, type LiveStats } from "./live";
 import "./style.css";
 import { Outputs, saveBlob } from "./Outputs";
@@ -512,6 +513,7 @@ function App() {
     .map((s) => s.match(/\[(\d+)\/(\d+)\]/))
     .filter(Boolean)
     .at(-1);
+  const batchProgress = batchRunning ? describeProgress(job?.progress) : null;
   let selected = 0;
   try {
     selected = inputs[kind]
@@ -1009,9 +1011,17 @@ function App() {
               <div className="stage-footer">
                 <p role="status">
                   {status}
-                  {itemProgress &&
+                  {!batchProgress &&
+                    itemProgress &&
                     ` · Item ${itemProgress[1]} / ${itemProgress[2]}`}
+                  {batchProgress && ` · ${batchProgress.text}`}
                 </p>
+                {!progress && batchProgress && (
+                  <progress
+                    max={100}
+                    value={batchProgress.percent ?? undefined}
+                  />
+                )}
                 {progress && (
                   <progress
                     max={progress.t || 1}

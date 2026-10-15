@@ -153,6 +153,11 @@ class JobState:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     log_queue: "queue.Queue[str]" = field(default_factory=queue.Queue)
     logs: list[str] = field(default_factory=list)
+    progress: dict[str, Any] | None = None
+
+    def set_progress(self, fields: dict[str, Any]) -> None:
+        """Merge structured progress from the batch and derive percentages / ETA."""
+        self.progress = merge_progress(self.progress, fields)
 
     def append(self, text: str) -> None:
         if not text:
@@ -172,7 +177,34 @@ class JobState:
             "exit_code": self.exit_code,
             "error": self.error,
             "logs": self.logs[-300:],
+            "progress": self.progress,
         }
+
+
+def merge_progress(previous: dict[str, Any] | None, fields: dict[str, Any]) -> dict[str, Any]:
+    """Per-file fields (frames/total/fps) restart with each new item; percentages are derived."""
+    base = previous or {}
+    if fields.get("item") != base.get("item"):
+        base = {}
+    merged = {**base, **fields}
+    state = str(merged.get("state") or "processing")
+    frames, total = merged.get("frames"), merged.get("total")
+    if state in {"done", "skipped", "failed"}:
+        fraction = 1.0
+    elif frames is not None and total:
+        fraction = max(0.0, min(1.0, frames / total))
+    else:
+        fraction = 0.0
+    items = max(1, int(merged.get("items") or 1))
+    item = max(1, int(merged.get("item") or 1))
+    merged["file_percent"] = round(fraction * 100, 1) if (total or state != "processing") else None
+    merged["overall_percent"] = round(min(100.0, ((item - 1) + fraction) / items * 100), 1)
+    fps = merged.get("fps") or 0
+    if state == "processing" and total and frames is not None and fps > 0:
+        merged["eta_seconds"] = round(max(0.0, (total - frames) / fps), 1)
+    else:
+        merged["eta_seconds"] = None
+    return merged
 
 
 class JobWriter(io.TextIOBase):
@@ -420,6 +452,7 @@ def run_job(job: JobState, argv: list[str]) -> None:
             parser = colab_batch.build_parser()
             args = parser.parse_args(argv)
             args.cancel_event = job.cancel_event
+            args.progress_cb = job.set_progress
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 job.exit_code = args.func(args)
         job.status = "cancelled" if job.cancel_event.is_set() else ("completed" if job.exit_code == 0 else "failed")
