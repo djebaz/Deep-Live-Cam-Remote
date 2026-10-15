@@ -461,6 +461,10 @@ def start_stall_watchdog(
     return thread
 
 
+# Set once NVENC has died mid-video so later videos in the run go straight to libx264.
+_NVENC_BROKEN = False
+
+
 class EncoderFailed(RuntimeError):
     """The ffmpeg encoder process died or reported an error; `encoder` names which one."""
 
@@ -566,7 +570,7 @@ def _process_one_into(
 
     selected_encoder = config.encoder
     if selected_encoder == "auto":
-        selected_encoder = "h264_nvenc" if ffmpeg_has_encoder("h264_nvenc") else "libx264"
+        selected_encoder = "h264_nvenc" if not _NVENC_BROKEN and ffmpeg_has_encoder("h264_nvenc") else "libx264"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
     encoder = subprocess.Popen(encoder_command(path, output, start, encode_duration, fps, width, height, selected_encoder, config.preset, config.quality), stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
@@ -774,7 +778,9 @@ def process_one(
             # "auto" picks NVENC when present; if it dies mid-video, redo the file with libx264.
             if config.encoder != "auto" or exc.encoder != "h264_nvenc":
                 raise
-            print(f"  ! {str(exc).splitlines()[0]}\n  ! retrying this video with libx264")
+            global _NVENC_BROKEN
+            _NVENC_BROKEN = True
+            print(f"  ! {str(exc)[-1200:].strip()}\n  ! retrying this video with libx264 (NVENC is skipped for the rest of this run)")
             return _process_one_into(path, partial, relative, replace(config, encoder="libx264"), engine, cancel_event)
 
     return _publish_atomically(write, output)
