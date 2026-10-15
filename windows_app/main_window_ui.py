@@ -66,6 +66,16 @@ def _batch_progress_bar() -> QProgressBar:
     return bar
 
 
+def _show_batch_starting(window: MainWindow, kind: str) -> None:
+    """Show the bar right away; the first real progress arrives once the models are loaded."""
+    bar = getattr(window, f"{kind}_progress", None)
+    if bar is None:
+        return
+    bar.setRange(0, 0)
+    bar.setFormat("Starting on Colab (loading models)...")
+    bar.show()
+
+
 def _show_batch_progress(window: MainWindow, kind: str, progress: object) -> None:
     """Update the per-tab bar from the job's structured progress (item, file %, fps, ETA)."""
     bar = getattr(window, f"{kind}_progress", None)

@@ -194,6 +194,7 @@ def _start_batch_with_status(self: MainWindow, kind: str) -> None:
             self.poller.finished_status.connect(lambda status, batch_kind=kind: on_job_finished(status, batch_kind))
             self.poller.progress.connect(lambda payload, batch_kind=kind: ui_base._show_batch_progress(self, batch_kind, payload))
             self.poller.start()
+            ui_base._show_batch_starting(self, kind)
             ui_base._set_process_status(self, kind, f"{kind} batch running...")
         else:
             ui_base._set_batch_button_idle(self, kind)
