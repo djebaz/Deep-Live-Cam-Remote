@@ -101,9 +101,33 @@ all-processed selection creates no upload and no job. It intentionally checks
 output existence like desktop preflight, not processing-config equivalence.
 Uploads preserve paths relative to the selected folder; remote output naming
 follows the real CLI through a shared output-path helper. Preparation cancellation
-cleans the isolated input batch; an ambiguous job submission retains inputs.
+cleans an unsubmitted legacy upload batch; an ambiguous job submission retains inputs.
 Source and local selections must be reselected after reload,
 while preferences and known active job IDs persist. The access token does not.
+
+With an API advertising `web_capabilities.streaming_uploads`, local batches declare
+their full pending input list first. As soon as the first input is fully received,
+Colab can load the models and process it while the browser uploads subsequent
+files. **Uploads: N / M** and processing progress remain visible together. The
+backend processes only completed uploads, preserves relative output paths and
+the declared item total, and acknowledges repeated uploads without overwriting
+or processing a file twice. Source validation/upload and skip-processed preflight
+still happen first. Model initialization and the shared engine queue can delay
+the first result; a single large input still needs to finish uploading first.
+
+Stop aborts further input transfers and requests cancellation of the known job;
+completed outputs are retained. A transfer failure signals that the batch cannot
+receive the remaining inputs. When waiting for inputs, an abandoned batch fails
+after 15 minutes without upload activity or the final completion signal. Incoming
+file bytes refresh this deadline, so a healthy large transfer does not expire
+just because it takes more than 15 minutes to complete.
+Reloading can reconnect to the job but cannot restore browser-selected files or
+resume their transfers automatically; reselect remaining files for a new batch
+after the old job ends or is cancelled. Older APIs retain upload-all-first behavior.
+
+Deploy this feature by restarting the updated Colab API **and gateway**, then
+rebuilding/reloading the web frontend. The gateway must allow the new upload-batch
+creation/lookup and upload-completion routes.
 
 After a successful connection check, health monitoring and active-job polling
 automatically retry temporary network failures, timeouts, HTTP 5xx, 408 and 429.

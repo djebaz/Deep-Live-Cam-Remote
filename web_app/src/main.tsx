@@ -133,6 +133,7 @@ function App() {
   const operation = useRef<AbortController | null>(null),
     stopRequested = useRef(false),
     submitStarted = useRef(false),
+    submittedJob = useRef<Job | null>(null),
     live = useRef<LiveSession | null>(null),
     canvas = useRef<HTMLCanvasElement>(null),
     perfTimer = useRef<number | undefined>(undefined),
@@ -339,6 +340,8 @@ function App() {
         setJob(r);
         setStatus(`${r.kind}: ${r.status}`);
         if (!["running", "queued"].includes(r.status)) {
+          // Stop sending more inputs if the backend fails or cancels during upload.
+          operation.current?.abort("job-ended");
           localStorage.removeItem("dlcr.activeJob");
           setProgress(null);
           setBusy(false);
@@ -365,6 +368,7 @@ function App() {
   }, [job?.job_id, api, job?.status, monitoringApi]);
   async function stopBatch() {
     stopRequested.current = true;
+    operation.current?.abort();
     if (job && ["queued", "running"].includes(job.status)) {
       try {
         await api.request("/jobs/cancel", "POST", { job_id: job.job_id });
@@ -395,6 +399,7 @@ function App() {
     setJob(null);
     stopRequested.current = false;
     submitStarted.current = false;
+    submittedJob.current = null;
     const abort = new AbortController();
     operation.current = abort;
     try {
@@ -411,20 +416,27 @@ function App() {
           if (s.startsWith("Submitting")) submitStarted.current = true;
         },
         (l, t) => setProgress({ l, t }),
+        (active) => {
+          submittedJob.current = active;
+          setJob(active);
+        },
       );
       if (r) {
         const active: Job = { ...r, kind };
-        setJob(active);
+        setJob((previous) => previous?.job_id === active.job_id ? previous : active);
         if (stopRequested.current)
           await api.request("/jobs/cancel", "POST", { job_id: r.job_id });
       } else setStatus("Everything already processed. No job started.");
     } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError")
-        setStatus("Preparation cancelled. No job submitted.");
-      else {
+      if (abort.signal.aborted && abort.signal.reason === "job-ended") {
+        // Polling owns the terminal status and its useful backend error message.
+      } else if (e instanceof DOMException && e.name === "AbortError") {
+        if (!submittedJob.current) setStatus("Preparation cancelled. No job submitted.");
+        else if (stopRequested.current) setStatus("Uploads stopped; cancellation requested for the batch.");
+      } else {
         setError(String(e));
         log(String(e));
-        if (submitStarted.current && !(e instanceof SubmissionRejected)) {
+        if (submitStarted.current && !submittedJob.current && !(e instanceof SubmissionRejected)) {
           setUncertain(true);
           setStatus(
             "Submission response uncertain. Check connection / active jobs before starting again.",
@@ -1032,21 +1044,24 @@ function App() {
               <div className="stage-footer">
                 <p role="status">
                   {connectionNotice ? "Reconnecting to Colab…" : status}
+                  {job?.upload && ` · Uploads: ${job.upload.uploaded} / ${job.upload.total}${job.upload.complete ? job.upload.error ? " (stopped)" : " (finished)" : ""}`}
                   {!batchProgress &&
                     itemProgress &&
                     ` · Item ${itemProgress[1]} / ${itemProgress[2]}`}
                   {batchProgress && ` · ${batchProgress.text}`}
-                  {!connectionNotice && !batchProgress && batchRunning && job?.stage && ` · ${job.stage}`}
+                  {!connectionNotice && batchRunning && job?.stage && ` · ${job.stage}`}
                   {batchRunning && job?.cancel_requested && " · cancelling: stops at the next safe point"}
                 </p>
-                {!progress && batchProgress && (
+                {batchProgress && (
                   <progress
+                    aria-label="Processing progress"
                     max={100}
                     value={batchProgress.percent ?? undefined}
                   />
                 )}
                 {progress && (
                   <progress
+                    aria-label="Upload progress"
                     max={progress.t || 1}
                     value={progress.t ? progress.l : undefined}
                   />

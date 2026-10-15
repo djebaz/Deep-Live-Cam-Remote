@@ -25,6 +25,12 @@ export interface Job {
   server_time?: number;
   stage?: string;
   cancel_requested?: boolean;
+  upload?: {
+    uploaded: number;
+    total: number;
+    complete: boolean;
+    error?: string | null;
+  } | null;
 }
 export interface JobProgress {
   updated_at?: number;

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import urllib.error
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -11,6 +13,7 @@ from PySide6.QtGui import QImageReader, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from windows_app.api_client import ApiClient, format_size, is_local_path, job_payload, local_files
+from windows_app import api_client
 from windows_app.task_runner import (
     OutputTaskWorker,  # noqa: F401 - re-exported for output_browser
     _download_bytes_with_progress,  # noqa: F401 - re-exported for output_browser
@@ -154,8 +157,26 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
         if not files:
             raise FileNotFoundError(f"No supported {kind} files found in local path: {input_path}")
         original_count = len(files)
-        if settings.skip_processed:
-            files = _filter_processed_local_files(client, kind, files, logs)
+        streaming = bool((health.get("web_capabilities") or {}).get("streaming_uploads"))
+        root = Path(input_path)
+        relatives = [path.relative_to(root).as_posix() if root.is_dir() else path.name for path in files]
+        if streaming and is_local_path(output_path):
+            output_dir = str((health.get("local_paths") or {}).get(f"output_{kind}_dir") or "")
+            if not output_dir:
+                raise RuntimeError("Colab API did not advertise its local output directory")
+        if settings.skip_processed and not settings.overwrite:
+            if streaming:
+                processed: set[str] = set()
+                for offset in range(0, len(relatives), 1000):
+                    checked = client.request_json("POST", f"/outputs/{kind}/preflight",
+                                                  {"output_dir": output_dir, "relative_paths": relatives[offset:offset + 1000]})
+                    processed.update(checked.get("processed") or [])
+                remaining = [(path, name) for path, name in zip(files, relatives) if name not in processed]
+                files = [path for path, _ in remaining]
+                relatives = [name for _, name in remaining]
+                logs.append(f"skip_processed preflight: {original_count - len(files)} processed; {len(files)} remain")
+            else:
+                files = _filter_processed_local_files(client, kind, files, logs)
             if not files:
                 logs.append(f"skip_processed preflight: all {original_count} local {kind} file(s) already have matching outputs; no job started")
                 return {
@@ -174,6 +195,15 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
                 f"Backend maximum is {MAX_UPLOAD_FILES}; select a smaller folder/subset."
             )
         upload_endpoint, batch_id = _isolated_upload_endpoint(kind)
+        if streaming:
+            endpoint = f"/jobs/{kind}/upload-batches/{batch_id}"
+            payload = {**job_payload(settings, input_dir, output_dir, source_face, kind=kind),
+                       "files": [{"relative": name, "size": path.stat().st_size} for path, name in zip(files, relatives)]}
+            pending = {"settings": settings, "kind": kind, "batch_id": batch_id,
+                       "files": files, "relatives": relatives, "endpoint": endpoint, "request": payload}
+            result = _declare_pending_upload(pending)
+            result["logs"] = [*logs, *result.get("logs", [])]
+            return result
         logs.append(f"uploading {len(files)} local {kind} file(s) to isolated batch {batch_id}")
         response = client.upload_files(upload_endpoint, files, timeout=600.0)
         input_dir = _require_isolated_input_dir(kind, batch_id, response)
@@ -189,20 +219,113 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
     return {"endpoint": endpoint, "response": response, "logs": logs}
 
 
+def _declare_pending_upload(pending: dict[str, Any]) -> dict[str, Any]:
+    """Reuse creation identity on uncertainty; definite refusals retain their error."""
+    client = ApiClient(pending["settings"])
+    endpoint = pending["endpoint"]
+    response = None
+    if pending.get("attempted"):
+        try:
+            response = client.request_json("GET", endpoint)
+        except (RuntimeError, OSError, ValueError) as exc:
+            if not (isinstance(exc.__cause__, urllib.error.HTTPError) and exc.__cause__.code == 404):
+                return {"pending_creation": pending, "logs": ["Batch lookup still unavailable; Start will recover the same batch."]}
+    if response is not None:
+        if not isinstance(response, dict) or not response.get("job_id"):
+            return {"pending_creation": pending, "logs": ["Batch lookup had no job ID. Start will recover the same batch."]}
+        return {"endpoint": endpoint, "response": response, "pending_upload": pending,
+                "logs": ["Recovered the original batch; no new job was submitted."]}
+    pending["attempted"] = True
+    try:
+        response = client.request_json("POST", endpoint, pending["request"])
+    except (RuntimeError, OSError, ValueError) as exc:
+        if isinstance(exc.__cause__, urllib.error.HTTPError) and 400 <= exc.__cause__.code < 500:
+            pending["rejected"] = True
+            raise
+        try:
+            response = client.request_json("GET", endpoint)
+        except (RuntimeError, OSError, ValueError):
+            return {"pending_creation": pending, "logs": [
+                "Batch creation response uncertain. No inputs uploaded. Start reconnects to this same batch instead of creating another."]}
+    if not isinstance(response, dict) or not response.get("job_id"):
+        return {"pending_creation": pending, "logs": ["Batch reply had no job ID. Start will recover the same batch."]}
+    return {"endpoint": endpoint, "response": response, "pending_upload": pending,
+            "logs": ["batch declared; processing will start with the first completed upload"]}
+
+
+def _start_pending_upload(window: MainWindow, payload: dict[str, Any]) -> None:
+    """Keep uploads on a worker while the GUI polls the already-created job."""
+    pending = payload.get("pending_upload")
+    response = payload.get("response") or {}
+    if not pending or response.get("status") not in {"queued", "running"}:
+        return
+    from windows_app import main_window_ui
+
+    job_id = str(response["job_id"])
+    kind = pending["kind"]
+    if window.poller:
+        window.poller.upload_progress.connect(
+            lambda snapshot: main_window_ui._show_batch_upload(window, kind, snapshot))
+    client = ApiClient(pending["settings"])
+    cancelled = threading.Event()
+    window.output_upload_cancel = cancelled
+
+    def upload() -> object:
+        try:
+            for path, relative in zip(pending["files"], pending["relatives"]):
+                if api_client.abort_requested():
+                    raise api_client.DownloadAborted("uploads cancelled")
+                client.upload_files(f"/upload/{kind}?batch_id={pending['batch_id']}", [path],
+                                    timeout=600.0, relative_paths=[relative])
+            try:
+                return client.request_json("POST", f"/jobs/{job_id}/uploads/finish", {})
+            except (RuntimeError, OSError):
+                return client.request_json("POST", f"/jobs/{job_id}/uploads/finish", {})
+        except Exception:
+            try:
+                if cancelled.is_set():
+                    client.request_json("POST", "/jobs/cancel", {"job_id": job_id})
+                client.request_json("POST", f"/jobs/{job_id}/uploads/finish",
+                                    {"error": "Input upload interrupted; retry the remaining files in a new batch."})
+            except Exception:
+                pass  # the server also expires abandoned upload queues
+            raise
+
+    def succeeded(_task_id: str, _result: object) -> None:
+        window.log("All inputs uploaded; the existing job continues processing.")
+
+    def failed(_task_id: str, error: str) -> None:
+        window.log(f"Input upload stopped: {error}. The existing job remains monitored.")
+
+    window.output_upload_task_id = _start_output_task(window, "Uploading inputs while Colab processes...", upload, succeeded, failed)
+
+
 def _start_batch(self: MainWindow, kind: str) -> None:
+    if getattr(self, "output_workers", {}).get(getattr(self, "output_batch_task_id", "")):
+        self.log("Batch preparation is already in progress.")
+        return
     self.sync_settings()
     self.tabs.setCurrentWidget(self.log_box)
     _ensure_output_worker_state(self)
     settings = _copy_settings(self.settings)
+    pending = getattr(self, "pending_upload_creation", None)
+    if pending and pending["kind"] != kind:
+        self.log(f"Recover the unconfirmed {pending['kind']} batch first.")
+        return
     self.log(f"starting {kind} batch...")
 
     def task() -> dict[str, Any]:
-        return _prepare_and_start_batch(settings, kind)
+        return _declare_pending_upload(pending) if pending else _prepare_and_start_batch(settings, kind)
 
     def succeeded(task_id: str, result: object) -> None:
         if task_id != self.output_batch_task_id:
             return
         payload = result if isinstance(result, dict) else {}
+        if payload.get("pending_creation"):
+            self.pending_upload_creation = payload["pending_creation"]
+            self.log("Batch creation uncertain; Start reconnects to the same batch. No inputs uploaded.")
+            return
+        self.pending_upload_creation = None
         for line in payload.get("logs") or []:
             self.log(str(line))
         response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
@@ -216,12 +339,15 @@ def _start_batch(self: MainWindow, kind: str) -> None:
             self.poller = PollWorker(self.client, self.active_job_id)
             self.poller.message.connect(self.log)
             self.poller.finished_status.connect(lambda status: self.log(f"job finished: {status}"))
+            _start_pending_upload(self, payload)
             self.poller.start()
         self.output_status.setText(f"{kind} batch started")
 
     def failed(task_id: str, error: str) -> None:
         if task_id != self.output_batch_task_id:
             return
+        if pending and pending.get("rejected"):
+            self.pending_upload_creation = None
         self.output_status.setText(f"{kind} batch failed before start: {error}")
         self.log(f"{kind} batch failed before start: {error}")
 
@@ -303,6 +429,10 @@ def refresh_outputs(self: MainWindow) -> None:
 
 def cancel_job(self: MainWindow) -> None:
     self.sync_settings()
+    uploader = getattr(self, "output_workers", {}).get(getattr(self, "output_upload_task_id", ""))
+    if uploader:
+        getattr(self, "output_upload_cancel", threading.Event()).set()
+        uploader.requestInterruption()
     if not self.active_job_id:
         self.log("no active job")
         if hasattr(self, "photos_status"):

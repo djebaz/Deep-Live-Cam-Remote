@@ -1,4 +1,4 @@
-import { Api, uploadSource, type Health } from "./api";
+import { Api, uploadSource, type Health, type Job } from "./api";
 import { jobPayload, type Kind, type Preferences } from "./settings";
 export interface Input {
   file: File;
@@ -51,6 +51,7 @@ export async function startBatch(
   signal: AbortSignal,
   log: (s: string) => void,
   progress: (l: number, t: number) => void,
+  onStarted?: (job: Job) => void,
 ) {
   const health = await api.request<Health>("/health", "GET", undefined, signal);
   // Fail before any upload when the declared remote source image does not exist.
@@ -156,9 +157,31 @@ export async function startBatch(
   );
   let batch: string | undefined;
   let submissionAttempted = false;
+  let streamingJob: Job | undefined;
   try {
     if (files !== null) {
       batch = crypto.randomUUID();
+      if (health.web_capabilities?.streaming_uploads) {
+        const endpoint = `/jobs/${kind}/upload-batches/${batch}`;
+        log("Submitting one batch. Processing will start with the first completed upload.");
+        submissionAttempted = true;
+        try {
+          streamingJob = await api.request<Job>(endpoint, "POST", {
+            ...jobPayload(p, kind, sourcePath, input),
+            files: selected.map((x) => ({ relative: x.relative, size: x.file.size })),
+          });
+        } catch (error) {
+          if (isRejection(error)) {
+            submissionAttempted = false;
+            throw new SubmissionRejected(error);
+          }
+          // Recover an accepted creation whose reply was lost; never submit a second job.
+          streamingJob = await api.request<Job>(endpoint);
+        }
+        if (!streamingJob.job_id) throw new Error("No batch job id returned");
+        onStarted?.(streamingJob);
+        if (!["queued", "running"].includes(streamingJob.status)) return streamingJob;
+      }
       // Upload sequentially to bound memory and make preparation cancellation prompt.
       for (let i = 0; i < selected.length; i++) {
         signal.throwIfAborted();
@@ -176,6 +199,14 @@ export async function startBatch(
         if (!r.input_dir?.endsWith("/" + batch))
           throw new Error("Backend did not return an isolated upload directory.");
         input = r.input_dir;
+      }
+    }
+    if (streamingJob) {
+      // Idempotent: a lost finish reply can be retried without changing the job.
+      try {
+        return await api.request<Job>(`/jobs/${streamingJob.job_id}/uploads/finish`, "POST", {});
+      } catch {
+        return await api.request<Job>(`/jobs/${streamingJob.job_id}/uploads/finish`, "POST", {});
       }
     }
     signal.throwIfAborted();
@@ -203,6 +234,19 @@ export async function startBatch(
     if (!job.job_id)
       throw new Error("No job id returned. Check active jobs before retrying.");
     return job;
+  } catch (error) {
+    if (streamingJob) {
+      try {
+        if (signal.aborted && signal.reason !== "job-ended")
+          await api.request("/jobs/cancel", "POST", { job_id: streamingJob.job_id });
+        await api.request(`/jobs/${streamingJob.job_id}/uploads/finish`, "POST", {
+          error: signal.aborted ? "Uploads cancelled" : "Input upload failed; retry the remaining files in a new batch.",
+        });
+      } catch {
+        log("Upload termination could not be confirmed; the job ID is retained for monitoring. An abandoned upload will time out.");
+      }
+    }
+    throw error;
   } finally {
     // A lost submission response may hide a running job: retain its inputs.
     if (batch && !submissionAttempted && health.web_capabilities?.batch_cleanup) {

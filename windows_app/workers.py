@@ -124,6 +124,7 @@ class PollWorker(QThread):
     message = Signal(str)
     finished_status = Signal(str)
     progress = Signal(object)  # structured batch progress dict from the job payload
+    upload_progress = Signal(object)
 
     def __init__(self, client: ApiClient, job_id: str):
         super().__init__()
@@ -145,6 +146,8 @@ class PollWorker(QThread):
                 self._seen = len(logs)
                 if payload.get("progress"):
                     self.progress.emit(payload["progress"])
+                if payload.get("upload"):
+                    self.upload_progress.emit(payload)
                 status = payload.get("status", "unknown")
                 if status not in {"queued", "running"}:
                     self.finished_status.emit(status)
@@ -180,7 +183,7 @@ def stop_thread(thread: QThread | None, grace_ms: int = 3000) -> bool:
     """
     if thread is None:
         return True
-    for name in ("succeeded", "failed", "progress", "message", "frame", "frame_packet", "finished", "finished_status"):
+    for name in ("succeeded", "failed", "progress", "upload_progress", "message", "frame", "frame_packet", "finished", "finished_status"):
         signal = getattr(thread, name, None)
         if signal is not None:
             _detach(signal)

@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import parse_qs
 
 import cv2
 import numpy as np
@@ -31,6 +32,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 import colab_batch
+from upload_batch import UploadBatch
 
 DRIVE_ROOT = Path("/content/drive/MyDrive/DeepLiveCamRemote")
 SOURCE_DIR = DRIVE_ROOT / "source"
@@ -133,6 +135,19 @@ class CancelRequest(BaseModel):
     job_id: str
 
 
+class UploadInput(BaseModel):
+    relative: str = Field(min_length=1, max_length=4096)
+    size: int = Field(ge=0)
+
+
+class UploadJobRequest(JobRequest):
+    files: list[UploadInput] = Field(min_length=1, max_length=1000)
+
+
+class FinishUploadsRequest(BaseModel):
+    error: str | None = Field(default=None, max_length=1000)
+
+
 class CreateZipResponse(BaseModel):
     zip_path: str
     zip_id: str
@@ -156,6 +171,7 @@ class JobState:
     logs: list[str] = field(default_factory=list)
     progress: dict[str, Any] | None = None
     stage: str = ""  # what the job is doing before the first progress arrives
+    upload_batch: UploadBatch | None = None
 
     def set_progress(self, fields: dict[str, Any]) -> None:
         """Merge structured progress from the batch and derive percentages / ETA."""
@@ -184,6 +200,7 @@ class JobState:
             "stage": self.stage,
             "cancel_requested": self.cancel_event.is_set(),
             "server_time": time.time(),
+            "upload": self.upload_batch.snapshot() if self.upload_batch else None,
         }
 
 
@@ -241,6 +258,38 @@ ENGINE_LOCK = threading.Lock()
 # Serializes job registration with batch cleanup's active-job check and delete.
 JOBS_LOCK = threading.Lock()
 app = FastAPI(title="Deep-Live-Cam Remote API", version="1.0")
+
+
+class UploadActivityMiddleware:
+    """Refresh the idle deadline while FastAPI receives a declared multipart file.
+
+    FastAPI parses uploads before entering the route, so updating the deadline
+    only inside write_upload would expire healthy large/slow transfers.
+    """
+
+    def __init__(self, app: Any):
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        stream = None
+        if scope["type"] == "http" and scope.get("path") in {"/upload/photos", "/upload/videos"}:
+            batch_id = (parse_qs(scope.get("query_string", b"").decode("ascii", errors="ignore")).get("batch_id") or [""])[0]
+            job = JOBS.get(upload_job_id(scope["path"].rsplit("/", 1)[-1], batch_id))
+            stream = job.upload_batch if job else None
+        if stream is None:
+            await self.app(scope, receive, send)
+            return
+
+        async def tracked_receive() -> Any:
+            message = await receive()
+            if message["type"] == "http.request" and message.get("body"):
+                stream.touch()
+            return message
+
+        await self.app(scope, tracked_receive, send)
+
+
+app.add_middleware(UploadActivityMiddleware)
 
 
 def ensure_drive_layout() -> dict[str, str]:
@@ -467,6 +516,11 @@ def run_job(job: JobState, argv: list[str]) -> None:
     job.status = "queued"
     writer = JobWriter(job)
     try:
+        if job.upload_batch:
+            job.stage = "Waiting for the first upload"
+            if not job.upload_batch.wait_first(job.cancel_event, lambda: None):
+                job.status = "cancelled"
+                return
         if not acquire_engine(job):
             job.append("cancelled while waiting for another job")
             job.status = "cancelled"
@@ -479,6 +533,10 @@ def run_job(job: JobState, argv: list[str]) -> None:
             args = parser.parse_args(argv)
             args.cancel_event = job.cancel_event
             args.progress_cb = job.set_progress
+            if job.upload_batch:
+                args.input_files = job.upload_batch.paths(
+                    job.cancel_event, lambda: setattr(job, "stage", "Waiting for remaining uploads"))
+                args.input_count = len(job.upload_batch)
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 job.exit_code = args.func(args)
         finally:
@@ -489,15 +547,22 @@ def run_job(job: JobState, argv: list[str]) -> None:
         job.status = "cancelled" if job.cancel_event.is_set() else "failed"
         job.append(f"ERROR: {exc}")
     finally:
+        if job.upload_batch and job.status in {"failed", "cancelled"}:
+            job.upload_batch.finish(job.error or f"Job {job.status}")
         job.stage = ""
         writer.flush()
         job.finished_at = time.time()
 
 
-def start_job(kind: str, argv: list[str]) -> JobState:
+def start_job(kind: str, argv: list[str], upload_batch: UploadBatch | None = None, job_id: str | None = None) -> JobState:
     input_dir = argv[argv.index("--input-dir") + 1] if "--input-dir" in argv else None
-    job = JobState(job_id=uuid.uuid4().hex, kind=kind, input_dir=input_dir)
+    job = JobState(job_id=job_id or uuid.uuid4().hex, kind=kind, input_dir=input_dir, upload_batch=upload_batch)
     with JOBS_LOCK:
+        previous = JOBS.get(job.job_id)
+        if previous:
+            if not previous.upload_batch or not upload_batch or previous.upload_batch.files != upload_batch.files or previous.upload_batch.signature != upload_batch.signature:
+                raise HTTPException(status_code=409, detail="batch id already used with different inputs or options")
+            return previous
         JOBS[job.job_id] = job
     threading.Thread(target=run_job, args=(job, argv), daemon=True).start()
     return job
@@ -877,7 +942,7 @@ def health() -> dict[str, Any]:
         "api_version": API_VERSION,
         "paths": paths,
         "local_paths": ensure_local_layout(),
-        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True, "source_check": True},
+        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True, "source_check": True, "streaming_uploads": True},
         "active_jobs": [job.snapshot() for job in JOBS.values() if job.status in {"queued", "running"}],
     }
 
@@ -1194,11 +1259,42 @@ async def upload_media(kind: str, files: list[UploadFile], batch_id: str | None,
     async with upload_lock(base, batch_id):
         upload_dir = batch_upload_dir(base, batch_id)
         destinations = relative_upload_destinations(upload_dir, relative_paths, len(files)) if relative_paths is not None else None
+        job = JOBS.get(upload_job_id(kind, batch_id)) if batch_id else None
+        stream = job.upload_batch if job else None
+        if stream:
+            if destinations is None:
+                raise HTTPException(status_code=400, detail="declared batches require relative_paths")
+            expected = dict(stream.files)
+            if any(dest not in expected for dest in destinations):
+                raise HTTPException(status_code=400, detail="file was not declared in this batch")
+            if any(file.size != expected[dest] for file, dest in zip(files, destinations)):
+                raise HTTPException(status_code=400, detail="file size differs from declared batch input")
         uploaded = []
         for index, file in enumerate(files):
             fallback = f"photo_{index}.jpg" if kind == "photos" else f"video_{index}.mp4"
             dest = destinations[index] if destinations is not None else upload_dir / safe_upload_name(file.filename, fallback)
-            size = await write_upload(file, dest)
+            if stream and stream.contains(dest):
+                # A lost upload reply may be retried, including after this file was
+                # processed. Never overwrite or enqueue the same input twice.
+                size = expected[dest]
+            elif stream:
+                if job.cancel_event.is_set() or job.status not in {"queued", "running"} or stream.complete:
+                    raise HTTPException(status_code=409, detail="job no longer accepts uploads")
+                temporary = dest.with_name(f".{dest.name}.uploading")
+                try:
+                    size = await write_upload(file, temporary)
+                    if size != expected[dest]:
+                        raise HTTPException(status_code=400, detail="incomplete input upload")
+                    if job.cancel_event.is_set() or job.status not in {"queued", "running"}:
+                        raise HTTPException(status_code=409, detail="job no longer accepts uploads")
+                    try:
+                        stream.publish(dest, temporary)
+                    except RuntimeError as exc:
+                        raise HTTPException(status_code=409, detail=str(exc)) from exc
+                finally:
+                    temporary.unlink(missing_ok=True)
+            else:
+                size = await write_upload(file, dest)
             uploaded.append({"path": str(dest), "size": size})
         return {"ok": True, "count": len(uploaded), "files": uploaded, "input_dir": str(upload_dir), "output_dir": paths[f"output_{kind}_dir"], "batch_id": safe_batch_id(batch_id)}
 
@@ -1284,40 +1380,86 @@ def require_source_face(request: JobRequest) -> None:
         )
 
 
-@app.post("/jobs/photos")
-def start_photos(request: JobRequest) -> dict[str, Any]:
+def batch_argv(kind: str, request: JobRequest) -> list[str]:
     ensure_drive_layout()
     require_source_face(request)
-    if not 1 <= request.quality <= 100:
-        raise HTTPException(status_code=400, detail="invalid photo quality")
-    argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request, True)]
-    if "quality" in request.model_fields_set:
-        argv.extend(["--image-quality", str(request.quality)])
-    if request.output_max_width is not None:
-        argv.extend(["--output-max-width", str(request.output_max_width)])
-    job = start_job("photos", argv)
+    if kind == "photos":
+        if not 1 <= request.quality <= 100:
+            raise HTTPException(status_code=400, detail="invalid photo quality")
+        argv = ["photos", *common_args(request, PHOTOS_DIR, OUTPUT_PHOTOS_DIR), *model_args(request, True)]
+        if "quality" in request.model_fields_set:
+            argv.extend(["--image-quality", str(request.quality)])
+        if request.output_max_width is not None:
+            argv.extend(["--output-max-width", str(request.output_max_width)])
+        return argv
+    if kind != "videos":
+        raise HTTPException(status_code=400, detail="invalid batch kind")
+    if not 0 <= request.start_pct < request.end_pct <= 100:
+        raise HTTPException(status_code=400, detail="start percentage must be lower than end percentage")
+    return [
+        "process", *common_args(request, VIDEOS_DIR, OUTPUT_VIDEOS_DIR), *model_args(request, False),
+        "--max-fps", str(request.max_fps), "--max-width", str(request.max_width),
+        "--quality", str(request.quality), "--encoder", request.encoder,
+        "--start-pct", str(request.start_pct), "--end-pct", str(request.end_pct),
+    ]
+
+
+@app.post("/jobs/photos")
+def start_photos(request: JobRequest) -> dict[str, Any]:
+    job = start_job("photos", batch_argv("photos", request))
     return {"job_id": job.job_id, "status": job.status}
 
 
 @app.post("/jobs/videos")
 def start_videos(request: JobRequest) -> dict[str, Any]:
-    ensure_drive_layout()
-    require_source_face(request)
-    if not 0 <= request.start_pct < request.end_pct <= 100:
-        raise HTTPException(status_code=400, detail="start percentage must be lower than end percentage")
-    argv = [
-        "process",
-        *common_args(request, VIDEOS_DIR, OUTPUT_VIDEOS_DIR),
-        *model_args(request, False),
-        "--max-fps", str(request.max_fps),
-        "--max-width", str(request.max_width),
-        "--quality", str(request.quality),
-        "--encoder", request.encoder,
-        "--start-pct", str(request.start_pct),
-        "--end-pct", str(request.end_pct),
-    ]
-    job = start_job("videos", argv)
+    job = start_job("videos", batch_argv("videos", request))
     return {"job_id": job.job_id, "status": job.status}
+
+
+def upload_job_id(kind: str, batch_id: str) -> str:
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"dlcr-upload:{kind}:{batch_id}").hex
+
+
+def upload_batch_base(kind: str, batch_id: str) -> Path:
+    if kind not in {"photos", "videos"} or not batch_id or batch_id != safe_batch_id(batch_id):
+        raise HTTPException(status_code=400, detail="invalid upload batch")
+    return LOCAL_PHOTOS_DIR if kind == "photos" else LOCAL_VIDEOS_DIR
+
+
+@app.post("/jobs/{kind}/upload-batches/{batch_id}")
+async def start_upload_batch(kind: str, batch_id: str, request: UploadJobRequest) -> dict[str, Any]:
+    base = upload_batch_base(kind, batch_id)
+    ensure_local_layout()
+    async with upload_lock(base, batch_id):
+        root = batch_upload_dir(base, batch_id)
+        paths = relative_upload_destinations(root, [item.relative for item in request.files], len(request.files))
+        extensions = OUTPUT_IMAGE_EXTENSIONS if kind == "photos" else OUTPUT_VIDEO_EXTENSIONS
+        if any(path.suffix.lower() not in extensions for path in paths):
+            raise HTTPException(status_code=400, detail="unsupported batch input type")
+        argv = batch_argv(kind, request.model_copy(update={"input_dir": str(root)}))
+        stream = UploadBatch(list(zip(paths, [item.size for item in request.files])), tuple(argv))
+        job = start_job(kind, argv, stream, upload_job_id(kind, batch_id))
+        return {**job.snapshot(), "input_dir": str(root)}
+
+
+@app.get("/jobs/{kind}/upload-batches/{batch_id}")
+def find_upload_batch(kind: str, batch_id: str) -> dict[str, Any]:
+    upload_batch_base(kind, batch_id)
+    job = JOBS.get(upload_job_id(kind, batch_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown upload batch")
+    return {**job.snapshot(), "input_dir": job.input_dir}
+
+
+@app.post("/jobs/{job_id}/uploads/finish")
+async def finish_upload_batch(job_id: str, request: FinishUploadsRequest) -> dict[str, Any]:
+    job = JOBS.get(job_id)
+    if job is None or job.upload_batch is None:
+        raise HTTPException(status_code=404, detail="unknown upload batch")
+    root = Path(job.input_dir)
+    async with upload_lock(root.parent.parent, root.name):
+        job.upload_batch.finish(request.error)
+    return job.snapshot()
 
 
 @app.get("/jobs/{job_id}")

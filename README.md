@@ -127,6 +127,12 @@ resumes progress when Colab responds again. It never resubmits the batch.
 Videos opened in the Outputs detail viewer start playing muted; use the player
 controls to enable sound. Slideshow remains optional.
 
+With the updated Colab API and gateway, local photo/video batches begin processing
+after the first input finishes uploading, while later files continue uploading.
+Upload and processing progress are shown separately. Model loading and another
+active GPU job can still delay processing; a single file must finish uploading
+before it can be processed. Older APIs keep the upload-all-first workflow.
+
 ## Desktop remote controller
 
 The current controller app connects to `colab_api.py` running in Colab over Tailscale.
@@ -161,6 +167,8 @@ The app currently provides:
 - Live webcam uses DirectShow by default for OBS on Windows; Auto capture mode requests the current OBS profile canvas size when available, while Custom mode can force a configured OBS/OpenCV capture size at startup before applying a hot-change Send scale (Auto, 100%, 95%, 90%, 80%, 75%, 70%, 50%, 30%, 25%) before sending JPEG/WebP frames with codec and quality values reported in backend diagnostics/perf logs. Low-risk Live tuning controls (send scale, codec/quality, process width, detection cadence, blending/mask options, many-faces, pipeline frames, and preview buffer/size) can be adjusted while Live is running; camera/source/capture-backend/capture-size/FPS/model controls remain restart-only and are disabled during a run.
 - Output browser with preview/player support, photo preview zoom choices (fit, 0.5x, 0.8x, 1x, 1.5x, 2x), photo auto-play visible-duration control, and configurable photo prefetching while auto-play is enabled.
 - Local source/input upload to the Colab API.
+- With the updated API, process completed inputs while the Windows app uploads the
+  rest of a local batch; separate upload and processing bars show both activities.
 - Settings sync between photo and video workflows.
 
 ## Standalone desktop app build
