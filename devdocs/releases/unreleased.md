@@ -149,3 +149,6 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 - Write Outputs activity to the Activity log: loads, new/removed files, downloads and ZIP progress, skipped or undecodable files, and refresh failures/recovery (once per outage).
 - Fast Outputs gallery: the Colab API serves cached JPEG thumbnails, video posters and 1600 px previews (`GET /outputs/{kind}/thumb/...`, `web_capabilities.output_thumbs`) with a short listing cache; the web app uses them with a fallback to browser thumbnails on older APIs. Restart the Colab API to enable.
 - Outputs viewer: Fit now fills the viewer; the original loads only when zooming beyond Fit.
+
+## Batch progress
+- Jobs now report structured progress (`progress` in `GET /jobs/{id}`): item N of M, file name, frames done/expected, fps, file and overall percent, and ETA for the current video. The web app and Windows app show it as a progress bar with "Item 2 / 4 · clip.mp4 · 45% · 8.3 fps · ~1m 20s left" instead of only the item counter. When a video's length is unknown the bar shows frames and fps only.
