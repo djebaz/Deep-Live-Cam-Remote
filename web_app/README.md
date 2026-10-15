@@ -131,6 +131,8 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
 
 - **Grid / List / Detail** views and a Photos/Videos switch. The view, thumbnail size
   (25-250 %), sort order and auto-refresh are remembered per browser.
+  In Detail, the Filmstrip size slider scales the vertical desktop strip and the
+  horizontal mobile thumbnails; the current item stays in view when resized.
 - **Auto-refresh** (on by default) checks for new outputs every few seconds while the
   tab is visible, and keeps your selection and position. **Refresh now** is always
   available.

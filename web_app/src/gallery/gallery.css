@@ -798,7 +798,7 @@
 }
 .og-film {
   flex: none;
-  width: 104px;
+  width: calc(104px * var(--og-film-scale, 1));
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -973,12 +973,12 @@
   .og-film {
     flex-direction: row;
     width: auto;
-    height: 72px;
+    height: calc(64px * var(--og-film-scale, 1) + 8px);
     order: 2;
   }
   .og-thumb {
-    width: 64px;
-    height: 64px;
+    width: calc(64px * var(--og-film-scale, 1));
+    height: calc(64px * var(--og-film-scale, 1));
     flex: none;
   }
   .og-round {

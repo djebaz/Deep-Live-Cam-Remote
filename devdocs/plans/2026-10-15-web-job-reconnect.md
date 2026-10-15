@@ -13,6 +13,7 @@
 - [x] Enable muted detail video autoplay.
 - [x] Request startup once about two seconds are buffered, without restarting paused videos.
 - [x] Add video duration immediately to the right of Dimensions in detail metadata, including duration updates and an unknown-value placeholder.
+- [x] Wire the saved filmstrip size percentage into desktop/mobile thumbnail CSS and keep the current item in view after resizing.
 - [x] Sync user documentation and release notes.
 - [x] Review the complete diff and prepare the branch for a PR to main.
 

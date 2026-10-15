@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { Api, Output } from "../api";
 import { Icon } from "./icons";
 import {
@@ -25,6 +25,8 @@ export interface DetailProps {
   files: Output[];
   index: number;
   kind: "photos" | "videos";
+  /** Saved thumbnail-size percentage, shared with the gallery size slider. */
+  thumb: number;
   api: Api;
   thumbs: ThumbnailCache;
   /** Full-size originals. */
@@ -223,7 +225,7 @@ export function DetailView(p: DetailProps) {
     filmstrip.current
       ?.querySelector<HTMLElement>("[aria-current='true']")
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [id]);
+  }, [id, p.thumb]);
 
   // ---- zoom helpers
   const fitScale = () => {
@@ -375,7 +377,10 @@ export function DetailView(p: DetailProps) {
       : { width: natural.w * zoom, height: natural.h * zoom, maxWidth: "none", maxHeight: "none" };
 
   return (
-    <div className="og-detail">
+    <div
+      className="og-detail"
+      style={{ "--og-film-scale": p.thumb / 100 } as CSSProperties}
+    >
       <div className="og-detail-main">
         <div className="og-preview">
           <div

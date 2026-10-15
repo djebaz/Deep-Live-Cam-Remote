@@ -5,6 +5,7 @@
 - Start videos muted when opening or navigating the Outputs detail viewer, independently of slideshow; player controls can enable sound, and slideshow still controls advancing at the end.
 - Request detail video playback once approximately two seconds of media are buffered (or the rest of a shorter clip), instead of relying only on the browser's native autoplay readiness. Native playback may begin earlier; user-paused videos are not restarted by later buffer updates. Network and decoding still determine the actual startup delay.
 - Show video duration immediately to the right of Dimensions in the gallery detail metadata, using the existing duration formatter and updating when media duration becomes available.
+- Connect the gallery Detail view's Filmstrip size slider to thumbnail dimensions on desktop and mobile, using the saved 25–250% setting and keeping the current item visible after resizing.
 
 ## Added
 - Add an Outputs photo auto-play seconds control and prefetch a configurable number of upcoming photos while photo auto-play is enabled.
