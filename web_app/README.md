@@ -119,6 +119,38 @@ unselected filesystem paths and Taildrop CLI are omitted. Ordinary workflows do
 not depend on a companion. See [parity audit](docs/parity.md) for exact controls,
 defaults, ranges, source differences and future optional native design.
 
+## Live tuning notes
+
+Measured from the browser over Tailscale with the Colab live engine (`live_perf`
+lines in the log). Treat these as starting points, not guarantees.
+
+- **The GPU sets the ceiling.** On a Colab Tesla T4, an `fp32` swap took about 75 ms
+  (about 13 fps maximum, with frames queuing and being dropped); `fp16` took about
+  28 ms. A faster GPU swapped in about 5 ms even with `fp32`. Check `swap_ms`,
+  `server_queue_ms` and `latest_drop_count`: a growing queue and drops mean the server
+  is the limit; `wait_ms` of tens of milliseconds with an empty queue means the
+  browser or camera is.
+- **Frame size is the usual browser-side limit.** Frame rate fell from about 20 to
+  about 10-14 fps whenever `in_kb` rose from about 6-8 KB to 12-17 KB (more motion or
+  detail, larger send scale, higher JPEG quality). Quality 55-65 at a send scale near
+  210x294 held 18-20 fps; 300x420 at quality 63-66 gave 16-17 fps; quality 80 at
+  300x420 dropped to 10-11 fps.
+- **The camera caps the rate.** The negotiated rate is logged (for example
+  `Negotiated camera: 300 x 420 - 25.0 FPS`); the server cannot exceed it, and cameras
+  often fall back to 15-20 fps in dim light.
+- **Detection is cheap on a GPU.** Detector 160 costs about 1 ms, so detect every 1-2
+  frames improves face tracking at no visible cost; detect every 7-8 saves almost
+  nothing.
+- **Codecs.** Keep JPEG input and WebP output as the default. In the same session,
+  WebP output was faster end to end (16-17 fps) than JPEG output (9-13 fps) even
+  though the server encodes JPEG faster, and WebP input added 10-20 ms of delay without
+  a gain. Re-test on your own setup; short samples vary.
+- **Stalls.** Occasional one-to-two-second gaps with a large `reader_receive_ms` and an
+  idle server come from the network or a paused browser tab, not from processing.
+- **Source image.** Live needs a source face on the backend; select one in the Live tab
+  (a runtime restart removes the uploaded copy, and the default Drive path
+  `.../source/source.png` may not exist).
+
 ## Local verification
 
 ```bash
