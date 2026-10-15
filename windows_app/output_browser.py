@@ -280,7 +280,7 @@ def show_output_at(self: MainWindow, index: int) -> None:
             self.outputs_progress.setValue(0)
             self.outputs_progress.show()
 
-        def fetch_photo(progress_cb: Callable[[int, int], None]) -> tuple[bytes, bool]:
+        def load_photo(progress_cb: Callable[[int, int], None]) -> tuple[bytes, bool]:
             return fetch_photo(self.client, item, preview, progress_cb)
 
         def photo_ready(task_id: str, result: object) -> None:
@@ -307,7 +307,7 @@ def show_output_at(self: MainWindow, index: int) -> None:
             self.schedule_outputs_autoplay()
 
         self.output_preview_task_id = output_tasks_base._start_output_task_with_progress(
-            self, "Loading photo preview...", fetch_photo, photo_ready, photo_failed
+            self, "Loading photo preview...", load_photo, photo_ready, photo_failed
         )
         return
 
