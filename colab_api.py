@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import queue
+import re
 import shutil
 import struct
 import subprocess
@@ -214,10 +215,14 @@ class JobWriter(io.TextIOBase):
         self._buffer = ""
 
     def write(self, text: str) -> int:
+        # "\r" ends a line too: batch progress ("\r  frames 30/900") has no newline and
+        # would otherwise sit in the buffer until some unrelated message arrives.
         self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            self.job.append(line)
+        parts = re.split(r"\r\n|\r|\n", self._buffer)
+        self._buffer = parts.pop()
+        for line in parts:
+            if line.strip():
+                self.job.append(line)
         return len(text)
 
     def flush(self) -> None:

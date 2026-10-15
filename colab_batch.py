@@ -15,8 +15,10 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -417,6 +419,48 @@ def effective_segment(info: dict[str, Any], config: ProcessConfig, path: Path) -
     return start, clip
 
 
+STALL_REPORT_SECONDS = 20.0
+
+
+def start_stall_watchdog(
+    heartbeat: dict[str, float],
+    stop: threading.Event,
+    describe: Callable[[], str],
+    threads: dict[str, int | None],
+) -> threading.Thread:
+    """Report where a job is stuck: queue sizes, ffmpeg state and the stack of each worker.
+
+    Runs beside the frame loop (which may itself be blocked inside the swapper) and prints to the
+    job log, so a stall can be diagnosed from the web/Windows Activity log instead of guessed.
+    """
+
+    def run() -> None:
+        reported = 0.0
+        while not stop.wait(5.0):
+            now = time.monotonic()
+            idle = now - heartbeat["last_frame"]
+            if idle < STALL_REPORT_SECONDS or now - reported < 60.0:
+                continue
+            reported = now
+            lines = [f"  ! no frame finished for {idle:.0f}s: {describe()}"]
+            frames = sys._current_frames()
+            for name, ident in threads.items():
+                frame = frames.get(ident) if ident is not None else None
+                if frame is None:
+                    lines.append(f"    [{name}] not running")
+                    continue
+                stack = traceback.format_stack(frame, limit=4)
+                lines.append(f"    [{name}] " + " <- ".join(
+                    part.strip().splitlines()[0].strip() + " @ " + part.strip().splitlines()[-1].strip()
+                    for part in reversed(stack)
+                ))
+            print("\n".join(lines), flush=True)
+
+    thread = threading.Thread(target=run, name="StallWatchdog", daemon=True)
+    thread.start()
+    return thread
+
+
 class StderrTail:
     """Drain a child's stderr continuously, keeping only the last few KB.
 
@@ -574,6 +618,17 @@ def _process_one_into(
     frames = fallbacks = 0
     started = time.monotonic()
     cancelled = False
+    heartbeat = {"last_frame": time.monotonic()}
+    start_stall_watchdog(
+        heartbeat,
+        stop,
+        lambda: (
+            f"frames={frames} decoded_queue={decoded.qsize()}/{config.decode_queue} "
+            f"encoded_queue={encoded.qsize()}/{config.encode_queue} "
+            f"decoder_exit={decoder.poll()} encoder_exit={encoder.poll()}"
+        ),
+        {"job": threading.get_ident(), "decoder": decode_thread.ident, "encoder": encode_thread.ident},
+    )
     report_progress(engine, frames=0, total=progress_total, fps=0.0)
     try:
         while True:
@@ -618,6 +673,7 @@ def _process_one_into(
             if cancelled:
                 break
             frames += 1
+            heartbeat["last_frame"] = time.monotonic()
             if frames % 30 == 0 or frames == expected:
                 suffix = f"/{expected}" if expected else ""
                 print(f"\r  frames {frames}{suffix}", end="", flush=True)
