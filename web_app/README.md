@@ -32,6 +32,12 @@ Re-run it after restarting Colab: the Colab Tailscale address can change, and th
 gateway allowlist is rebuilt from the machine it finds. State and logs live in
 `%LOCALAPPDATA%\DeepLiveCamRemote`. The manual steps below remain valid.
 
+Troubleshooting: `401 Enter the gateway access token` means the token field is empty
+(the browser never saves it); a `.ts.net` address that "can't be reached" is usually
+DNS - check `nslookup <name> 100.100.100.100` and turn on "Use Tailscale DNS settings"
+in Tailscale on the PC; `tailscale serve` asks you to enable Serve once from a link it
+prints.
+
 ## Private production setup
 
 Use Node 22.12+ or Node 24, and the existing Colab setup. On a machine connected
