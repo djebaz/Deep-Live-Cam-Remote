@@ -155,3 +155,9 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 
 ## Batch progress
 - Jobs now report structured progress (`progress` in `GET /jobs/{id}`): item N of M, file name, frames done/expected, fps, file and overall percent, and ETA for the current video. The web app and Windows app show it as a progress bar with "Item 2 / 4 · clip.mp4 · 45% · 8.3 fps · ~1m 20s left" instead of only the item counter. When a video's length is unknown the bar shows frames and fps only.
+
+## Windows app Outputs
+- Photo previews use the Colab API's 1600 px server previews (`/outputs/photos/thumb/...`) when zoom is Fit and load the original only for fixed zooms; older Colab APIs fall back to full files automatically.
+- The prefetch cache is now byte-bounded (96 MB LRU, was unbounded) and prefetching runs at most 3 downloads at a time; refreshing the list clears stale cached pictures.
+- Large output lists are inserted in one batch instead of repainting per item.
+- Windows app: closing the window now stops and waits for its worker threads (output downloads/prefetch, job poller, live worker) so Qt no longer aborts with "QThread: Destroyed while thread is still running".

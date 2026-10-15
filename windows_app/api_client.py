@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from windows_app.settings import AppSettings, PHOTO_EXTENSIONS, REMOTE_PREFIXES, VIDEO_EXTENSIONS
 
@@ -118,9 +118,35 @@ def taildrop_receive_file(remote_host: str, remote_path: str, local_destination:
         return (False, f"Taildrop error: {exc}")
 
 
+DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64KB for smooth progress updates
+
+
+def _download_bytes_with_progress(
+    client: "ApiClient",
+    path: str,
+    timeout: float = 20.0,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> bytes:
+    with urllib.request.urlopen(client.url(path), timeout=timeout) as response:
+        total_size = int(response.headers.get("Content-Length", 0))
+        chunks = []
+        downloaded = 0
+        while True:
+            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if progress_callback:
+                progress_callback(downloaded, total_size)
+        return b"".join(chunks)
+
+
 class ApiClient:
     def __init__(self, settings: AppSettings):
         self.settings = settings
+        # Cleared when the Colab API turns out to have no /thumb route (older version).
+        self.thumbs_supported = True
 
     def url(self, path: str) -> str:
         return self.settings.base_url + urllib.parse.quote(path, safe="/:?=&%")

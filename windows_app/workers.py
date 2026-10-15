@@ -154,4 +154,29 @@ class PollWorker(QThread):
             time.sleep(1.0)
 
 
-__all__ = ["LiveWorker", "OutputTaskWorker", "PollWorker"]
+def _detach(signal: object) -> None:
+    try:
+        signal.disconnect()  # type: ignore[attr-defined]
+    except (RuntimeError, TypeError):
+        pass
+
+
+def stop_thread(thread: QThread | None, grace_ms: int = 3000) -> None:
+    """Stop a QThread before its owner is destroyed.
+
+    Qt aborts the process ("QThread: Destroyed while thread is still running") if the app exits
+    while a worker is still running. Detach its signals so it cannot touch closed widgets, give it
+    a moment to finish, then terminate it as a last resort (a download cannot be interrupted).
+    """
+    if thread is None:
+        return
+    for name in ("succeeded", "failed", "progress", "message", "frame", "frame_packet", "finished", "finished_status"):
+        signal = getattr(thread, name, None)
+        if signal is not None:
+            _detach(signal)
+    if thread.isRunning() and not thread.wait(grace_ms):
+        thread.terminate()
+        thread.wait(1000)
+
+
+__all__ = ["LiveWorker", "OutputTaskWorker", "PollWorker", "stop_thread"]
