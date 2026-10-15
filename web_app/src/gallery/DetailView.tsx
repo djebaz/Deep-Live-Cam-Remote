@@ -5,6 +5,7 @@ import {
   clamp,
   folderOf,
   formatDate,
+  formatDuration,
   formatSize,
   outputId,
   sourceLabel,
@@ -432,6 +433,7 @@ export function DetailView(p: DetailProps) {
                 onCanPlay={(e) => startBufferedVideo(e.currentTarget)}
                 onProgress={(e) => startBufferedVideo(e.currentTarget)}
                 onPlay={(e) => { videoStartup.current = e.currentTarget; }}
+                onDurationChange={(e) => p.onMeta(id, { duration: e.currentTarget.duration })}
                 onLoadedMetadata={(e) => {
                   setLoaded(true);
                   p.onMeta(id, {
@@ -546,6 +548,11 @@ export function DetailView(p: DetailProps) {
           <Block icon="ruler" label="Dimensions">
             {dims}
           </Block>
+          {p.kind === "videos" && (
+            <Block icon="clock" label="Duration">
+              {formatDuration(m?.duration ?? NaN) || "—"}
+            </Block>
+          )}
           <Block icon="calendar" label="Modified">
             {formatDate(current.modified)}
           </Block>

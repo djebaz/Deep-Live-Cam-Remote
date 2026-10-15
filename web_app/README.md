@@ -140,7 +140,9 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
   selections use **Download all** or **Create archive**, which are backend ZIPs).
 - **Detail viewer**: preview that fills the viewer at Fit (original loaded on zoom), previous/next, filmstrip, Fit/zoom with
   drag-to-pan and Ctrl/Cmd+wheel, double-click for 100 %, swipe on touch screens,
-  slideshow (with a broken file skipped, not a dead end), full screen, file details.
+  slideshow (with a broken file skipped, not a dead end), full screen, file details
+  with video duration immediately to the right of Dimensions (`m:ss` or `h:mm:ss`;
+  `—` until known).
   Keys: arrows (previous/next), `+`/`-`/`0` (zoom), Space (slideshow), `F` (full
   screen), Esc (leave full screen, then back to the library), `/` (search).
 - **Activity log**: the page's Activity log records, prefixed `Outputs:`, each load (counts
