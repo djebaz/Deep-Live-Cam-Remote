@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
@@ -461,6 +461,14 @@ def start_stall_watchdog(
     return thread
 
 
+class EncoderFailed(RuntimeError):
+    """The ffmpeg encoder process died or reported an error; `encoder` names which one."""
+
+    def __init__(self, encoder: str, message: str):
+        super().__init__(message)
+        self.encoder = encoder
+
+
 class StderrTail:
     """Drain a child's stderr continuously, keeping only the last few KB.
 
@@ -564,6 +572,12 @@ def _process_one_into(
     encoder = subprocess.Popen(encoder_command(path, output, start, encode_duration, fps, width, height, selected_encoder, config.preset, config.quality), stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
     encoder_err = StderrTail(encoder)
 
+    def encoder_failed() -> EncoderFailed:
+        code = encoder.poll()
+        detail = encoder_err.text() if code is not None else ""
+        status = f"exited with code {code}" if code is not None else "failed"
+        return EncoderFailed(selected_encoder, f"FFmpeg encoder ({selected_encoder}) {status} at frame {frames}:\n{detail[-4000:]}")
+
     decoded: queue.Queue[Any] = queue.Queue(config.decode_queue)
     encoded: queue.Queue[Any] = queue.Queue(config.encode_queue)
     errors: queue.Queue[tuple[str, BaseException]] = queue.Queue()
@@ -639,6 +653,8 @@ def _process_one_into(
                 break
             if not errors.empty():
                 stage, exc = errors.get()
+                if stage == "encode":
+                    raise encoder_failed() from exc
                 raise RuntimeError(f"{stage} pipeline failed: {exc}") from exc
             try:
                 raw = decoded.get(timeout=0.2)
@@ -670,6 +686,9 @@ def _process_one_into(
                         print("  cancel requested; stopping current video")
                         stop.set()
                         break
+                    # A dead encoder never drains the queue: fail now instead of waiting forever.
+                    if encoder.poll() is not None or not errors.empty():
+                        raise encoder_failed()
             if cancelled:
                 break
             frames += 1
@@ -701,7 +720,7 @@ def _process_one_into(
         rc = encoder.wait(timeout=120)
         error = encoder_err.text()
         if rc:
-            raise RuntimeError("FFmpeg encode failed:\n" + error[-4000:])
+            raise EncoderFailed(selected_encoder, "FFmpeg encode failed:\n" + error[-4000:])
     finally:
         stop.set()
         for process in (decoder, encoder):
@@ -748,7 +767,17 @@ def process_one(
     engine: ModernEngine,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
-    return _publish_atomically(lambda partial: _process_one_into(path, partial, relative, config, engine, cancel_event), output)
+    def write(partial: Path) -> dict[str, Any]:
+        try:
+            return _process_one_into(path, partial, relative, config, engine, cancel_event)
+        except EncoderFailed as exc:
+            # "auto" picks NVENC when present; if it dies mid-video, redo the file with libx264.
+            if config.encoder != "auto" or exc.encoder != "h264_nvenc":
+                raise
+            print(f"  ! {str(exc).splitlines()[0]}\n  ! retrying this video with libx264")
+            return _process_one_into(path, partial, relative, replace(config, encoder="libx264"), engine, cancel_event)
+
+    return _publish_atomically(write, output)
 
 
 def process_image_one(
