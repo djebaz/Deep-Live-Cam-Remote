@@ -111,6 +111,12 @@ export function Outputs({
   // Caches live in effects so React StrictMode's mount/unmount/mount is safe.
   useEffect(() => {
     const server = new ServerThumbs(api);
+    server.onMode = (m) =>
+      say(
+        m === "yes"
+          ? "using fast server thumbnails"
+          : "the Colab API has no thumbnail route (restart it); thumbnails are made in the browser from full files, which is slow",
+      );
     // Server thumbnails are tiny, so many can load at once; full files are not.
     const concurrency = () => (server.mode === "no" ? 3 : 6);
     const fetchBlob = async (item: Output, signal: AbortSignal) => {

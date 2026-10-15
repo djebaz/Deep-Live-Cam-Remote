@@ -6,6 +6,11 @@ import { resolve, dirname, extname, relative, isAbsolute, sep } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { relayWebSockets } from "./relay.mjs";
+// Reuse connections to the backend: each new one costs several round trips over Tailscale.
+const keepAlive = {
+  http: new http.Agent({ keepAlive: true, maxSockets: 32 }),
+  https: new https.Agent({ keepAlive: true, maxSockets: 32 }),
+};
 const HERE = dirname(fileURLToPath(import.meta.url));
 export function createGateway({
   backends,
@@ -223,6 +228,7 @@ export function createGateway({
             method: req.method,
             headers,
             timeout: 600000,
+            agent: target.protocol === "https:" ? keepAlive.https : keepAlive.http,
           },
           (reply) => {
             // Do not follow redirects; Location could bypass the destination restriction.

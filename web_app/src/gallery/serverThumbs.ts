@@ -17,7 +17,18 @@ const num = (v: string | null) => (v !== null && v !== "" && Number.isFinite(Num
  * round trip, no media ticket) and the responses are cacheable by the browser.
  */
 export class ServerThumbs {
-  mode: ThumbMode = "unknown";
+  private _mode: ThumbMode = "unknown";
+  /** Called once when the backend is first found to support (or lack) thumbnails. */
+  onMode?: (mode: "yes" | "no") => void;
+  get mode(): ThumbMode {
+    return this._mode;
+  }
+  set mode(m: ThumbMode) {
+    if (m === this._mode) return;
+    const first = this._mode === "unknown";
+    this._mode = m;
+    if (first && m !== "unknown") this.onMode?.(m);
+  }
   /** Source size/duration of every file a thumbnail was fetched for. */
   readonly dims = new Map<string, SourceMeta>();
   readonly blobMeta = new WeakMap<Blob, SourceMeta>();
