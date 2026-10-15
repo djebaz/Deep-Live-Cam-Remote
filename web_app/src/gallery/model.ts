@@ -203,3 +203,49 @@ export function selectionStats(files: readonly Output[], sel: Selection) {
     }
   return { count, bytes };
 }
+
+// ---- Activity-log messages (pure, so they can be tested)
+const noun = (kind: string, n: number) =>
+  n === 1 ? kind.replace(/s$/, "") : kind;
+const nameList = (files: readonly Output[], max = 3) => {
+  const names = files.slice(0, max).map((f) => f.relative_path);
+  return files.length > max
+    ? `${names.join(", ")} and ${files.length - max} more`
+    : names.join(", ");
+};
+
+/** Message for the first listing after the tab opens (or the kind changes). */
+export function describeLoad(kind: string, files: readonly Output[]): string {
+  if (!files.length)
+    return `No ${kind} found in the Drive and Colab output folders.`;
+  const drive = files.filter((f) => f.source === "drive").length;
+  const local = files.filter((f) => f.source === "local").length;
+  const bytes = files.reduce((n, f) => n + f.size, 0);
+  const parts = [
+    drive ? `${drive} on Google Drive` : "",
+    local ? `${local} on Colab disk` : "",
+  ].filter(Boolean);
+  return `Loaded ${files.length} ${noun(kind, files.length)} (${parts.join(", ")}, ${formatSize(bytes)} in total).`;
+}
+
+/** Message for what changed between two listings, or null when nothing did. */
+export function describeChange(
+  kind: string,
+  prev: readonly Output[],
+  next: readonly Output[],
+): string | null {
+  const before = new Set(prev.map(outputId));
+  const after = new Set(next.map(outputId));
+  const added = next.filter((f) => !before.has(outputId(f)));
+  const removed = prev.filter((f) => !after.has(outputId(f)));
+  const parts: string[] = [];
+  if (added.length)
+    parts.push(
+      `${added.length} new ${noun(kind, added.length)}: ${nameList(added)}`,
+    );
+  if (removed.length)
+    parts.push(
+      `${removed.length} ${noun(kind, removed.length)} no longer on the backend: ${nameList(removed)}`,
+    );
+  return parts.length ? `${parts.join("; ")}.` : null;
+}

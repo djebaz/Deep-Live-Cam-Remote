@@ -131,6 +131,11 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
   slideshow (with a broken file skipped, not a dead end), full screen, file details.
   Keys: arrows (previous/next), `+`/`-`/`0` (zoom), Space (slideshow), `F` (full
   screen), Esc (leave full screen, then back to the library), `/` (search).
+- **Activity log**: the page's Activity log records, prefixed `Outputs:`, each load (counts
+  and size), new or removed files found by refreshes, manual refreshes with nothing new,
+  every download (single file, selected ZIP with progress and result, backend ZIP,
+  retained archive), files skipped by the slideshow or that the browser cannot decode or
+  play, and refresh failures (logged once per outage, then once when it recovers).
 - Videos show the browser's own first frame as the tile and play in the viewer; formats
   the browser cannot play stay downloadable.
 

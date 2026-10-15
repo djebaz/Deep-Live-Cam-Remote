@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Output } from "../api";
-import { reconcile } from "./model";
+import { describeChange, describeLoad, reconcile } from "./model";
 
 export type LoadState = "idle" | "loading" | "ready" | "error";
 export const REFRESH_MS = 8000;
@@ -29,6 +29,10 @@ export function useOutputs(
   // dependency lists so unrelated re-renders never reload the listing.
   const logRef = useRef(log);
   logRef.current = log;
+  const filesRef = useRef<Output[]>([]);
+  const loadedOnce = useRef(false);
+  const failing = useRef(false);
+  const say = (text: string) => logRef.current(`Outputs: ${text}`);
 
   const load = useCallback(
     async (manual: boolean) => {
@@ -41,7 +45,23 @@ export function useOutputs(
           `/outputs/${kindRef.current}`,
         );
         if (g !== generation.current) return;
-        setFiles((prev) => reconcile(prev, r.files));
+        const prev = filesRef.current;
+        const merged = reconcile(prev, r.files);
+        filesRef.current = merged;
+        setFiles(merged);
+        if (!loadedOnce.current) {
+          loadedOnce.current = true;
+          say(describeLoad(kindRef.current, merged));
+        } else {
+          const change = describeChange(kindRef.current, prev, merged);
+          if (change) say(change);
+          else if (manual)
+            say(`Refreshed: nothing new (${merged.length} ${kindRef.current}).`);
+        }
+        if (failing.current) {
+          failing.current = false;
+          say("Backend reachable again; auto-refresh resumed.");
+        }
         setState("ready");
         setError("");
         setUpdatedAt(Date.now());
@@ -49,7 +69,10 @@ export function useOutputs(
         if (g !== generation.current) return;
         setError(String(e));
         setState((s) => (s === "ready" && !manual ? s : "error"));
-        if (manual) logRef.current(String(e));
+        // A flaky link would otherwise log every poll: say it once, then again on recovery.
+        if (manual || !failing.current)
+          say(`${manual ? "Refresh" : "Auto-refresh"} failed: ${String(e)}`);
+        failing.current = true;
       } finally {
         if (g === generation.current) inFlight.current = false;
       }
@@ -60,6 +83,9 @@ export function useOutputs(
   useEffect(() => {
     generation.current++;
     inFlight.current = false;
+    filesRef.current = [];
+    loadedOnce.current = false;
+    failing.current = false;
     setFiles([]);
     setState("loading");
     setError("");

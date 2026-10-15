@@ -8,6 +8,8 @@ import type { Output } from "../src/api.ts";
 import {
   allSelected,
   dateCutoff,
+  describeChange,
+  describeLoad,
   filterAndSort,
   formatDuration,
   formatSize,
@@ -245,4 +247,30 @@ test("client ZIP is valid: structure, CRC32, UTF-8 names, and Python can read it
   if (py.error) return; // python not available: the structural checks above still ran
   assert.equal(py.status, 0, String(py.stderr));
   assert.match(String(py.stdout), /drive\/x\/a\.png/);
+});
+
+test("activity-log messages describe loads and changes, and stay silent when nothing changed", () => {
+  const a = out("a.png", 3, 1048576, "drive");
+  const b = out("b.png", 2, 1048576, "local", "day1");
+  assert.equal(describeLoad("photos", []), "No photos found in the Drive and Colab output folders.");
+  assert.equal(
+    describeLoad("photos", [a, b]),
+    "Loaded 2 photos (1 on Google Drive, 1 on Colab disk, 2.0 MB in total).",
+  );
+  assert.match(describeLoad("videos", [a]), /^Loaded 1 video \(1 on Google Drive/);
+  assert.equal(describeChange("photos", [a, b], [{ ...a }, { ...b }]), null);
+  assert.equal(describeChange("photos", [a], [b, a]), "1 new photo: day1/b.png.");
+  assert.equal(
+    describeChange("photos", [a, b], [a]),
+    "1 photo no longer on the backend: day1/b.png.",
+  );
+  const many = ["1", "2", "3", "4", "5"].map((n) => out(`n${n}.png`, 9));
+  assert.equal(
+    describeChange("photos", [], many),
+    "5 new photos: n1.png, n2.png, n3.png and 2 more.",
+  );
+  assert.equal(
+    describeChange("videos", [a], [b]),
+    "1 new video: day1/b.png; 1 video no longer on the backend: a.png.",
+  );
 });

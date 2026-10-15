@@ -47,14 +47,26 @@ export interface DetailProps {
 export function DetailView(p: DetailProps) {
   const current = p.files[p.index];
   const id = current ? outputId(current) : "";
-  const [media, setMedia] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [failed, setFailed] = useState("");
+  // Per-file state is keyed by id so a render that follows a step never shows
+  // (or blames) the previous file's image: the URL and "loaded" flag are only
+  // valid for the id they were recorded for.
+  const [mediaFor, setMediaFor] = useState<{ id: string; url: string } | null>(null);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  // A failure belongs to one file; deriving `failed` from the id means a stale
+  // failure can never be attributed to the next file for a render.
+  const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [zoom, setZoom] = useState<"fit" | number>("fit");
   const [natural, setNatural] = useState({ w: 0, h: 0 });
   const canvas = useRef<HTMLDivElement>(null);
   const filmstrip = useRef<HTMLDivElement>(null);
+  const media = mediaFor && mediaFor.id === id ? mediaFor.url : "";
+  const loaded = loadedFor === id;
+  const setMedia = (url: string) => setMediaFor(url ? { id, url } : null);
+  const setLoaded = (on: boolean) => setLoadedFor(on ? id : null);
+  const failed = failure && failure.id === id ? failure.message : "";
+  const setFailed = (message: string) =>
+    setFailure(message ? { id, message } : null);
   const generation = useRef(0);
   const latest = useRef(p);
   latest.current = p;
@@ -93,7 +105,7 @@ export function DetailView(p: DetailProps) {
         if (cancelled || (e as Error)?.name === "AbortError") return;
         setFailed(String((e as Error)?.message || e));
         setProgress(null);
-        p.log(String(e));
+        p.log(`Outputs: preview of ${current.relative_path} failed: ${String((e as Error)?.message || e)}`);
       }
     };
     void run();
@@ -131,6 +143,7 @@ export function DetailView(p: DetailProps) {
     if (!p.autoplay || p.files.length < 2 || !current) return;
     if (p.kind !== "photos") return; // videos advance on `ended`
     if (!loaded && !failed) return;
+    if (failed) latest.current.log(`Outputs: skipped ${current.relative_path} in the slideshow (${failed})`);
     const t = window.setTimeout(
       () => p.onStep(1),
       failed ? 1200 : Math.max(250, p.seconds * 1000),
@@ -339,6 +352,7 @@ export function DetailView(p: DetailProps) {
                 onError={() => {
                   setLoaded(false);
                   setFailed("The image could not be decoded. Download it to open locally.");
+                  p.log(`Outputs: ${current.relative_path} could not be decoded by this browser.`);
                 }}
               />
             ) : (
@@ -358,11 +372,12 @@ export function DetailView(p: DetailProps) {
                   });
                 }}
                 onEnded={() => p.autoplay && p.onStep(1)}
-                onError={() =>
+                onError={() => {
                   setFailed(
                     "This browser cannot play the video format. Download it to use a compatible player.",
-                  )
-                }
+                  );
+                  p.log(`Outputs: ${current.relative_path} cannot be played in this browser; download it instead.`);
+                }}
               />
             )}
           </div>

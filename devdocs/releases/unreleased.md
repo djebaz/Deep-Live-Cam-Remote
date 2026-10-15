@@ -146,4 +146,4 @@ Ruff 0.15.7 validation: the repository-wide run reports 83 pre-existing findings
 ## Web Outputs library
 - Rebuild the web Outputs tab as a media library styled after the DTFlow Images viewer: Grid/List/Detail views, in-browser thumbnails, search/source/date/sort filters, multi-select with client-side ZIP download, auto-refresh that keeps the selection, a viewer with zoom/pan/swipe/keyboard/slideshow/full screen, and a phone layout.
 - Fix slideshow stalls on a broken file, muted video autoplay, and stale option handling in the old viewer. No backend change; delete and backend thumbnails are intentionally not included.
-
+- Write Outputs activity to the Activity log: loads, new/removed files, downloads and ZIP progress, skipped or undecodable files, and refresh failures/recovery (once per outage).

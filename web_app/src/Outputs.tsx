@@ -7,6 +7,7 @@ import {
   allSelected,
   clamp,
   filterAndSort,
+  formatSize,
   indexOfId,
   outputId,
   pruneSelection,
@@ -86,6 +87,7 @@ export function Outputs({
   const logRef = useRef(log);
   logRef.current = log;
   const stableLog = useCallback((s: string) => logRef.current(s), []);
+  const say = useCallback((s: string) => logRef.current(`Outputs: ${s}`), []);
   if (view !== "detail") browseView.current = view;
 
   const { files, state, error, updatedAt, refresh } = useOutputs(
@@ -226,9 +228,10 @@ export function Outputs({
       a.download = item.name;
       a.rel = "noreferrer";
       a.click();
+      say(`Downloading ${item.relative_path} (${formatSize(item.size)}).`);
     } catch (e) {
       setNote(String(e));
-      log(String(e));
+      say(`Download of ${item.relative_path} failed: ${String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -238,6 +241,11 @@ export function Outputs({
     setNote("");
     try {
       let path = `/outputs/${kind}/zip`;
+      say(
+        archive
+          ? `Creating a retained archive of all ${files.length} ${kind} on the backend…`
+          : `Requesting the backend ZIP of all ${files.length} ${kind}…`,
+      );
       if (archive) {
         const r = await api.request<{ zip_id: string; size_bytes: number }>(
           `/outputs/${kind}/create-zip`,
@@ -245,15 +253,19 @@ export function Outputs({
         );
         path = `/download-archive/${r.zip_id}`;
         setNote(`Archive ready: ${(r.size_bytes / 1048576).toFixed(1)} MiB, kept on the backend.`);
+        say(
+          `Archive ready (${formatSize(r.size_bytes)}), kept on the backend as ${path.split("/").pop()}.`,
+        );
       }
       const a = document.createElement("a");
       a.href = await api.media(path);
       a.download = `${kind}_outputs.zip`;
       a.rel = "noreferrer";
       a.click();
+      say(`Downloading ${kind}_outputs.zip.`);
     } catch (e) {
       setNote(String(e));
-      log(String(e));
+      say(`${archive ? "Archive" : "ZIP download"} failed: ${String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -262,6 +274,9 @@ export function Outputs({
     const items = files.filter((f) => selected.has(outputId(f)));
     if (!items.length) return;
     if (items.length > MAX_ZIP_ENTRIES || stats.bytes > MAX_ZIP_BYTES) {
+      say(
+        `Selection of ${items.length} files (${formatSize(stats.bytes)}) is too large for a browser ZIP; use Download all or Create archive.`,
+      );
       setNote(
         `Too large for the browser (limit ${MAX_ZIP_ENTRIES} files / ${MAX_ZIP_BYTES / 1048576} MB). Use Download all or Create archive.`,
       );
@@ -272,6 +287,7 @@ export function Outputs({
     setBusy(true);
     setNote("");
     setZip({ done: 0, total: items.length });
+    say(`Preparing a ZIP of ${items.length} selected ${kind} (${formatSize(stats.bytes)})…`);
     try {
       const entries: ZipEntry[] = new Array(items.length);
       let next = 0;
@@ -293,13 +309,18 @@ export function Outputs({
         }
       };
       await Promise.all([worker(), worker()]);
-      saveBlob(buildZip(entries), `${kind}_selected_${items.length}.zip`);
+      const zipName = `${kind}_selected_${items.length}.zip`;
+      const archive = buildZip(entries);
+      saveBlob(archive, zipName);
       setNote(`Downloaded ${items.length} file${items.length === 1 ? "" : "s"}.`);
+      say(`Downloaded ${zipName} (${items.length} files, ${formatSize(archive.size)}).`);
     } catch (e) {
-      if ((e as Error)?.name === "AbortError") setNote("Cancelled.");
-      else {
+      if ((e as Error)?.name === "AbortError") {
+        setNote("Cancelled.");
+        say("ZIP of selected files cancelled.");
+      } else {
         setNote(String(e));
-        log(String(e));
+        say(`ZIP of selected files failed: ${String(e)}`);
       }
     } finally {
       zipAbort.current = null;

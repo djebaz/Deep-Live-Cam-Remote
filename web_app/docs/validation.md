@@ -108,3 +108,16 @@ files or large originals over Tailscale/mobile data, pinch-to-zoom (double-click
 buttons only), and H.264 video (headless Chromium has no H.264 codec, so playback was
 checked with WebM).
 
+### Outputs activity log
+
+Pure message builders (`describeLoad`, `describeChange`) are unit-tested (singular/plural,
+name truncation, silence when nothing changed). In the browser run, 9 checks confirmed
+the log entries for: first load, a new file found by auto-refresh, a manual refresh with
+no change, a removed file, selected-ZIP start and finish, backend ZIP, retained archive,
+single-file download and an undecodable image; and, separately, that a slideshow skips a
+broken file with one log line, and that a backend outage is logged once (not per poll)
+followed by one recovery line. This testing caught two bugs in the viewer, both fixed: a
+failure or image URL from the previous file was attributed to the next file for one
+render (a skipped file was logged twice and its successor was reported undecodable).
+Per-file state is now keyed by file id.
+
