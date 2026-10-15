@@ -4,7 +4,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Output } from "../src/api.ts";
+import { Api, type Output } from "../src/api.ts";
+import { defaults } from "../src/settings.ts";
+import { PhotoCache } from "../src/gallery/photoCache.ts";
+import { ServerThumbs } from "../src/gallery/serverThumbs.ts";
 import {
   allSelected,
   dateCutoff,
@@ -24,7 +27,7 @@ import {
   thumbPx,
   toggleSelection,
 } from "../src/gallery/model.ts";
-import { ThumbnailCache } from "../src/gallery/thumbs.ts";
+import { ThumbUnsupported, ThumbnailCache } from "../src/gallery/thumbs.ts";
 import { buildZip, crc32, zipEntryName } from "../src/gallery/zip.ts";
 
 const out = (
@@ -273,4 +276,125 @@ test("activity-log messages describe loads and changes, and stay silent when not
     describeChange("videos", [a], [b]),
     "1 new video: day1/b.png; 1 video no longer on the backend: a.png.",
   );
+});
+
+const withFetch = async (impl: typeof fetch, run: () => Promise<void>) => {
+  const original = globalThis.fetch;
+  globalThis.fetch = impl;
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = original;
+  }
+};
+const fakeApi = {
+  thumbUrl: (item: Output, size: number) => `http://gw/thumb${item.download_path}?size=${size}`,
+  headers: () => ({ Authorization: "Bearer t" }),
+} as unknown as Api;
+const jpegResponse = () =>
+  new Response(new Uint8Array([1, 2, 3]), {
+    headers: {
+      "Content-Type": "image/jpeg",
+      "X-Source-Width": "1600",
+      "X-Source-Height": "2400",
+      "X-Source-Duration": "3.5",
+    },
+  });
+
+test("thumbnail URLs are encoded, sized and versioned by the file's modified time", () => {
+  const api = new Api({ ...defaults, gateway: "https://gw.example" }, "tok");
+  const item = out("a b#1.png", 1700000000.123456, 1, "drive", "ünï/x y");
+  const u = new URL(api.thumbUrl(item, 320));
+  assert.equal(u.origin, "https://gw.example");
+  assert.equal(u.pathname, "/outputs/photos/thumb/drive/%C3%BCn%C3%AF/x%20y/a%20b%231.png");
+  assert.equal(u.searchParams.get("size"), "320");
+  assert.equal(u.searchParams.get("v"), "1700000000123");
+});
+
+test("server thumbnails: bearer fetch, source size kept, support detected from the first answer", async () => {
+  const calls: { url: string; auth?: string }[] = [];
+  await withFetch(async (url, init) => {
+    calls.push({ url: String(url), auth: (init?.headers as Record<string, string>)?.Authorization });
+    return jpegResponse();
+  }, async () => {
+    const server = new ServerThumbs(fakeApi);
+    const item = out("a.jpg", 5);
+    const blob = await server.blob(item, 320, new AbortController().signal);
+    assert.equal(server.mode, "yes");
+    assert.deepEqual(server.dims.get(item.download_path), { width: 1600, height: 2400, duration: 3.5 });
+    assert.deepEqual(server.blobMeta.get(blob), { width: 1600, height: 2400, duration: 3.5 });
+    assert.deepEqual(calls, [{ url: `http://gw/thumb${item.download_path}?size=320`, auth: "Bearer t" }]);
+  });
+});
+
+test("server thumbnails: an old Colab (route missing) or old gateway (app page) means 'unsupported', once", async () => {
+  for (const reply of [
+    () => new Response('{"detail":"Not Found"}', { status: 404, headers: { "Content-Type": "application/json" } }),
+    () => new Response("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } }),
+  ]) {
+    let n = 0;
+    await withFetch(async () => (n++, reply()), async () => {
+      const server = new ServerThumbs(fakeApi);
+      const signal = new AbortController().signal;
+      await assert.rejects(server.fetch(out("a.jpg", 1), 320, signal), ThumbUnsupported);
+      assert.equal(server.mode, "no");
+      await assert.rejects(server.fetch(out("b.jpg", 1), 320, signal), ThumbUnsupported);
+      assert.equal(n, 1, "no further requests once known to be unsupported");
+    });
+  }
+});
+
+test("server thumbnails: a missing or unreadable file is that file's problem, not 'unsupported'", async () => {
+  const replies = [
+    new Response('{"detail":"output file not found"}', { status: 404 }),
+    new Response('{"detail":"cannot create a thumbnail: unreadable image"}', { status: 422 }),
+  ];
+  await withFetch(async () => replies.shift()!, async () => {
+    const server = new ServerThumbs(fakeApi);
+    const signal = new AbortController().signal;
+    await assert.rejects(server.fetch(out("a.jpg", 1), 320, signal), (e: Error) => !(e instanceof ThumbUnsupported) && /not found/.test(e.message));
+    await assert.rejects(server.fetch(out("b.jpg", 1), 320, signal), (e: Error) => !(e instanceof ThumbUnsupported) && /unreadable image/.test(e.message));
+    assert.equal(server.mode, "unknown");
+  });
+});
+
+test("thumbnail cache concurrency can adapt, and the decoder's duration reaches the tile", async () => {
+  let limit = 1;
+  let running = 0;
+  let peak = 0;
+  const cache = new ThumbnailCache(
+    async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await wait();
+      running--;
+      return new Blob(["x"]);
+    },
+    async () => ({ blob: new Blob(["t"]), width: 640, height: 360, duration: 12.5 }),
+    { concurrency: () => limit },
+  );
+  const items = ["a", "b", "c", "d"].map((n) => out(`${n}.mp4`, 1));
+  const first = await Promise.all(items.slice(0, 2).map((i) => cache.acquire(i).promise));
+  assert.equal(peak, 1);
+  assert.equal(first[0].duration, 12.5);
+  limit = 3;
+  await Promise.all(items.slice(2).map((i) => cache.acquire(i).promise));
+  assert.ok(peak >= 2, `peak ${peak} should use the raised limit`);
+  cache.dispose();
+});
+
+test("preview cache uses its own fetcher: no media ticket, no original-size limit", async () => {
+  let ticket = 0;
+  const api = { media: async () => (ticket++, "http://never") } as unknown as Api;
+  const requested: string[] = [];
+  const cache = new PhotoCache(api, 64, async (item) => {
+    requested.push(item.name);
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/jpeg" } });
+  });
+  const huge = out("huge.png", 1, 500 * 1024 * 1024); // far above the 64-byte budget
+  cache.trim(new Set([huge.download_path]));
+  assert.match(await cache.load(huge), /^blob:/);
+  assert.deepEqual(requested, ["huge.png"]);
+  assert.equal(ticket, 0);
+  cache.dispose();
 });

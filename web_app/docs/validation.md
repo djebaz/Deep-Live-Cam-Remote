@@ -121,3 +121,18 @@ failure or image URL from the previous file was attributed to the next file for 
 render (a skipped file was logged twice and its successor was reported undecodable).
 Per-file state is now keyed by file id.
 
+
+### Gallery speed and Fit
+
+Benchmark in headless Chromium through the real gateway, throttled to 20 Mbit/s with 60 ms
+latency, 40 photos of about 1.5 MB: first screen of thumbnails 22.5 s / 53.5 MB with
+browser-made thumbnails, 0.85 s / 0.6 MB with server thumbnails (about 26x faster, 90x
+less data). A 31 MB PNG opens in the viewer in 0.84 s / 0.24 MB (1600 px preview); the
+upgrade to the original after zooming took 13 s on that link. `tests/test_output_thumbs.py`
+(11) covers sizing, caching, video posters, path confinement and errors; web tests cover the
+server-thumb client, URL encoding, adaptive concurrency and the preview fetcher
+(`outputs.test.ts`, 15) and the gateway route. Fit now fills the viewer (about 700 px tall in
+a 900 px window versus about 370 before) for square, portrait and landscape images. With the
+API's thumb route missing, photos fall back to browser thumbnails, videos to a `<video>`
+frame and the viewer to the original. Manual browser runs, not CI; Safari/Firefox and a
+real Drive at scale remain unverified.

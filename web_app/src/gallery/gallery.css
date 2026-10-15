@@ -635,14 +635,16 @@
   flex: none;
   user-select: none;
 }
+/* Fit = scale the whole image to fill the viewer, enlarging small images too. */
 .og-canvas img.fit {
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 .og-canvas video {
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .og-overlay {
   position: absolute;
@@ -822,6 +824,25 @@
   border: 3px solid var(--c-accent);
 }
 
+/* ---- Detail uses the screen: filters and selection step aside and the viewer
+   takes the remaining height, so "Fit" really fills what you see. */
+.og.view-detail {
+  height: calc(100dvh - 24px);
+  min-height: 520px;
+}
+.og.view-detail .og-body {
+  flex: 1;
+  min-height: 0;
+}
+.og.view-detail .og-detail {
+  height: 100%;
+  min-height: 0;
+}
+.view-detail .og-bar-filter,
+.view-detail .og-selbar {
+  display: none;
+}
+
 /* ---- full screen (real Fullscreen API where supported, CSS fallback otherwise) */
 .og.og-full {
   position: fixed;
@@ -934,6 +955,11 @@
   .og-head .og-cell-date {
     display: none;
   }
+  .og.view-detail {
+    height: auto;
+    min-height: 0;
+  }
+  .og.view-detail .og-detail,
   .og-detail {
     flex-direction: column;
     height: auto;

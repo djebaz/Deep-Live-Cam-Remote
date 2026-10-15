@@ -12,7 +12,8 @@ import {
 } from "./model";
 import type { PhotoCache } from "./photoCache";
 import { ThumbMedia, type Meta, type OnMeta } from "./ThumbMedia";
-import type { ThumbnailCache } from "./thumbs";
+import type { SourceMeta } from "./serverThumbs";
+import { ThumbUnsupported, type ThumbnailCache } from "./thumbs";
 import { dimensionsText } from "./Views";
 
 const ZOOMS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4];
@@ -24,7 +25,12 @@ export interface DetailProps {
   kind: "photos" | "videos";
   api: Api;
   thumbs: ThumbnailCache;
+  /** Full-size originals. */
   photos: PhotoCache;
+  /** Server-made previews: shown first, so a big file does not block the viewer. */
+  previews: PhotoCache;
+  /** Original dimensions reported by the backend (the preview is smaller). */
+  dims: (id: string) => SourceMeta | undefined;
   meta: Record<string, Meta>;
   onMeta: OnMeta;
   selected: Selection;
@@ -50,7 +56,7 @@ export function DetailView(p: DetailProps) {
   // Per-file state is keyed by id so a render that follows a step never shows
   // (or blames) the previous file's image: the URL and "loaded" flag are only
   // valid for the id they were recorded for.
-  const [mediaFor, setMediaFor] = useState<{ id: string; url: string } | null>(null);
+  const [mediaFor, setMediaFor] = useState<{ id: string; url: string; preview: boolean } | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   // A failure belongs to one file; deriving `failed` from the id means a stale
   // failure can never be attributed to the next file for a render.
@@ -62,7 +68,7 @@ export function DetailView(p: DetailProps) {
   const filmstrip = useRef<HTMLDivElement>(null);
   const media = mediaFor && mediaFor.id === id ? mediaFor.url : "";
   const loaded = loadedFor === id;
-  const setMedia = (url: string) => setMediaFor(url ? { id, url } : null);
+  const isPreview = Boolean(mediaFor && mediaFor.id === id && mediaFor.preview);
   const setLoaded = (on: boolean) => setLoadedFor(on ? id : null);
   const failed = failure && failure.id === id ? failure.message : "";
   const setFailed = (message: string) =>
@@ -71,10 +77,24 @@ export function DetailView(p: DetailProps) {
   const latest = useRef(p);
   latest.current = p;
 
+  // Server preview first; an older backend without previews falls back to the original.
+  const usingPreviews = useRef(true);
+  const loadView = async (item: Output, progress?: (l: number, t: number) => void) => {
+    if (usingPreviews.current) {
+      try {
+        return { url: await p.previews.load(item, progress), preview: true };
+      } catch (e) {
+        if (!(e instanceof ThumbUnsupported)) throw e;
+        usingPreviews.current = false;
+      }
+    }
+    return { url: await p.photos.load(item, progress), preview: false };
+  };
+
   // ---- load the current item (+ bounded prefetch of the next photos)
   useEffect(() => {
     const g = ++generation.current;
-    setMedia("");
+    setMediaFor(null);
     setLoaded(false);
     setFailed("");
     setProgress(null);
@@ -88,18 +108,23 @@ export function DetailView(p: DetailProps) {
       (_, i) => p.files[(p.index + i + 1) % p.files.length],
     );
     if (p.kind === "photos") {
-      p.photos.trim(new Set([id, ...upcoming.map(outputId)]));
+      const keep = new Set([id, ...upcoming.map(outputId)]);
+      p.previews.trim(keep);
+      p.photos.trim(usingPreviews.current ? new Set([id]) : keep);
     }
     const run = async () => {
       try {
-        const url =
-          p.kind === "photos"
-            ? await p.photos.load(current, (l, t) => {
-                if (!cancelled) setProgress(t ? (l / t) * 100 : null);
-              })
-            : await p.api.media(current.download_path);
+        let url: string;
+        let preview = false;
+        if (p.kind === "photos") {
+          const view = await loadView(current, (l, t) => {
+            if (!cancelled) setProgress(t ? (l / t) * 100 : null);
+          });
+          url = view.url;
+          preview = view.preview;
+        } else url = await p.api.media(current.download_path);
         if (cancelled || g !== generation.current) return;
-        setMedia(url);
+        setMediaFor({ id, url, preview });
         setProgress(null);
       } catch (e) {
         if (cancelled || (e as Error)?.name === "AbortError") return;
@@ -124,19 +149,39 @@ export function DetailView(p: DetailProps) {
       (_, i) => p.files[(p.index + i + 1) % p.files.length],
     );
     const keep = new Set([id, ...upcoming.map(outputId)]);
-    p.photos.trim(keep);
+    const settle = () => {
+      p.previews.trim(keep);
+      p.photos.trim(usingPreviews.current ? new Set([id]) : keep);
+    };
+    settle();
     (async () => {
       for (let i = 0; i < upcoming.length && !cancelled; i += 2) {
-        await Promise.allSettled(
-          upcoming.slice(i, i + 2).map((x) => p.photos.load(x)),
-        );
-        if (!cancelled) p.photos.trim(keep);
+        await Promise.allSettled(upcoming.slice(i, i + 2).map((x) => loadView(x)));
+        if (!cancelled) settle();
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [loaded, id, p.index, p.files, p.kind, p.autoplay, p.prefetch, p.photos, current]);
+
+  // ---- zooming past Fit needs real pixels: swap the preview for the original
+  useEffect(() => {
+    if (p.kind !== "photos" || zoom === "fit" || !current || !isPreview) return;
+    let cancelled = false;
+    p.photos.trim(new Set([id]));
+    p.photos.load(current).then(
+      (url) => !cancelled && setMediaFor({ id, url, preview: false }),
+      (e) => {
+        if (!cancelled && (e as Error)?.name !== "AbortError")
+          p.log(`Outputs: full-size ${current.relative_path} failed to load: ${String((e as Error)?.message || e)}`);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom, id, isPreview]);
 
   // ---- slideshow: advance after load; a broken item is skipped, not a dead end
   useEffect(() => {
@@ -162,7 +207,7 @@ export function DetailView(p: DetailProps) {
   const fitScale = () => {
     const el = canvas.current;
     if (!el || !natural.w) return 1;
-    return Math.min(el.clientWidth / natural.w, el.clientHeight / natural.h, 1);
+    return Math.min(el.clientWidth / natural.w, el.clientHeight / natural.h);
   };
   const displayed = () => (zoom === "fit" ? fitScale() : zoom);
   const setZoomAround = (next: number, cx?: number, cy?: number) => {
@@ -339,15 +384,13 @@ export function DetailView(p: DetailProps) {
                 style={imgStyle}
                 className={zoom === "fit" ? "fit" : ""}
                 onLoad={(e) => {
-                  setNatural({
-                    w: e.currentTarget.naturalWidth,
-                    h: e.currentTarget.naturalHeight,
-                  });
+                  // The preview is smaller than the file: use the original's size.
+                  const d = p.dims(id);
+                  const w = d?.width ?? e.currentTarget.naturalWidth;
+                  const h = d?.height ?? e.currentTarget.naturalHeight;
+                  setNatural({ w, h });
                   setLoaded(true);
-                  p.onMeta(id, {
-                    width: e.currentTarget.naturalWidth,
-                    height: e.currentTarget.naturalHeight,
-                  });
+                  p.onMeta(id, { width: w, height: h });
                 }}
                 onError={() => {
                   setLoaded(false);

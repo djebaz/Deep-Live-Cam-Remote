@@ -6,16 +6,25 @@ export interface Thumb {
   /** Natural size of the original image. */
   width: number;
   height: number;
+  duration?: number;
   bytes: number;
+}
+/** The backend (or an older gateway/Colab in between) cannot make thumbnails. */
+export class ThumbUnsupported extends Error {
+  constructor() {
+    super("Server thumbnails are not available.");
+    this.name = "ThumbUnsupported";
+  }
 }
 export type FetchBlob = (item: Output, signal: AbortSignal) => Promise<Blob>;
 export type Decoder = (
   blob: Blob,
   maxSide: number,
-) => Promise<{ blob: Blob; width: number; height: number }>;
+) => Promise<{ blob: Blob; width: number; height: number; duration?: number }>;
 export interface ThumbOptions {
   maxSide?: number;
-  concurrency?: number;
+  /** A number, or a function so it can adapt (server thumbnails are tiny; full files are not). */
+  concurrency?: number | (() => number);
   maxEntries?: number;
   maxBytes?: number;
   /** Originals above this size are not fetched just for a thumbnail. */
@@ -53,6 +62,10 @@ export class ThumbnailCache {
   private bytes = 0;
   private disposed = false;
   private o: Required<ThumbOptions>;
+  private limit() {
+    const c = this.o.concurrency;
+    return typeof c === "function" ? c() : c;
+  }
 
   constructor(
     private fetchBlob: FetchBlob,
@@ -134,7 +147,7 @@ export class ThumbnailCache {
   }
 
   private pump() {
-    while (!this.disposed && this.active < this.o.concurrency) {
+    while (!this.disposed && this.active < this.limit()) {
       const job = this.queue.pop(); // newest request first
       if (!job) return;
       this.active++;
@@ -160,6 +173,7 @@ export class ThumbnailCache {
         url: URL.createObjectURL(out.blob),
         width: out.width,
         height: out.height,
+        duration: out.duration,
         bytes: out.blob.size,
       };
       this.entries.set(id, thumb);

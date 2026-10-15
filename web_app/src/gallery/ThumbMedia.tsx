@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Api, Output } from "../api";
 import { Icon } from "./icons";
-import type { ThumbnailCache } from "./thumbs";
+import { ThumbUnsupported, type ThumbnailCache } from "./thumbs";
 
 export interface Meta {
   width?: number;
@@ -54,6 +54,9 @@ export function ThumbMedia({
     () => (kind === "photos" && cache.peek(item.download_path)?.url) || "",
   );
   const [failed, setFailed] = useState("");
+  // Videos use the server's poster frame; only when the backend has none does the
+  // tile fall back to letting the browser load the video's first frame.
+  const [videoElement, setVideoElement] = useState(false);
   const id = item.download_path;
 
   useEffect(() => {
@@ -61,17 +64,19 @@ export function ThumbMedia({
     let cancelled = false;
     let release = () => {};
     setFailed("");
-    if (kind === "photos") {
+    if (kind === "photos" || !videoElement) {
       const lease = cache.acquire(item);
       release = lease.release;
       lease.promise.then(
         (t) => {
           if (cancelled) return;
           setSrc(t.url);
-          onMeta(id, { width: t.width, height: t.height });
+          onMeta(id, { width: t.width, height: t.height, duration: t.duration });
         },
         (e) => {
-          if (!cancelled && (e as Error)?.name !== "AbortError")
+          if (cancelled) return;
+          if (kind === "videos" && e instanceof ThumbUnsupported) setVideoElement(true);
+          else if ((e as Error)?.name !== "AbortError")
             setFailed(String((e as Error)?.message || e));
         },
       );
@@ -85,11 +90,11 @@ export function ThumbMedia({
       cancelled = true;
       release();
     };
-  }, [visible, kind, id, item, api, cache, onMeta]);
+  }, [visible, kind, id, item, api, cache, onMeta, videoElement]);
 
   return (
     <div className="og-media" ref={ref}>
-      {src && kind === "photos" ? (
+      {src && (kind === "photos" || !videoElement) ? (
         <img src={src} alt="" draggable={false} decoding="async" />
       ) : src && kind === "videos" ? (
         <video

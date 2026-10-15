@@ -126,7 +126,7 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
 - **Selection**: checkboxes, Select all / Unselect all (across the filtered list), and
   **Download selected (ZIP)**, built in the browser (up to 5,000 files / 512 MB; larger
   selections use **Download all** or **Create archive**, which are backend ZIPs).
-- **Detail viewer**: full-size preview, previous/next, filmstrip, Fit/zoom with
+- **Detail viewer**: preview that fills the viewer at Fit (original loaded on zoom), previous/next, filmstrip, Fit/zoom with
   drag-to-pan and Ctrl/Cmd+wheel, double-click for 100 %, swipe on touch screens,
   slideshow (with a broken file skipped, not a dead end), full screen, file details.
   Keys: arrows (previous/next), `+`/`-`/`0` (zoom), Space (slideshow), `F` (full
@@ -139,10 +139,12 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
 - Videos show the browser's own first frame as the tile and play in the viewer; formats
   the browser cannot play stay downloadable.
 
-Thumbnails are produced **in the browser** from the full files (the backend has no
-thumbnail endpoint): they are fetched and decoded only when a tile is near the screen,
-with bounded concurrency and memory, so a very large library on a slow link loads
-gradually and costs bandwidth. Arbitrary processing output paths are not indexed.
+**Speed**: the Colab API makes small cached JPEG thumbnails (320 px) and video poster
+frames, and 1600 px previews for the viewer, so the gallery downloads kilobytes instead
+of full originals; the viewer loads the original only when you zoom beyond Fit. They are
+requested only when a tile is near the screen, with bounded concurrency and memory.
+Restart the Colab API to get this; against an older API the browser falls back to making
+thumbnails itself from the full files (slower, costs bandwidth). Arbitrary processing output paths are not indexed.
 Retained archives use the existing backend retention behavior. There is no delete.
 
 Explicit DirectShow/MSMF, OBS profile filesystem reads, OS virtual-camera output,

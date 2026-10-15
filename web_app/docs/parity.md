@@ -154,9 +154,7 @@ Images viewer. Desktop behaviors are all kept.
 | Zoom | Fit | Fit, 25-400 % steps, wheel, pan; double-click toggles Fit/100 % |
 | Download current / all / archive | Actions | Actual item / backend kind ZIP / retained archive |
 
-Not implemented: delete or rename (no backend route; intentionally omitted), backend
-thumbnails and metadata (width/height/duration come from the decoded image or video
-element), indexing of custom output folders, side-by-side source/output comparison.
+Not implemented: delete or rename (no backend route; intentionally omitted), indexing of custom output folders, side-by-side source/output comparison.
 
 GET /outputs/{kind} returns files sorted by modified descending, then name descending, from Drive and local roots only. Each entry contains name, relative_path, source (`drive`/`local`), size, modified and download_path. Fixed roots: D/outputs/photos, D/outputs/videos, /content/outputs/photos, /content/outputs/videos. Custom processing output paths remain valid processing destinations but are not automatically indexed. Preview/download use the returned path, not a newly invented arbitrary filesystem endpoint. Browser video codec support may differ from Qt/OpenCV; offer download with clear errors. Bound photo cache by count and bytes, evict unused object URLs/bitmaps, ignore stale selection responses, abort obsolete fetches; desktop prefetch cache itself lacks an eviction bound and should not be copied unchanged.
 
@@ -175,6 +173,7 @@ GET /outputs/{kind} returns files sorted by modified descending, then name desce
 | WS /ws/live | Initial config text, config updates, diagnostic/drop text, DLCR binary frames |
 | GET /outputs/{kind} | {files:[...]} |
 | GET /outputs/{kind}/file/{source}/{relative_path} | Validated artifact file |
+| GET /outputs/{kind}/thumb/{source}/{relative_path}?size=&v= | Cached JPEG thumbnail/preview (sizes 160/320/640/1600) or video poster; `X-Source-Width/Height/Duration` headers; advertised as `web_capabilities.output_thumbs` |
 | GET /outputs/{kind}/zip | Streamed kind archive |
 | POST /outputs/{kind}/create-zip | zip_path,zip_id,size_bytes,timestamp,tailscale_hostname |
 | GET /download-archive/{archive_id} | Precreated archive download |

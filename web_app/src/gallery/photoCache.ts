@@ -20,6 +20,8 @@ export class PhotoCache {
   constructor(
     private api: Api,
     private maxBytes = 64 * 1024 * 1024,
+    /** Replaces the default "media ticket + full file" request (e.g. server previews). */
+    private fetcher?: (item: Output, signal: AbortSignal) => Promise<Response>,
   ) {}
   async load(
     item: Output,
@@ -53,16 +55,21 @@ export class PhotoCache {
       }
       this.active++;
       try {
-        if (item.size > this.maxBytes)
-          throw new Error(
-            "Photo exceeds the 64 MiB preview limit; download instead.",
-          );
-        const url = await this.api.media(key, controller.signal);
-        controller.signal.throwIfAborted();
-        const response = await fetch(url, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
+        let response: Response;
+        if (this.fetcher) {
+          response = await this.fetcher(item, controller.signal);
+        } else {
+          if (item.size > this.maxBytes)
+            throw new Error(
+              "Photo exceeds the 64 MiB preview limit; download instead.",
+            );
+          const url = await this.api.media(key, controller.signal);
+          controller.signal.throwIfAborted();
+          response = await fetch(url, {
+            signal: controller.signal,
+            cache: "no-store",
+          });
+        }
         if (!response.ok) throw new Error(`Preview HTTP ${response.status}`);
         const reader = response.body!.getReader();
         const chunks: Uint8Array[] = [];

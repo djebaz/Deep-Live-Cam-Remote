@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Api } from "./api";
+import { Api, type Output } from "./api";
 import type { Values } from "./settings";
 import { DetailView } from "./gallery/DetailView";
 import { Header, SelectionBar } from "./gallery/Header";
@@ -26,7 +26,8 @@ import {
 } from "./gallery/model";
 import { PhotoCache, saveBlob } from "./gallery/photoCache";
 import type { Meta } from "./gallery/ThumbMedia";
-import { ThumbnailCache, browserDecode } from "./gallery/thumbs";
+import { ServerThumbs } from "./gallery/serverThumbs";
+import { ThumbUnsupported, ThumbnailCache, browserDecode } from "./gallery/thumbs";
 import { useOutputs } from "./gallery/useOutputs";
 import { GridView, ListView } from "./gallery/Views";
 import {
@@ -41,9 +42,15 @@ import "./gallery/gallery.css";
 export { PhotoCache, saveBlob };
 
 interface Caches {
+  /** Full-size originals (zoom, and the fallback when the backend has no previews). */
   photos: PhotoCache;
+  /** Server-made 1600 px previews: the fast first view in the Detail viewer. */
+  previews: PhotoCache;
   thumbs: ThumbnailCache;
+  server: ServerThumbs;
 }
+const THUMB_PX = 320;
+const PREVIEW_PX = 1600;
 
 export function Outputs({
   api,
@@ -103,19 +110,37 @@ export function Outputs({
 
   // Caches live in effects so React StrictMode's mount/unmount/mount is safe.
   useEffect(() => {
-    const fetchBlob = async (item: { download_path: string }, signal: AbortSignal) => {
+    const server = new ServerThumbs(api);
+    // Server thumbnails are tiny, so many can load at once; full files are not.
+    const concurrency = () => (server.mode === "no" ? 3 : 6);
+    const fetchBlob = async (item: Output, signal: AbortSignal) => {
+      try {
+        return await server.blob(item, THUMB_PX, signal);
+      } catch (e) {
+        // Videos have no browser-side fallback (it would download the whole video).
+        if (!(e instanceof ThumbUnsupported) || item.download_path.startsWith("/outputs/videos/")) throw e;
+      }
       const url = await api.media(item.download_path, signal);
       const r = await fetch(url, { signal, cache: "no-store" });
       if (!r.ok) throw new Error(`Preview HTTP ${r.status}`);
       return r.blob();
     };
-    const c = {
+    const decode: typeof browserDecode = async (blob, maxSide) => {
+      const meta = server.blobMeta.get(blob);
+      return meta ? { blob, ...meta } : browserDecode(blob, maxSide);
+    };
+    const c: Caches = {
+      server,
       photos: new PhotoCache(api),
-      thumbs: new ThumbnailCache(fetchBlob, browserDecode),
+      previews: new PhotoCache(api, 96 * 1024 * 1024, (item, signal) =>
+        server.fetch(item, PREVIEW_PX, signal),
+      ),
+      thumbs: new ThumbnailCache(fetchBlob, decode, { concurrency }),
     };
     setCaches(c);
     return () => {
       c.photos.dispose();
+      c.previews.dispose();
       c.thumbs.dispose();
     };
   }, [api]);
@@ -166,6 +191,11 @@ export function Outputs({
     [shown, focusId],
   );
   const back = () => change("view", browseView.current);
+
+  // Opening the viewer brings it to the top of the screen so it can use the full height.
+  useEffect(() => {
+    if (view === "detail") root.current?.scrollIntoView({ block: "start" });
+  }, [view]);
 
   // ---- full screen: real Fullscreen API where available, CSS fallback otherwise
   const toggleFull = useCallback(() => {
@@ -386,6 +416,8 @@ export function Outputs({
         api={api}
         thumbs={caches.thumbs}
         photos={caches.photos}
+        previews={caches.previews}
+        dims={(id) => caches.server.dims.get(id)}
         meta={meta}
         onMeta={onMeta}
         selected={selected}

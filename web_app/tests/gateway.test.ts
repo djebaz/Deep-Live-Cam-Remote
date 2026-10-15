@@ -155,3 +155,64 @@ test("production gateway: auth, origins, target restriction, media Range and bin
     await new Promise<void>((r) => upstream.close(() => r()));
   }
 });
+
+test("gateway serves thumbnails over bearer auth, passes the source size, caches only thumbnails, and still refuses other routes", async () => {
+  const seen: string[] = [];
+  const upstream = http.createServer((req, res) => {
+    seen.push(String(req.url));
+    if (req.url?.startsWith("/outputs/photos/thumb/drive/")) {
+      res.writeHead(200, {
+        "Content-Type": "image/jpeg",
+        "Content-Length": 3,
+        "X-Source-Width": "1600",
+        "X-Source-Height": "2400",
+        "X-Source-Duration": "3.5",
+        "Cache-Control": req.url.includes("v=") ? "private, max-age=31536000, immutable" : "public, max-age=99999",
+      });
+      res.end("jpg");
+    } else {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "private, max-age=600" });
+      res.end("{}");
+    }
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  const gateway = createGateway({
+    backends: [`http://127.0.0.1:${(upstream.address() as any).port}`],
+    token,
+    origins: ["https://controller.example"],
+  });
+  gateway.listen(0, "127.0.0.1");
+  await once(gateway, "listening");
+  const base = `http://127.0.0.1:${(gateway.address() as any).port}`;
+  const headers = { Authorization: `Bearer ${token}`, Origin: "https://controller.example" };
+  try {
+    const url = "/outputs/photos/thumb/drive/nested/a%20b.jpg?size=320";
+    assert.equal((await fetch(base + url)).status, 401);
+    const hit = await fetch(base + url + "&v=123", { headers });
+    assert.equal(hit.status, 200);
+    assert.equal(await hit.text(), "jpg");
+    assert.equal(hit.headers.get("x-source-width"), "1600");
+    assert.equal(hit.headers.get("x-source-duration"), "3.5");
+    assert.match(hit.headers.get("access-control-expose-headers") || "", /X-Source-Width/);
+    assert.equal(hit.headers.get("cache-control"), "private, max-age=31536000, immutable");
+    // a backend that says "public" for a thumbnail is not trusted to widen caching
+    assert.equal((await fetch(base + url, { headers })).headers.get("cache-control"), "no-store");
+    // every other route stays no-store even if the backend asks for caching
+    assert.equal((await fetch(base + "/health", { headers })).headers.get("cache-control"), "no-store");
+    // unknown thumbnail shapes are never proxied (GET falls back to the app page; other methods 404)
+    const before = seen.length;
+    for (const bad of ["/outputs/photos/thumb/nowhere/a.jpg", "/outputs/music/thumb/drive/a.jpg", "/outputs/photos/thumb/drive"]) {
+      const r = await fetch(base + bad, { headers });
+      assert.match(r.headers.get("content-type") || "", /text\/html|application\/json/);
+      assert.notEqual(r.headers.get("content-type"), "image/jpeg");
+    }
+    assert.equal((await fetch(base + "/outputs/photos/thumb/drive/a.jpg", { method: "POST", headers })).status, 404);
+    assert.equal(seen.length, before, "no unknown route reached the backend");
+  } finally {
+    gateway.closeAllConnections();
+    upstream.closeAllConnections();
+    await new Promise<void>((r) => gateway.close(() => r()));
+    await new Promise<void>((r) => upstream.close(() => r()));
+  }
+});
