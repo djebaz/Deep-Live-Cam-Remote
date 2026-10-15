@@ -154,7 +154,11 @@ Outputs is a media library for the backend's fixed Drive and Colab output folder
 Opening a video in Detail (including previous/next navigation) starts playback
 muted, independently of the slideshow setting. Enable sound using the player
 controls. Slideshow still controls whether playback advances to the next file
-when the video ends. Browser autoplay restrictions can still require pressing Play.
+when the video ends. The viewer explicitly requests playback once approximately
+two seconds are buffered (or the rest of a shorter clip), allowing native autoplay
+to start sooner if the browser is already ready. This is buffered media time, not
+a guaranteed two-second loading delay; network speed and decoding still affect
+startup. Browser autoplay restrictions can still require pressing Play.
 
 **Speed**: the Colab API makes small cached JPEG thumbnails (320 px) and video poster
 frames, and 1600 px previews for the viewer, so the gallery downloads kilobytes instead

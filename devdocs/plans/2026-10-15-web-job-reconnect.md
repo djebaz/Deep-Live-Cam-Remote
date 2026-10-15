@@ -11,6 +11,7 @@
 - [x] Add read-only polling with bounded requests, capped retry delays, and cleanup.
 - [x] Show connection recovery and retain the current job through outages.
 - [x] Enable muted detail video autoplay.
+- [x] Request startup once about two seconds are buffered, without restarting paused videos.
 - [x] Sync user documentation and release notes.
 - [x] Review the complete diff and prepare the branch for a PR to main.
 
@@ -22,6 +23,7 @@
 - Keep raw diagnostic details in Activity; show a contextual notice during recovery.
 - Do not show stale FPS/ETA as current while reconnecting.
 - Autoplay starts muted for browser compatibility; slideshow remains independently controlled.
+- Follow-up: request playback at a two-second buffered-media threshold (or a complete shorter clip), leaving earlier native autoplay intact. No fixed five-second application buffer existed; wall-clock startup remains browser/network dependent.
 
 ## User-deferred validation
 - No tests, builds, or browser runs requested; leave them to the user under repository guidance and the session's no-tests instruction.
