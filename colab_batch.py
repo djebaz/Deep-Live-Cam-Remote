@@ -459,7 +459,8 @@ def process_one(
     expected = max(1, int(round(clip * fps))) if clip is not None else None
     encode_duration = clip or max(1 / fps, ((info["frames"] or 86400 * info["fps"]) / info["fps"]) - start)
     # Frames to expect for progress: the clip, or the rest of the video when its length is known.
-    progress_total = expected or (max(1, int(round(encode_duration * fps))) if info["frames"] else None)
+    known_length = info["frames"] / info["fps"] if info["frames"] else info.get("duration")
+    progress_total = expected or (max(1, int(round(max(0.0, known_length - start) * fps))) if known_length else None)
     frame_size = width * height * 3
     engine.reset_video_state()
     print(f"  {info['width']}x{info['height']} @ {info['fps']:.3f} -> {width}x{height} @ {fps:.3f}")
