@@ -92,6 +92,22 @@ def _show_batch_progress(window: MainWindow, kind: str, progress: object) -> Non
     bar.show()
 
 
+def _show_batch_upload(window: MainWindow, kind: str, snapshot: object) -> None:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("upload"), dict):
+        return
+    if snapshot.get("job_id") != window.active_job_id:
+        return
+    upload = snapshot["upload"]
+    bar = getattr(window, f"{kind}_upload_progress", None)
+    if bar is not None:
+        bar.setRange(0, max(1, int(upload.get("total") or 0)))
+        bar.setValue(int(upload.get("uploaded") or 0))
+        bar.setFormat(f"Uploads: {upload.get('uploaded')} / {upload.get('total')}" +
+                      ((" (stopped)" if upload.get("error") else " (finished)") if upload.get("complete") else ""))
+        bar.show()
+    _set_process_status(window, kind, str(snapshot.get("stage") or f"{kind} batch {snapshot.get('status', 'running')}"))
+
+
 def _set_process_status(window: MainWindow, kind: str, text: str) -> None:
     names = {
         "setup": "setup_status",
@@ -129,6 +145,9 @@ def _set_batch_button_idle(window: MainWindow, kind: str) -> None:
     bar = getattr(window, f"{kind}_progress", None)
     if bar is not None:
         bar.hide()
+    upload_bar = getattr(window, f"{kind}_upload_progress", None)
+    if upload_bar is not None:
+        upload_bar.hide()
 
 
 def _is_batch_running(window: MainWindow) -> bool:
@@ -251,6 +270,8 @@ def _build_photos_tab(self: MainWindow) -> None:
     layout.addWidget(self.photos_status)
     self.photos_progress = _batch_progress_bar()
     layout.addWidget(self.photos_progress)
+    self.photos_upload_progress = _batch_progress_bar()
+    layout.addWidget(self.photos_upload_progress)
     layout.addStretch(1)
     self.tabs.addTab(tab, "Photos")
 
@@ -368,6 +389,8 @@ def _build_videos_tab(self: MainWindow) -> None:
     layout.addWidget(self.videos_status)
     self.videos_progress = _batch_progress_bar()
     layout.addWidget(self.videos_progress)
+    self.videos_upload_progress = _batch_progress_bar()
+    layout.addWidget(self.videos_upload_progress)
     layout.addStretch(1)
     self.tabs.addTab(tab, "Videos")
 

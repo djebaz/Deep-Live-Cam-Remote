@@ -936,8 +936,10 @@ def process_batch(args: argparse.Namespace) -> int:
     if config.map_config and not config.map_config.is_file():
         raise FileNotFoundError(config.map_config)
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    videos = discover_videos(config.input_dir, config.recursive)
-    if not videos:
+    stream = getattr(args, "input_files", None)
+    videos = stream if stream is not None else discover_videos(config.input_dir, config.recursive)
+    count = args.input_count if stream is not None else len(videos)
+    if not count:
         raise FileNotFoundError(f"No videos found in {config.input_dir}")
     engine = ModernEngine(config)
     signature = config_signature(config)
@@ -953,8 +955,8 @@ def process_batch(args: argparse.Namespace) -> int:
         relative = video.relative_to(config.input_dir).as_posix()
         output = video_output_path(config.output_dir, relative, config.ss, config.duration)
         key = manifest_key(video, config.input_dir, signature)
-        print(f"\n[{number}/{len(videos)}] {relative}")
-        _bind_progress(engine, args, number, len(videos), relative)
+        print(f"\n[{number}/{count}] {relative}")
+        _bind_progress(engine, args, number, count, relative)
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
             print("  skipped: matching input + source/model/config manifest entry")
             report["skipped"].append(relative)
@@ -1046,8 +1048,10 @@ def process_photos(args: argparse.Namespace) -> int:
     if config.map_config and not config.map_config.is_file():
         raise FileNotFoundError(config.map_config)
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    images = discover_images(config.input_dir, config.recursive)
-    if not images:
+    stream = getattr(args, "input_files", None)
+    images = stream if stream is not None else discover_images(config.input_dir, config.recursive)
+    count = args.input_count if stream is not None else len(images)
+    if not count:
         raise FileNotFoundError(f"No images found in {config.input_dir}")
     engine = ModernEngine(config)
     signature = config_signature(config)
@@ -1063,8 +1067,8 @@ def process_photos(args: argparse.Namespace) -> int:
         relative = image.relative_to(config.input_dir).as_posix()
         output = config.output_dir / Path(relative).parent / f"{image.stem}_face_swapped{image.suffix.lower()}"
         key = manifest_key(image, config.input_dir, signature)
-        print(f"\n[{number}/{len(images)}] {relative}")
-        _bind_progress(engine, args, number, len(images), relative)
+        print(f"\n[{number}/{count}] {relative}")
+        _bind_progress(engine, args, number, count, relative)
         if not config.overwrite and config.skip_processed and key in items and Path(items[key].get("output", "")).is_file():
             print("  skipped: matching input + source/model/config manifest entry")
             report["skipped"].append(relative)

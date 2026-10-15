@@ -237,33 +237,55 @@ class ApiClient:
         file_paths: list[Path],
         field_name: str = "files",
         timeout: float = 300.0,
+        relative_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         boundary = f"----DeepLiveCamBoundary{uuid.uuid4().hex}"
         content_type = f"multipart/form-data; boundary={boundary}"
-        body_parts = []
-        for file_path in file_paths:
+        if relative_paths is not None and len(relative_paths) != len(file_paths):
+            raise ValueError("relative_paths must match files")
+        parts: list[tuple[bytes, Path]] = []
+        length = 0
+        for index, file_path in enumerate(file_paths):
             mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-            file_data = file_path.read_bytes()
-            body_parts.append(
-                (
-                    f"--{boundary}\r\n"
-                    f'Content-Disposition: form-data; name="{field_name}"; filename="{file_path.name}"\r\n'
-                    f"Content-Type: {mime_type}\r\n\r\n"
-                ).encode("utf-8") + file_data + b"\r\n"
+            filename = file_path.name.replace('"', "_").replace("\r", "").replace("\n", "")
+            relative = (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="relative_paths"\r\n\r\n{relative_paths[index]}\r\n'
+                if relative_paths is not None else ""
             )
-        body = b"".join(body_parts) + f"--{boundary}--\r\n".encode("utf-8")
+            header = (relative +
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+                    f"Content-Type: {mime_type}\r\n\r\n"
+            ).encode("utf-8")
+            parts.append((header, file_path))
+            length += len(header) + file_path.stat().st_size + 2
+        ending = f"--{boundary}--\r\n".encode("utf-8")
+
+        def body():
+            for header, path in parts:
+                if abort_requested():
+                    raise DownloadAborted("upload cancelled")
+                yield header
+                with path.open("rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        if abort_requested():
+                            raise DownloadAborted("upload cancelled")
+                        yield chunk
+                yield b"\r\n"
+            yield ending
+
         request = urllib.request.Request(
             self.url(endpoint),
-            data=body,
+            data=body(),
             method="POST",
-            headers={"Content-Type": content_type},
+            headers={"Content-Type": content_type, "Content-Length": str(length + len(ending))},
         )
         return _open_json(request, timeout)
 
 
-def job_payload(settings: AppSettings, input_dir: str, output_dir: str, source_face: str | None = None) -> dict[str, Any]:
+def job_payload(settings: AppSettings, input_dir: str, output_dir: str, source_face: str | None = None, kind: str | None = None) -> dict[str, Any]:
     normalized_input = str(input_dir).replace("\\", "/")
-    is_photo_job = "/photos" in normalized_input and "/videos" not in normalized_input
+    is_photo_job = kind == "photos" if kind is not None else "/photos" in normalized_input and "/videos" not in normalized_input
     output_max_width = int(getattr(settings, "photo_max_width", 0)) if is_photo_job else None
     max_width = int(settings.max_width)
     quality = int(getattr(settings, "photo_quality", 95)) if is_photo_job else int(settings.quality)

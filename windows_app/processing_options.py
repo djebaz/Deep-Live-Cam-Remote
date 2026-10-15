@@ -151,6 +151,13 @@ def sync_settings(self: MainWindow) -> None:
 
 
 def _start_batch_with_status(self: MainWindow, kind: str) -> None:
+    if getattr(self, "output_workers", {}).get(getattr(self, "output_batch_task_id", "")):
+        self.log("Batch preparation is already in progress.")
+        return
+    pending = getattr(self, "pending_upload_creation", None)
+    if pending and pending["kind"] != kind:
+        self.log(f"Recover the unconfirmed {pending['kind']} batch first.")
+        return
     self.sync_settings()
     _apply_processing_options_to_settings(self.settings, kind)
     if kind == "photos":
@@ -163,9 +170,14 @@ def _start_batch_with_status(self: MainWindow, kind: str) -> None:
     ui_base._set_batch_button_running(self, kind)
 
     def task() -> dict[str, Any]:
-        return output_tasks_base._prepare_and_start_batch(settings, kind)
+        return output_tasks_base._declare_pending_upload(pending) if pending else output_tasks_base._prepare_and_start_batch(settings, kind)
 
-    def on_job_finished(status: str, batch_kind: str) -> None:
+    def on_job_finished(status: str, batch_kind: str, job_id: str) -> None:
+        if self.active_job_id != job_id:
+            return
+        uploader = self.output_workers.get(getattr(self, "output_upload_task_id", ""))
+        if uploader:
+            uploader.requestInterruption()
         self.log(f"job finished: {status}")
         ui_base._set_process_status(self, batch_kind, f"Job finished: {status}")
         self.active_job_id = None
@@ -175,6 +187,14 @@ def _start_batch_with_status(self: MainWindow, kind: str) -> None:
         if task_id != self.output_batch_task_id:
             return
         payload = result if isinstance(result, dict) else {}
+        if payload.get("pending_creation"):
+            self.pending_upload_creation = payload["pending_creation"]
+            ui_base._set_batch_button_idle(self, kind)
+            text = "Batch creation uncertain. Start reconnects to the same batch; no inputs uploaded."
+            ui_base._set_process_status(self, kind, text)
+            self.log(text)
+            return
+        self.pending_upload_creation = None
         for line in payload.get("logs") or []:
             line_text = str(line)
             self.log(line_text)
@@ -191,8 +211,9 @@ def _start_batch_with_status(self: MainWindow, kind: str) -> None:
                 self.poller.stop()
             self.poller = PollWorker(self.client, self.active_job_id)
             self.poller.message.connect(lambda text, batch_kind=kind: ui_base._poll_message(self, batch_kind, text))
-            self.poller.finished_status.connect(lambda status, batch_kind=kind: on_job_finished(status, batch_kind))
+            self.poller.finished_status.connect(lambda status, batch_kind=kind, expected_id=self.active_job_id: on_job_finished(status, batch_kind, expected_id))
             self.poller.progress.connect(lambda payload, batch_kind=kind: ui_base._show_batch_progress(self, batch_kind, payload))
+            output_tasks_base._start_pending_upload(self, payload)
             self.poller.start()
             ui_base._show_batch_starting(self, kind)
             ui_base._set_process_status(self, kind, f"{kind} batch running...")
@@ -203,6 +224,8 @@ def _start_batch_with_status(self: MainWindow, kind: str) -> None:
     def failed(task_id: str, error: str) -> None:
         if task_id != self.output_batch_task_id:
             return
+        if pending and pending.get("rejected"):
+            self.pending_upload_creation = None
         text = f"{kind} batch failed before start: {error}"
         ui_base._set_process_status(self, kind, text)
         self.log(text)

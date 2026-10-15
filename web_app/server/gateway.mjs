@@ -77,6 +77,7 @@ export function createGateway({
       method === "GET" &&
       (/^\/health$/.test(path) ||
         /^\/jobs\/[a-zA-Z0-9-]+$/.test(path) ||
+        /^\/jobs\/(photos|videos)\/upload-batches\/[a-zA-Z0-9_-]{1,80}$/.test(path) ||
         /^\/outputs\/(photos|videos)(\/zip|\/file\/(local|drive)\/.+|\/thumb\/(local|drive)\/.+)?$/.test(
           path,
         ) ||
@@ -86,6 +87,8 @@ export function createGateway({
     return (
       method === "POST" &&
       (/^\/jobs\/(photos|videos|cancel)$/.test(path) ||
+        /^\/jobs\/(photos|videos)\/upload-batches\/[a-zA-Z0-9_-]{1,80}$/.test(path) ||
+        /^\/jobs\/[a-zA-Z0-9-]+\/uploads\/finish$/.test(path) ||
         /^\/upload\/(file|source|photos|videos)$/.test(path) ||
         path === "/sources/check" ||
         /^\/outputs\/(photos|videos)\/(create-zip|preflight)$/.test(path))

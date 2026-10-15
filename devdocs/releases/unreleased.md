@@ -1,5 +1,13 @@
 # Unreleased
 
+## Process while batch inputs upload
+- Add capability-gated declared upload batches shared by web and Windows. One job receives the fixed input names/sizes and starts processing the first completed input while subsequent inputs upload. Existing remote-directory and older-API workflows keep their previous behavior.
+- Publish inputs only after complete, size-checked uploads are renamed into place. Creation is idempotent per batch ID; repeated completed uploads are acknowledged without overwriting or requeueing inputs. Explicit completion and a 15-minute idle wait bound abandoned batches.
+- Show upload counts and processing progress concurrently. Stop interrupts further uploads and cancels the known job; failed transfers are reported to the job, and completed outputs are preserved. Browser reload cannot restore selected local files or resume their transfers automatically.
+- Windows sends one input at a time using bounded-memory multipart streaming, preserves relative paths, uses exact skip-processed preflight for the selected output directory, and retains uncertain creation identity so Start recovers the same batch. Other kinds cannot start until that uncertain creation is resolved.
+- Update the private gateway allowlist for upload-batch creation/lookup and completion. Restart the updated API and gateway, rebuild the web frontend, and update the Windows app to use the overlap. Model loading and GPU serialization still apply; a single input cannot be processed before its upload completes.
+- Static review and Python/gateway syntax checks only; no tests, builds, real GPU jobs, browser or Windows runs were performed.
+
 ## Web connection recovery and video playback
 - Keep monitoring an existing photo/video job across temporary gateway/Colab outages, including HTTP 502: bounded read requests retry automatically with delays capped at 15 seconds. Show a Reconnecting notice instead of a raw transient error, restore Connected on recovery, and retain the current job without repeating uploads or submission. Idle health monitoring also recovers automatically after an established connection. Authentication/configuration errors remain actionable failures.
 - Start videos muted when opening or navigating the Outputs detail viewer, independently of slideshow; player controls can enable sound, and slideshow still controls advancing at the end.
