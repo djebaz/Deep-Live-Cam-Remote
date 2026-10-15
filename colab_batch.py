@@ -420,6 +420,8 @@ def effective_segment(info: dict[str, Any], config: ProcessConfig, path: Path) -
 
 
 STALL_REPORT_SECONDS = 20.0
+# A live encoder that has not accepted a single frame for this long is hung: fail the video.
+ENCODER_NO_DRAIN_SECONDS = 90.0
 
 
 def start_stall_watchdog(
@@ -576,6 +578,28 @@ def _process_one_into(
     encoder = subprocess.Popen(encoder_command(path, output, start, encode_duration, fps, width, height, selected_encoder, config.preset, config.quality), stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
     encoder_err = StderrTail(encoder)
 
+    def kill_encoder() -> None:
+        encoder.terminate()
+        try:
+            encoder.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            encoder.kill()
+            encoder.wait(timeout=5)
+
+    def encoder_blocked(since: float | None) -> float:
+        """Track how long the queue has been full; a live but silent encoder fails the video."""
+        now = time.monotonic()
+        if since is None:
+            return now
+        if now - since > ENCODER_NO_DRAIN_SECONDS:
+            kill_encoder()
+            raise EncoderFailed(
+                selected_encoder,
+                f"FFmpeg encoder ({selected_encoder}) stopped reading frames for {now - since:.0f}s at frame {frames}:\n"
+                f"{encoder_err.text()[-4000:]}",
+            )
+        return since
+
     def encoder_failed() -> EncoderFailed:
         code = encoder.poll()
         detail = encoder_err.text() if code is not None else ""
@@ -688,11 +712,13 @@ def _process_one_into(
                     print(f"  ! frame fallback: {exc}")
             if result.shape[:2] != (height, width):
                 result = cv2.resize(result, (width, height))
+            blocked_since: float | None = None
             while not stop.is_set():
                 try:
                     encoded.put(np.ascontiguousarray(result).tobytes(), timeout=0.1)
                     break
                 except queue.Full:
+                    blocked_since = encoder_blocked(blocked_since)
                     if cancel_requested():
                         cancelled = True
                         print("  cancel requested; stopping current video")
@@ -717,11 +743,13 @@ def _process_one_into(
         if cancelled:
             output.unlink(missing_ok=True)
             raise BatchCancelled("cancel requested")
+        blocked_since = None
         while True:
             try:
                 encoded.put(sentinel, timeout=0.1)
                 break
             except queue.Full:
+                blocked_since = encoder_blocked(blocked_since)
                 # Same exits as the frame loop: a dead encoder never drains the queue, and a
                 # cancel must not wait for it either.
                 if cancel_requested():
@@ -733,12 +761,7 @@ def _process_one_into(
         if encode_thread.is_alive():
             # The writer is stuck in a pipe write: closing stdin would block on its lock. Kill
             # ffmpeg (bounded waits) so the write fails and the thread ends, then report it.
-            encoder.terminate()
-            try:
-                encoder.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                encoder.kill()
-                encoder.wait(timeout=5)
+            kill_encoder()
             encode_thread.join(timeout=5)
             raise EncoderFailed(selected_encoder, f"FFmpeg encoder ({selected_encoder}) stopped accepting frames at the end of the video:\n{encoder_err.text()[-4000:]}")
         if stop.is_set() and decoder.poll() is None:
