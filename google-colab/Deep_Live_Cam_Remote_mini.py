@@ -535,8 +535,20 @@ if daemon_running():
     print("✓ Tailscale daemon already running")
 else:
     print("Starting Tailscale daemon...")
+    # Kernel TUN is much faster than userspace networking; use it when the VM offers it.
     daemon_cmd = "sudo tailscaled --tun=userspace-networking --socks5-server=localhost:1055 > /dev/null 2>&1 &"
-    subprocess.Popen(daemon_cmd, shell=True)
+    if os.path.exists("/dev/net/tun"):
+        subprocess.Popen("sudo tailscaled --socks5-server=localhost:1055 > /dev/null 2>&1 &", shell=True)
+        time.sleep(3)
+        if daemon_running():
+            print("✓ Using kernel TUN networking (fast path)")
+            daemon_cmd = None
+        else:
+            print("Kernel TUN unavailable; falling back to userspace networking")
+            subprocess.run(["sudo", "pkill", "tailscaled"], capture_output=True)
+            time.sleep(1)
+    if daemon_cmd:
+        subprocess.Popen(daemon_cmd, shell=True)
     time.sleep(2)
     if daemon_running():
         print("✓ Tailscale daemon started")

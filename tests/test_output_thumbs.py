@@ -126,3 +126,11 @@ def test_listing_is_cached_briefly_then_refreshed(client, monkeypatch):
     # different roots never share a cache entry
     assert client.get('/outputs/videos').json()['count'] == 0
     json.dumps(client.get('/outputs/photos').json())
+
+
+def test_speedtest_streams_requested_size_and_clamps(client):
+    r = client.get("/speedtest?mb=2")
+    assert r.status_code == 200
+    assert len(r.content) == 2 * 1024 * 1024
+    assert r.headers["cache-control"] == "no-store"
+    assert len(client.get("/speedtest?mb=0").content) == 1024 * 1024

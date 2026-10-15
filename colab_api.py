@@ -8,6 +8,7 @@ import io
 import json
 import math
 import mimetypes
+import os
 import queue
 import shutil
 import struct
@@ -19,12 +20,12 @@ import zipfile
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
@@ -778,6 +779,27 @@ def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, conf
         output = engine.enhancer.process_frame(None, output, detected_faces=detected_for_enhancer)
     timings["enhance"] = time.monotonic() - enhance_started
     return output, timings
+
+
+SPEEDTEST_CHUNK = os.urandom(1024 * 1024)
+
+
+@app.get("/speedtest")
+def speedtest(mb: int = 50) -> StreamingResponse:
+    """Stream incompressible bytes to measure the real link speed (curl -o NUL URL)."""
+    total = max(1, min(int(mb), 500)) * 1024 * 1024
+
+    def chunks() -> Iterator[bytes]:
+        sent = 0
+        while sent < total:
+            yield SPEEDTEST_CHUNK[: min(len(SPEEDTEST_CHUNK), total - sent)]
+            sent += len(SPEEDTEST_CHUNK)
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/octet-stream",
+        headers={"Content-Length": str(total), "Cache-Control": "no-store"},
+    )
 
 
 @app.get("/health")
