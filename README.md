@@ -29,16 +29,16 @@ This variant keeps the upstream Deep-Live-Cam local pipeline, then adds:
 
 1. Open `google-colab/Deep_Live_Cam_Remote_Batch.ipynb` in Google Colab.
 2. Run the setup cells.
-3. Mount Google Drive when prompted.
-4. Put your files under the default Drive layout:
+3. Put your files on the fast Colab disk (upload them, or copy them from Drive once):
 
 ```text
-MyDrive/DeepLiveCamRemote/source/source.png
-MyDrive/DeepLiveCamRemote/photos/
-MyDrive/DeepLiveCamRemote/videos/
-MyDrive/DeepLiveCamRemote/outputs/
+/content/inputs/source/source.png
+/content/inputs/photos/
+/content/inputs/videos/
 ```
 
+   Inputs and outputs default to the Colab disk (outputs in `/content/outputs/photos` and `/videos`), not Google Drive, because Drive is slow. Colab disk files are lost when the runtime resets, so keep your originals on Drive if you want them to persist.
+4. Optional: mount Drive when prompted and copy files over, or point any path at `/content/drive/MyDrive/...`.
 5. Run the photo or video batch cells.
 
 The notebook clones this repository from:
@@ -72,18 +72,18 @@ From a Colab/runtime checkout:
 
 ```bash
 python colab_batch.py process \
-  --source-face /content/drive/MyDrive/DeepLiveCamRemote/source/source.png \
-  --input-dir /content/drive/MyDrive/DeepLiveCamRemote/videos \
-  --output-dir /content/drive/MyDrive/DeepLiveCamRemote/outputs/videos
+  --source-face /content/inputs/source/source.png \
+  --input-dir /content/inputs/videos \
+  --output-dir /content/outputs/videos
 ```
 
 Photo batch example:
 
 ```bash
 python colab_batch.py photos \
-  --source-face /content/drive/MyDrive/DeepLiveCamRemote/source/source.png \
-  --input-dir /content/drive/MyDrive/DeepLiveCamRemote/photos \
-  --output-dir /content/drive/MyDrive/DeepLiveCamRemote/outputs/photos
+  --source-face /content/inputs/source/source.png \
+  --input-dir /content/inputs/photos \
+  --output-dir /content/outputs/photos
 ```
 
 Face mapping workflow:

@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import math
 import mimetypes
+import os
 import queue
 import shutil
 import struct
@@ -18,12 +20,12 @@ import zipfile
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
@@ -44,6 +46,12 @@ LOCAL_OUTPUT_PHOTOS_DIR = Path("/content/outputs/photos")
 LOCAL_OUTPUT_VIDEOS_DIR = Path("/content/outputs/videos")
 ZIP_OUTPUT_DIR = Path("/content/outputs/downloads")
 ARCHIVE_DIR = Path("/content/archive")
+# Browser thumbnails/previews are generated once and cached on the Colab disk.
+THUMB_DIR = Path("/content/outputs/.thumbs")
+THUMB_SIZES = (160, 320, 640, 1600)
+THUMB_SLOTS = threading.BoundedSemaphore(4)
+# The output listing walks Drive (slow over FUSE); reuse it for a moment.
+OUTPUT_LIST_TTL = 2.0
 
 OUTPUT_IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 OUTPUT_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
@@ -270,10 +278,23 @@ def output_root(kind: str, source: str) -> tuple[Path, set[str]]:
     raise HTTPException(status_code=404, detail=f"unknown output source: {source}")
 
 
+_OUTPUT_LIST_CACHE: dict[tuple[str, ...], tuple[float, list[dict[str, Any]]]] = {}
+
+
 def output_file_entries(kind: str) -> list[dict[str, Any]]:
     ensure_drive_layout()
     ensure_local_layout()
     roots, extensions = output_roots(kind)
+    key = (kind.lower(), *(str(root) for _, root in roots))
+    hit = _OUTPUT_LIST_CACHE.get(key)
+    if OUTPUT_LIST_TTL > 0 and hit and time.monotonic() - hit[0] < OUTPUT_LIST_TTL:
+        return hit[1]
+    files = _scan_output_files(kind, roots, extensions)
+    _OUTPUT_LIST_CACHE[key] = (time.monotonic(), files)
+    return files
+
+
+def _scan_output_files(kind: str, roots: list[tuple[str, Path]], extensions: set[str]) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     for source, root in roots:
         if not root.exists():
@@ -760,6 +781,27 @@ def live_process_frame(engine: colab_batch.ModernEngine, frame: np.ndarray, conf
     return output, timings
 
 
+SPEEDTEST_CHUNK = os.urandom(1024 * 1024)
+
+
+@app.get("/speedtest")
+def speedtest(mb: int = 50) -> StreamingResponse:
+    """Stream incompressible bytes to measure the real link speed (curl -o NUL URL)."""
+    total = max(1, min(int(mb), 500)) * 1024 * 1024
+
+    def chunks() -> Iterator[bytes]:
+        sent = 0
+        while sent < total:
+            yield SPEEDTEST_CHUNK[: min(len(SPEEDTEST_CHUNK), total - sent)]
+            sent += len(SPEEDTEST_CHUNK)
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/octet-stream",
+        headers={"Content-Length": str(total), "Cache-Control": "no-store"},
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     paths = ensure_drive_layout()
@@ -768,7 +810,7 @@ def health() -> dict[str, Any]:
         "api_version": API_VERSION,
         "paths": paths,
         "local_paths": ensure_local_layout(),
-        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True},
+        "web_capabilities": {"relative_uploads": True, "photo_options": True, "output_preflight": True, "batch_cleanup": True, "output_thumbs": True},
         "active_jobs": [job.snapshot() for job in JOBS.values() if job.status in {"queued", "running"}],
     }
 
@@ -918,6 +960,116 @@ def get_output_file(kind: str, source: str, relative_path: str) -> FileResponse:
     path = safe_output_path(kind, source, relative_path)
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+def snap_thumb_size(requested: int) -> int:
+    """Only a few fixed sizes exist, so the cache stays small and every URL is reusable."""
+    for size in THUMB_SIZES:
+        if requested <= size:
+            return size
+    return THUMB_SIZES[-1]
+
+
+def thumb_cache_path(kind: str, source: str, relative_path: str, stat: Any, size: int) -> Path:
+    raw = f"{kind}\0{source}\0{relative_path}\0{stat.st_size}\0{stat.st_mtime_ns}\0{size}"
+    digest = hashlib.sha1(raw.encode()).hexdigest()
+    return THUMB_DIR / digest[:2] / f"{digest}.jpg"
+
+
+def encode_jpeg(frame: Any, size: int, quality: int = 82) -> tuple[bytes, int, int]:
+    """Downscale a BGR frame so its longest side is <= size and encode it; returns the source size too."""
+    height, width = frame.shape[:2]
+    scale = min(1.0, size / max(width, height))
+    if scale < 1.0:
+        frame = cv2.resize(frame, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
+    ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise ValueError("could not encode the thumbnail")
+    return buffer.tobytes(), width, height
+
+
+def make_image_thumb(path: Path, size: int) -> tuple[bytes, dict[str, Any]]:
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:  # Pillow is optional; OpenCV can decode every allowed format
+        frame = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("unreadable image")
+        data, width, height = encode_jpeg(frame, size)
+        return data, {"width": width, "height": height}
+    with Image.open(path) as image:
+        width, height = image.size
+        if image.format == "JPEG":
+            image.draft("RGB", (size, size))  # decode at a reduced scale: much faster for large photos
+        image = ImageOps.exif_transpose(image)
+        if image.mode in ("RGBA", "LA", "P"):
+            background = Image.new("RGB", image.size, (21, 21, 21))
+            rgba = image.convert("RGBA")
+            background.paste(rgba, mask=rgba.split()[-1])
+            image = background
+        else:
+            image = image.convert("RGB")
+        image.thumbnail((size, size), Image.BILINEAR)
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=82)
+    return buffer.getvalue(), {"width": width, "height": height}
+
+
+def make_video_thumb(path: Path, size: int) -> tuple[bytes, dict[str, Any]]:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            raise ValueError("unreadable video")
+        frames = capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        fps = capture.get(cv2.CAP_PROP_FPS) or 0
+        duration = frames / fps if frames > 0 and fps > 0 else None
+        if frames > 1:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(frames * 0.1))
+        ok, frame = capture.read()
+        if not ok:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = capture.read()
+        if not ok:
+            raise ValueError("no decodable frame")
+    finally:
+        capture.release()
+    data, width, height = encode_jpeg(frame, size)
+    meta: dict[str, Any] = {"width": width, "height": height}
+    if duration is not None:
+        meta["duration"] = round(duration, 2)
+    return data, meta
+
+
+@app.get("/outputs/{kind}/thumb/{source}/{relative_path:path}")
+def get_output_thumb(kind: str, source: str, relative_path: str, size: int = 320, v: str = "") -> FileResponse:
+    """A small cached JPEG of a photo, or a frame of a video, with the source size in headers."""
+    path = safe_output_path(kind, source, relative_path)
+    size = snap_thumb_size(size)
+    cached = thumb_cache_path(kind.lower(), source, relative_path, path.stat(), size)
+    meta_path = cached.with_suffix(".json")
+    if not (cached.is_file() and meta_path.is_file()):
+        with THUMB_SLOTS:  # bound CPU use; another request may have finished the same file meanwhile
+            if not (cached.is_file() and meta_path.is_file()):
+                try:
+                    maker = make_video_thumb if kind.lower() == "videos" else make_image_thumb
+                    data, meta = maker(path, size)
+                except Exception as exc:
+                    raise HTTPException(status_code=422, detail=f"cannot create a thumbnail: {exc}") from exc
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cached.with_name(f"{cached.name}.{uuid.uuid4().hex}.tmp")
+                temporary.write_bytes(data)
+                temporary.replace(cached)
+                meta_path.write_text(json.dumps(meta))
+    meta = json.loads(meta_path.read_text())
+    headers = {
+        "X-Source-Width": str(meta.get("width", 0)),
+        "X-Source-Height": str(meta.get("height", 0)),
+        # The URL carries the file's modified time (v), so a hit can be cached for good.
+        "Cache-Control": "private, max-age=31536000, immutable" if v else "private, no-cache",
+    }
+    if meta.get("duration") is not None:
+        headers["X-Source-Duration"] = str(meta["duration"])
+    return FileResponse(cached, media_type="image/jpeg", headers=headers)
 
 
 @app.post("/upload/file")

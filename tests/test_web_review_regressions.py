@@ -14,6 +14,8 @@ def client(tmp_path, monkeypatch):
                  'LOCAL_OUTPUT_PHOTOS_DIR', 'LOCAL_OUTPUT_VIDEOS_DIR', 'DRIVE_ROOT',
                  'SOURCE_DIR', 'PHOTOS_DIR', 'VIDEOS_DIR', 'OUTPUT_PHOTOS_DIR', 'OUTPUT_VIDEOS_DIR'):
         monkeypatch.setattr(api, name, tmp_path / name.lower())
+    monkeypatch.setattr(api, 'OUTPUT_LIST_TTL', 0)
+    monkeypatch.setattr(api, 'THUMB_DIR', tmp_path / 'thumbs')
     # Match the real nesting: local input folders sit under LOCAL_ROOT.
     for name, folder in [('LOCAL_SOURCE_DIR', 'source'), ('LOCAL_PHOTOS_DIR', 'photos'), ('LOCAL_VIDEOS_DIR', 'videos')]:
         monkeypatch.setattr(api, name, api.LOCAL_ROOT / folder)

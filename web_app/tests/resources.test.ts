@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PhotoCache } from "../src/Outputs.tsx";
+import { PhotoCache } from "../src/gallery/photoCache.ts";
 import { LiveSession } from "../src/live.ts";
 import { Api, type Output } from "../src/api.ts";
 import { defaults, liveDefaults, restore } from "../src/settings.ts";

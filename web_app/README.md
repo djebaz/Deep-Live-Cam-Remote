@@ -114,11 +114,38 @@ The gateway pauses socket reads above 8 MiB queued writes, resumes below 4 MiB,
 and terminates a persistent 30-second write stall. Source sequence resets or
 missing sequence metadata cannot lock preview playback.
 
-Outputs browse only fixed Drive/local roots, support WebP/photo zoom/autoplay,
-load-based visible duration, bounded prefetch/cache, streamed video, downloads and
-ZIP/archive creation. Arbitrary processing output paths are not indexed. Native
-video codecs unsupported by the browser remain downloadable. Retained archives
-use the existing backend retention behavior.
+Outputs is a media library for the backend's fixed Drive and Colab output folders
+(styled after the DTFlow Images viewer; see the screenshots in `docs/screenshots/`):
+
+- **Grid / List / Detail** views and a Photos/Videos switch. The view, thumbnail size
+  (25-250 %), sort order and auto-refresh are remembered per browser.
+- **Auto-refresh** (on by default) checks for new outputs every few seconds while the
+  tab is visible, and keeps your selection and position. **Refresh now** is always
+  available.
+- **Search, source, date and sort** filters; list headers sort by name, size and date.
+- **Selection**: checkboxes, Select all / Unselect all (across the filtered list), and
+  **Download selected (ZIP)**, built in the browser (up to 5,000 files / 512 MB; larger
+  selections use **Download all** or **Create archive**, which are backend ZIPs).
+- **Detail viewer**: preview that fills the viewer at Fit (original loaded on zoom), previous/next, filmstrip, Fit/zoom with
+  drag-to-pan and Ctrl/Cmd+wheel, double-click for 100 %, swipe on touch screens,
+  slideshow (with a broken file skipped, not a dead end), full screen, file details.
+  Keys: arrows (previous/next), `+`/`-`/`0` (zoom), Space (slideshow), `F` (full
+  screen), Esc (leave full screen, then back to the library), `/` (search).
+- **Activity log**: the page's Activity log records, prefixed `Outputs:`, each load (counts
+  and size), new or removed files found by refreshes, manual refreshes with nothing new,
+  every download (single file, selected ZIP with progress and result, backend ZIP,
+  retained archive), files skipped by the slideshow or that the browser cannot decode or
+  play, and refresh failures (logged once per outage, then once when it recovers).
+- Videos show the browser's own first frame as the tile and play in the viewer; formats
+  the browser cannot play stay downloadable.
+
+**Speed**: the Colab API makes small cached JPEG thumbnails (320 px) and video poster
+frames, and 1600 px previews for the viewer, so the gallery downloads kilobytes instead
+of full originals; the viewer loads the original only when you zoom beyond Fit. They are
+requested only when a tile is near the screen, with bounded concurrency and memory.
+Restart the Colab API to get this; against an older API the browser falls back to making
+thumbnails itself from the full files (slower, costs bandwidth). Arbitrary processing output paths are not indexed.
+Retained archives use the existing backend retention behavior. There is no delete.
 
 Explicit DirectShow/MSMF, OBS profile filesystem reads, OS virtual-camera output,
 unselected filesystem paths and Taildrop CLI are omitted. Ordinary workflows do

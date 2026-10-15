@@ -1,143 +1,57 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Api, type Output } from "./api";
 import type { Values } from "./settings";
-export function saveBlob(blob: Blob, name: string) {
-  const u = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = u;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(u), 1000);
+import { DetailView } from "./gallery/DetailView";
+import { Header, SelectionBar } from "./gallery/Header";
+import {
+  allSelected,
+  clamp,
+  filterAndSort,
+  formatSize,
+  indexOfId,
+  outputId,
+  pruneSelection,
+  sanitizeSort,
+  sanitizeView,
+  selectAll,
+  selectionStats,
+  stepIndex,
+  thumbPx,
+  toggleSelection,
+  type DateRange,
+  type Selection,
+  type SortKey,
+  type SourceFilter,
+  type View,
+} from "./gallery/model";
+import { PhotoCache, saveBlob } from "./gallery/photoCache";
+import type { Meta } from "./gallery/ThumbMedia";
+import { ServerThumbs } from "./gallery/serverThumbs";
+import { ThumbUnsupported, ThumbnailCache, browserDecode } from "./gallery/thumbs";
+import { useOutputs } from "./gallery/useOutputs";
+import { GridView, ListView } from "./gallery/Views";
+import {
+  MAX_ZIP_BYTES,
+  MAX_ZIP_ENTRIES,
+  buildZip,
+  zipEntryName,
+  type ZipEntry,
+} from "./gallery/zip";
+import "./gallery/gallery.css";
+
+export { PhotoCache, saveBlob };
+
+interface Caches {
+  /** Full-size originals (zoom, and the fallback when the backend has no previews). */
+  photos: PhotoCache;
+  /** Server-made 1600 px previews: the fast first view in the Detail viewer. */
+  previews: PhotoCache;
+  thumbs: ThumbnailCache;
+  server: ServerThumbs;
 }
-export class PhotoCache {
-  private entries = new Map<string, { url: string; size: number }>();
-  private pending = new Map<string, Promise<string>>();
-  private controllers = new Map<string, AbortController>();
-  private wanted = new Set<string>();
-  private pinned?: string;
-  private active = 0;
-  private waiters: (() => void)[] = [];
-  private bytes = 0;
-  private disposed = false;
-  constructor(
-    private api: Api,
-    private maxBytes = 64 * 1024 * 1024,
-  ) {}
-  async load(
-    item: Output,
-    progress?: (l: number, t: number) => void,
-  ): Promise<string> {
-    const key = item.download_path;
-    if (this.disposed || (this.wanted.size && !this.wanted.has(key)))
-      throw new DOMException("Obsolete preview", "AbortError");
-    const found = this.entries.get(key);
-    if (found) return found.url;
-    if (this.pending.has(key)) return this.pending.get(key)!;
-    const controller = new AbortController();
-    this.controllers.set(key, controller);
-    const promise = (async () => {
-      if (this.active >= 2)
-        await new Promise<void>((resolve, reject) => {
-          const wake = () => {
-            controller.signal.removeEventListener("abort", abort);
-            resolve();
-          };
-          const abort = () => {
-            this.waiters = this.waiters.filter((x) => x !== wake);
-            reject(new DOMException("Cancelled", "AbortError"));
-          };
-          this.waiters.push(wake);
-          controller.signal.addEventListener("abort", abort, { once: true });
-        });
-      if (controller.signal.aborted) {
-        this.waiters.shift()?.();
-        controller.signal.throwIfAborted();
-      }
-      this.active++;
-      try {
-        if (item.size > this.maxBytes)
-          throw new Error(
-            "Photo exceeds the 64 MiB preview limit; download instead.",
-          );
-        const url = await this.api.media(key, controller.signal);
-        controller.signal.throwIfAborted();
-        const response = await fetch(url, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error(`Preview HTTP ${response.status}`);
-        const reader = response.body!.getReader();
-        const chunks: Uint8Array[] = [];
-        let n = 0;
-        while (true) {
-          const next = await reader.read();
-          if (next.done) break;
-          n += next.value.length;
-          if (n > this.maxBytes) {
-            await reader.cancel();
-            throw new Error("Preview too large; download instead.");
-          }
-          chunks.push(next.value);
-          progress?.(n, item.size);
-        }
-        if (this.disposed) throw new DOMException("Disposed", "AbortError");
-        const object = URL.createObjectURL(
-          new Blob(chunks as BlobPart[], {
-            type: response.headers.get("Content-Type") || "image/jpeg",
-          }),
-        );
-        this.entries.set(key, { url: object, size: n });
-        this.bytes += n;
-        for (const [k, v] of this.entries) {
-          if (this.bytes <= this.maxBytes && this.entries.size <= 52) break;
-          if (k !== key && k !== this.pinned) {
-            URL.revokeObjectURL(v.url);
-            this.entries.delete(k);
-            this.bytes -= v.size;
-          }
-        }
-        if (this.bytes > this.maxBytes) {
-          URL.revokeObjectURL(object);
-          this.entries.delete(key);
-          this.bytes -= n;
-          throw new Error(
-            "Preview cache budget exhausted; reduce prefetch or download this photo.",
-          );
-        }
-        return object;
-      } finally {
-        this.active--;
-        this.waiters.shift()?.();
-      }
-    })().finally(() => {
-      if (this.controllers.get(key) === controller)
-        this.controllers.delete(key);
-      this.pending.delete(key);
-    });
-    this.pending.set(key, promise);
-    return promise;
-  }
-  trim(keep: Set<string>) {
-    this.wanted = keep;
-    this.pinned = keep.values().next().value;
-    for (const [key, controller] of this.controllers)
-      if (!keep.has(key)) controller.abort();
-    for (const [key, value] of this.entries)
-      if (!keep.has(key)) {
-        URL.revokeObjectURL(value.url);
-        this.bytes -= value.size;
-        this.entries.delete(key);
-      }
-  }
-  dispose() {
-    this.disposed = true;
-    for (const c of this.controllers.values()) c.abort();
-    for (const e of this.entries.values()) URL.revokeObjectURL(e.url);
-    this.entries.clear();
-    this.pending.clear();
-    this.bytes = 0;
-  }
-}
+const THUMB_PX = 320;
+const PREVIEW_PX = 1600;
+
 export function Outputs({
   api,
   options,
@@ -149,350 +63,470 @@ export function Outputs({
   change: (k: string, v: string | number | boolean) => void;
   log: (s: string) => void;
 }) {
-  const [files, setFiles] = useState<Output[]>([]),
-    [index, setIndex] = useState(0),
-    [media, setMedia] = useState(""),
-    [status, setStatus] = useState("Refresh to browse backend outputs."),
-    [loaded, setLoaded] = useState(false),
-    [size, setSize] = useState({ w: 0, h: 0 }),
-    [progress, setProgress] = useState<number | null>(null),
-    [busy, setBusy] = useState(false);
-  const generation = useRef(0);
-  const cache = useRef<PhotoCache | null>(null);
-  const kind = String(options.kind),
-    current = files[index];
+  const kind = options.kind === "videos" ? "videos" : "photos";
+  const view = sanitizeView(options.view);
+  const sort = sanitizeSort(options.sort);
+  const thumb = clamp(Number(options.thumb) || 100, 25, 250);
+  const autoRefresh = options.autorefresh !== false;
+  const autoplay = Boolean(options.autoplay);
+  const seconds = clamp(Number(options.seconds) || 3.5, 0.25, 60);
+  const prefetch = clamp(Math.round(Number(options.prefetch) || 10), 1, 50);
+
+  const [text, setText] = useState("");
+  const [source, setSource] = useState<SourceFilter>("all");
+  const [range, setRange] = useState<DateRange>("all");
+  const [selected, setSelected] = useState<Selection>(new Set());
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const [meta, setMeta] = useState<Record<string, Meta>>({});
+  const [full, setFull] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [zip, setZip] = useState<{ done: number; total: number } | null>(null);
+  const [caches, setCaches] = useState<Caches | null>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const zipAbort = useRef<AbortController | null>(null);
+  const browseView = useRef<View>(view === "list" ? "list" : "grid");
+  // Parent callbacks are new functions every render; route them through refs so
+  // the memoised tiles and effects below stay stable across preference changes.
+  const changeRef = useRef(change);
+  changeRef.current = change;
+  const logRef = useRef(log);
+  logRef.current = log;
+  const stableLog = useCallback((s: string) => logRef.current(s), []);
+  const say = useCallback((s: string) => logRef.current(`Outputs: ${s}`), []);
+  if (view !== "detail") browseView.current = view;
+
+  const { files, state, error, updatedAt, refresh } = useOutputs(
+    api,
+    kind,
+    autoRefresh,
+    stableLog,
+  );
+  const shown = useMemo(
+    () => filterAndSort(files, { text, source, range, sort }),
+    [files, text, source, range, sort],
+  );
+
+  // Caches live in effects so React StrictMode's mount/unmount/mount is safe.
   useEffect(() => {
-    cache.current = new PhotoCache(api);
+    const server = new ServerThumbs(api);
+    server.onMode = (m) =>
+      say(
+        m === "yes"
+          ? "using fast server thumbnails"
+          : "the Colab API has no thumbnail route (restart it); thumbnails are made in the browser from full files, which is slow",
+      );
+    // Server thumbnails are tiny, so many can load at once; full files are not.
+    const concurrency = () => (server.mode === "no" ? 3 : 6);
+    const fetchBlob = async (item: Output, signal: AbortSignal) => {
+      try {
+        return await server.blob(item, THUMB_PX, signal);
+      } catch (e) {
+        // Videos have no browser-side fallback (it would download the whole video).
+        if (!(e instanceof ThumbUnsupported) || item.download_path.startsWith("/outputs/videos/")) throw e;
+      }
+      const url = await api.media(item.download_path, signal);
+      const r = await fetch(url, { signal, cache: "no-store" });
+      if (!r.ok) throw new Error(`Preview HTTP ${r.status}`);
+      return r.blob();
+    };
+    const decode: typeof browserDecode = async (blob, maxSide) => {
+      const meta = server.blobMeta.get(blob);
+      return meta ? { blob, ...meta } : browserDecode(blob, maxSide);
+    };
+    const c: Caches = {
+      server,
+      photos: new PhotoCache(api),
+      previews: new PhotoCache(api, 96 * 1024 * 1024, (item, signal) =>
+        server.fetch(item, PREVIEW_PX, signal),
+      ),
+      thumbs: new ThumbnailCache(fetchBlob, decode, { concurrency }),
+    };
+    setCaches(c);
     return () => {
-      generation.current++;
-      cache.current?.dispose();
+      c.photos.dispose();
+      c.previews.dispose();
+      c.thumbs.dispose();
     };
   }, [api]);
+
   useEffect(() => {
-    generation.current++;
-    setFiles([]);
-    setMedia("");
-    setLoaded(false);
-    setStatus("Refresh to browse backend outputs.");
-    setBusy(false);
+    setSelected(new Set());
+    setFocusId(null);
+    setMeta({});
+    setNote("");
   }, [api, kind]);
-  const next = (delta = 1) => {
-    if (files.length < 2) return;
-    setLoaded(false);
-    setIndex((i) => (i + delta + files.length) % Math.max(1, files.length));
-  };
-  async function refresh() {
-    cache.current?.dispose();
-    cache.current = new PhotoCache(api);
-    const g = ++generation.current;
+  useEffect(() => setSelected((s) => pruneSelection(s, files)), [files]);
+  useEffect(() => setNote(""), [selected]);
+
+  const onMeta = useCallback(
+    (id: string, m: Meta) =>
+      setMeta((prev) => {
+        const old = prev[id];
+        if (
+          old &&
+          old.width === (m.width ?? old.width) &&
+          old.height === (m.height ?? old.height) &&
+          old.duration === (m.duration ?? old.duration)
+        )
+          return prev;
+        return { ...prev, [id]: { ...old, ...m } };
+      }),
+    [],
+  );
+
+  const index = Math.max(0, indexOfId(shown, focusId));
+  const open = useCallback(
+    (id: string) => {
+      setFocusId(id);
+      changeRef.current("view", "detail");
+    },
+    [],
+  );
+  const toggle = useCallback(
+    (id: string) => setSelected((s) => toggleSelection(s, id)),
+    [],
+  );
+  const step = useCallback(
+    (delta: number) => {
+      if (shown.length < 2) return;
+      const i = Math.max(0, indexOfId(shown, focusId));
+      setFocusId(outputId(shown[stepIndex(i, delta, shown.length)]));
+    },
+    [shown, focusId],
+  );
+  const back = () => change("view", browseView.current);
+
+  // Opening the viewer brings it to the top of the screen so it can use the full height.
+  useEffect(() => {
+    if (view === "detail") root.current?.scrollIntoView({ block: "start" });
+  }, [view]);
+
+  // ---- full screen: real Fullscreen API where available, CSS fallback otherwise
+  const toggleFull = useCallback(() => {
+    setFull((on) => {
+      const next = !on;
+      const el = root.current;
+      try {
+        if (next && el?.requestFullscreen) void el.requestFullscreen().catch(() => {});
+        if (!next && document.fullscreenElement) void document.exitFullscreen();
+      } catch {
+        /* CSS fallback still applies */
+      }
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const sync = () => {
+      if (!document.fullscreenElement) setFull(false);
+    };
+    document.addEventListener("fullscreenchange", sync);
+    return () => {
+      document.removeEventListener("fullscreenchange", sync);
+      if (document.fullscreenElement) void document.exitFullscreen();
+    };
+  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey || view === "detail") return;
+      if (e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (e.key === "f" || e.key === "F") toggleFull();
+      else if (e.key === "Escape" && full) toggleFull();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [view, full, toggleFull]);
+
+  // ---- selection
+  const checkedAll = allSelected(shown, selected);
+  const toggleAll = () =>
+    setSelected((s) => {
+      const next = new Set(s);
+      if (allSelected(shown, s)) for (const f of shown) next.delete(outputId(f));
+      else for (const id of selectAll(shown)) next.add(id);
+      return next;
+    });
+  const stats = selectionStats(files, selected);
+
+  // ---- downloads
+  async function downloadCurrent() {
+    const item = shown[index];
+    if (!item) return;
     setBusy(true);
-    setLoaded(false);
-    setMedia("");
     try {
-      const r = await api.request<{ files: Output[] }>(`/outputs/${kind}`);
-      if (g !== generation.current) return;
-      setFiles(r.files);
-      setIndex(0);
-      setStatus(`${r.files.length} ${kind} from Drive and local output roots.`);
+      const a = document.createElement("a");
+      a.href = await api.media(item.download_path);
+      a.download = item.name;
+      a.rel = "noreferrer";
+      a.click();
+      say(`Downloading ${item.relative_path} (${formatSize(item.size)}).`);
     } catch (e) {
-      if (g === generation.current) setStatus(String(e));
-      log(String(e));
+      setNote(String(e));
+      say(`Download of ${item.relative_path} failed: ${String(e)}`);
     } finally {
-      if (g === generation.current) setBusy(false);
+      setBusy(false);
     }
   }
-  useEffect(() => {
-    const g = ++generation.current;
-    setMedia("");
-    setLoaded(false);
-    setProgress(null);
-    if (!current) return;
-    setStatus(`Loading ${current.relative_path}`);
-    let cancelled = false;
-    const count = options.autoplay ? Number(options.prefetch) : 2;
-    const keep = new Set([
-      current.download_path,
-      ...Array.from(
-        { length: Math.min(count, files.length - 1) },
-        (_, i) => files[(index + i + 1) % files.length].download_path,
-      ),
-    ]);
-    cache.current!.trim(keep);
-    const load = async () => {
-      try {
-        const url =
-          kind === "photos"
-            ? await cache.current!.load(current, (l, t) => {
-                if (!cancelled) setProgress(t ? (l / t) * 100 : null);
-              })
-            : await api.media(current.download_path);
-        if (cancelled || g !== generation.current) return;
-        setMedia(url);
-        setStatus(`Showing ${current.relative_path} · ${current.source}`);
-        setProgress(null);
-      } catch (e) {
-        if (!cancelled) {
-          setStatus(
-            `Preview failed: ${String(e)}. Download remains available.`,
-          );
-          setProgress(null);
-          log(String(e));
-        }
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [current, kind, api]);
-  useEffect(() => {
-    if (!loaded || kind !== "photos" || !current) return;
-    let cancelled = false;
-    const count = options.autoplay ? Number(options.prefetch) : 2;
-    const upcoming = Array.from(
-      { length: Math.min(count, files.length - 1) },
-      (_, i) => files[(index + i + 1) % files.length],
-    );
-    const keep = new Set([
-      current.download_path,
-      ...upcoming.map((x) => x.download_path),
-    ]);
-    cache.current?.trim(keep);
-    const prefetch = async () => {
-      for (let i = 0; i < upcoming.length && !cancelled; i += 2) {
-        await Promise.allSettled(
-          upcoming.slice(i, i + 2).map((x) => cache.current!.load(x)),
-        );
-        if (!cancelled) cache.current?.trim(keep);
-      }
-    };
-    void prefetch();
-    return () => {
-      cancelled = true;
-    };
-  }, [loaded, current, index, kind, files, options.autoplay, options.prefetch]);
-  useEffect(() => {
-    if (!options.autoplay || !loaded || kind !== "photos" || files.length < 2)
-      return;
-    const t = setTimeout(() => next(), Number(options.seconds) * 1000);
-    return () => clearTimeout(t);
-  }, [loaded, index, options.autoplay, options.seconds, kind, files.length]);
-  async function download(all = false, archive = false) {
+  async function downloadBackend(archive: boolean) {
     setBusy(true);
+    setNote("");
     try {
-      let path = current?.download_path;
-      if (all) path = `/outputs/${kind}/zip`;
+      let path = `/outputs/${kind}/zip`;
+      say(
+        archive
+          ? `Creating a retained archive of all ${files.length} ${kind} on the backend…`
+          : `Requesting the backend ZIP of all ${files.length} ${kind}…`,
+      );
       if (archive) {
         const r = await api.request<{ zip_id: string; size_bytes: number }>(
           `/outputs/${kind}/create-zip`,
           "POST",
         );
         path = `/download-archive/${r.zip_id}`;
-        setStatus(
-          `Archive prepared: ${(r.size_bytes / 1048576).toFixed(1)} MiB. Retained on backend.`,
+        setNote(`Archive ready: ${(r.size_bytes / 1048576).toFixed(1)} MiB, kept on the backend.`);
+        say(
+          `Archive ready (${formatSize(r.size_bytes)}), kept on the backend as ${path.split("/").pop()}.`,
         );
       }
-      if (!path) return;
-      const url = await api.media(path);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = all ? `${kind}_outputs.zip` : current.name;
+      a.href = await api.media(path);
+      a.download = `${kind}_outputs.zip`;
       a.rel = "noreferrer";
       a.click();
+      say(`Downloading ${kind}_outputs.zip.`);
     } catch (e) {
-      setStatus(String(e));
-      log(String(e));
+      setNote(String(e));
+      say(`${archive ? "Archive" : "ZIP download"} failed: ${String(e)}`);
     } finally {
       setBusy(false);
     }
   }
-  const zoom = options.zoom === "fit" ? null : parseFloat(String(options.zoom));
+  async function downloadSelected() {
+    const items = files.filter((f) => selected.has(outputId(f)));
+    if (!items.length) return;
+    if (items.length > MAX_ZIP_ENTRIES || stats.bytes > MAX_ZIP_BYTES) {
+      say(
+        `Selection of ${items.length} files (${formatSize(stats.bytes)}) is too large for a browser ZIP; use Download all or Create archive.`,
+      );
+      setNote(
+        `Too large for the browser (limit ${MAX_ZIP_ENTRIES} files / ${MAX_ZIP_BYTES / 1048576} MB). Use Download all or Create archive.`,
+      );
+      return;
+    }
+    const controller = new AbortController();
+    zipAbort.current = controller;
+    setBusy(true);
+    setNote("");
+    setZip({ done: 0, total: items.length });
+    say(`Preparing a ZIP of ${items.length} selected ${kind} (${formatSize(stats.bytes)})…`);
+    try {
+      const entries: ZipEntry[] = new Array(items.length);
+      let next = 0;
+      let done = 0;
+      const worker = async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= items.length) return;
+          const it = items[i];
+          const url = await api.media(it.download_path, controller.signal);
+          const r = await fetch(url, { signal: controller.signal, cache: "no-store" });
+          if (!r.ok) throw new Error(`${it.relative_path}: HTTP ${r.status}`);
+          entries[i] = {
+            name: zipEntryName(it),
+            data: new Uint8Array(await r.arrayBuffer()),
+            modified: it.modified,
+          };
+          setZip({ done: ++done, total: items.length });
+        }
+      };
+      await Promise.all([worker(), worker()]);
+      const zipName = `${kind}_selected_${items.length}.zip`;
+      const archive = buildZip(entries);
+      saveBlob(archive, zipName);
+      setNote(`Downloaded ${items.length} file${items.length === 1 ? "" : "s"}.`);
+      say(`Downloaded ${zipName} (${items.length} files, ${formatSize(archive.size)}).`);
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") {
+        setNote("Cancelled.");
+        say("ZIP of selected files cancelled.");
+      } else {
+        setNote(String(e));
+        say(`ZIP of selected files failed: ${String(e)}`);
+      }
+    } finally {
+      zipAbort.current = null;
+      setZip(null);
+      setBusy(false);
+    }
+  }
+  useEffect(() => () => zipAbort.current?.abort(), []);
+
+  const size = thumbPx(thumb);
+  const filtered = text || source !== "all" || range !== "all";
+  const clearFilters = () => {
+    setText("");
+    setSource("all");
+    setRange("all");
+  };
+
+  let body: React.ReactNode;
+  if (!caches || (state === "loading" && !files.length)) {
+    body = (
+      <div className="og-empty">
+        <h2>Loading {kind}…</h2>
+        <p>Reading the output folders on the backend.</p>
+      </div>
+    );
+  } else if (state === "error" && !files.length) {
+    body = (
+      <div className="og-empty" role="alert">
+        <h2>Could not load outputs</h2>
+        <p>{error}</p>
+        <button type="button" className="og-btn primary" onClick={refresh}>
+          Try again
+        </button>
+      </div>
+    );
+  } else if (!files.length) {
+    body = (
+      <div className="og-empty">
+        <h2>No {kind} yet</h2>
+        <p>
+          Processed {kind} from the Drive and Colab output folders appear here
+          automatically{autoRefresh ? "" : " after you refresh"}. Custom output
+          folders are not indexed.
+        </p>
+      </div>
+    );
+  } else if (!shown.length) {
+    body = (
+      <div className="og-empty">
+        <h2>No {kind} match</h2>
+        <p>Nothing matches the current search and filters.</p>
+        <button type="button" className="og-btn" onClick={clearFilters}>
+          Clear filters
+        </button>
+      </div>
+    );
+  } else if (view === "detail") {
+    body = (
+      <DetailView
+        files={shown}
+        index={index}
+        kind={kind}
+        api={api}
+        thumbs={caches.thumbs}
+        photos={caches.photos}
+        previews={caches.previews}
+        dims={(id) => caches.server.dims.get(id)}
+        meta={meta}
+        onMeta={onMeta}
+        selected={selected}
+        onToggle={toggle}
+        onStep={step}
+        onPick={(i) => setFocusId(outputId(shown[i]))}
+        onBack={back}
+        autoplay={autoplay}
+        seconds={seconds}
+        prefetch={prefetch}
+        onAutoplay={(on) => change("autoplay", on)}
+        onSeconds={(s) => change("seconds", s)}
+        fullscreen={full}
+        onFullscreen={toggleFull}
+        onDownload={downloadCurrent}
+        busy={busy}
+        log={stableLog}
+      />
+    );
+  } else {
+    const common = {
+      files: shown,
+      kind,
+      api,
+      cache: caches.thumbs,
+      size,
+      selected,
+      meta,
+      onMeta,
+      onOpen: open,
+      onToggle: toggle,
+    } as const;
+    body =
+      view === "list" ? (
+        <ListView
+          {...common}
+          sort={sort}
+          onSort={(s: SortKey) => change("sort", s)}
+          allChecked={checkedAll}
+          onToggleAll={toggleAll}
+        />
+      ) : (
+        <GridView {...common} />
+      );
+  }
+
   return (
-    <div className="workspace">
-      <aside className="controls">
-        <fieldset>
-          <legend>Output library</legend>
-          <label>
-            Media type
-            <select
-              value={kind}
-              onChange={(e) => change("kind", e.target.value)}
-            >
-              <option>photos</option>
-              <option>videos</option>
-            </select>
-          </label>
-          <button onClick={refresh} disabled={busy}>
-            Refresh outputs
-          </button>
-          <p className="hint">
-            Fixed Drive and local roots. Custom processing paths are not
-            indexed.
-          </p>
-        </fieldset>
-        <fieldset>
-          <legend>Playback</legend>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={Boolean(options.autoplay)}
-              onChange={(e) => change("autoplay", e.target.checked)}
-            />
-            Auto-play
-          </label>
-          <label>
-            Visible seconds
-            <input
-              type="number"
-              min="0.25"
-              max="60"
-              step="0.25"
-              value={Number(options.seconds)}
-              onChange={(e) =>
-                change(
-                  "seconds",
-                  Math.max(0.25, Math.min(60, Number(e.target.value))),
-                )
-              }
-            />
-          </label>
-          <label>
-            Prefetch photos
-            <input
-              type="number"
-              min="1"
-              max="50"
-              value={Number(options.prefetch)}
-              onChange={(e) =>
-                change(
-                  "prefetch",
-                  Math.max(1, Math.min(50, Number(e.target.value))),
-                )
-              }
-            />
-          </label>
-          <label>
-            Photo zoom
-            <select
-              value={String(options.zoom)}
-              onChange={(e) => change("zoom", e.target.value)}
-            >
-              {["fit", "0.5x", "0.8x", "1x", "1.5x", "2x"].map((v) => (
-                <option key={v}>{v}</option>
-              ))}
-            </select>
-          </label>
-        </fieldset>
-        <div className="actions">
-          <button disabled={!current} onClick={() => next(-1)}>
-            Previous
-          </button>
-          <button disabled={!current} onClick={() => next()}>
-            Next
-          </button>
-        </div>
-        <div className="output-list" aria-label="Remote output files">
-          {files.map((f, i) => (
-            <button
-              key={f.download_path}
-              aria-pressed={i === index}
-              className={i === index ? "selected" : ""}
-              onClick={() => {
-                if (i !== index) {
-                  setLoaded(false);
-                  setIndex(i);
-                }
-              }}
-            >
-              <strong>{f.relative_path}</strong>
-              <small>
-                {f.source} · {(f.size / 1048576).toFixed(2)} MiB
-              </small>
-            </button>
-          ))}
-        </div>
-      </aside>
-      <section className="stage">
-        <div className="stage-heading">
-          <span>OUTPUT PREVIEW</span>
-          <span>
-            {files.length ? `${index + 1} / ${files.length}` : "No selection"}
-          </span>
-        </div>
-        <div className="media-stage">
-          {!media ? (
-            <div className="empty">
-              <h2>Your processed media</h2>
-              <p>{status}</p>
-            </div>
-          ) : kind === "photos" ? (
-            <img
-              src={media}
-              alt={current?.relative_path}
-              style={
-                zoom
-                  ? {
-                      width: size.w * zoom,
-                      height: size.h * zoom,
-                      maxWidth: "none",
-                      maxHeight: "none",
-                    }
-                  : {}
-              }
-              onLoad={(e) => {
-                setSize({
-                  w: e.currentTarget.naturalWidth,
-                  h: e.currentTarget.naturalHeight,
-                });
-                setLoaded(true);
-              }}
-              onError={() => {
-                setLoaded(false);
-                setStatus(
-                  "Image could not be decoded. Download to open locally.",
-                );
-              }}
-            />
-          ) : (
-            <video
-              src={media}
-              controls
-              autoPlay={Boolean(options.autoplay)}
-              onLoadedData={() => setLoaded(true)}
-              onEnded={() => {
-                if (options.autoplay) next();
-              }}
-              onError={() => {
-                setLoaded(false);
-                setStatus(
-                  "This browser cannot play the video format. Download with a compatible player.",
-                );
-              }}
-            />
-          )}
-        </div>
-        <div className="stage-footer">
-          <p role="status">{status}</p>
-          {progress !== null && <progress max="100" value={progress} />}
-          <div className="actions">
-            <button disabled={!current || busy} onClick={() => download()}>
-              Download current
-            </button>
-            <button
-              disabled={!files.length || busy}
-              onClick={() => download(true)}
-            >
-              Download all ZIP
-            </button>
-            <button
-              disabled={!files.length || busy}
-              onClick={() => download(true, true)}
-            >
-              Create retained archive
-            </button>
-          </div>
-        </div>
-      </section>
+    <div
+      ref={root}
+      className={`og view-${view}${full ? " og-full" : ""}`}
+      aria-label="Output library"
+    >
+      <Header
+        kind={kind}
+        onKind={(k) => change("kind", k)}
+        view={view}
+        onView={(v) => {
+          if (v === "detail" && !focusId && shown[0]) setFocusId(outputId(shown[0]));
+          change("view", v);
+        }}
+        thumb={thumb}
+        onThumb={(n) => change("thumb", n)}
+        autoRefresh={autoRefresh}
+        onAutoRefresh={(on) => change("autorefresh", on)}
+        onRefresh={refresh}
+        refreshing={state === "loading"}
+        fullscreen={full}
+        onFullscreen={toggleFull}
+        text={text}
+        onText={setText}
+        source={source}
+        onSource={setSource}
+        range={range}
+        onRange={setRange}
+        sort={sort}
+        onSort={(s) => change("sort", s)}
+        shown={shown.length}
+        total={files.length}
+        searchRef={searchRef}
+      />
+      <SelectionBar
+        count={stats.count}
+        bytes={stats.bytes}
+        total={shown.length}
+        allChecked={checkedAll}
+        onToggleAll={toggleAll}
+        onClear={() => setSelected(new Set())}
+        onDownloadSelected={downloadSelected}
+        onDownloadAll={() => downloadBackend(false)}
+        onArchive={() => downloadBackend(true)}
+        busy={busy}
+        progress={zip}
+        onCancel={() => zipAbort.current?.abort()}
+        note={note}
+      />
+      <div className="og-body">{body}</div>
+      <div className="og-foot" role="status">
+        {state === "error" && files.length
+          ? `Refresh failed: ${error}`
+          : updatedAt
+            ? `Updated ${new Date(updatedAt).toLocaleTimeString()}${autoRefresh ? " · checking for new outputs automatically" : ""}${filtered ? " · filters active" : ""}`
+            : ""}
+      </div>
     </div>
   );
 }

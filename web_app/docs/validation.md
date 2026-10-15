@@ -80,3 +80,59 @@ backend and reported that it works; Live and photo/video batch sessions were run
 it. Windows DPAPI, autostart and `taskkill` specifics were not separately inspected.
 Live tuning observations from those sessions are summarized in the web README.
 
+## Outputs library
+
+Unit tests (`tests/outputs.test.ts`, 8) cover filtering/search/date ranges and every sort
+order, list reconciliation by stable identity (an identical refresh keeps the same
+array), selection helpers, formatting, the thumbnail cache (bounded concurrency,
+newest-first queue, cancellation of tiles that leave the screen, de-duplication,
+eviction that never drops a held thumbnail, oversize/decoder errors) and the client
+ZIP writer (CRC32 vector, central directory, UTF-8 names, and read back by Python's
+`zipfile`). The full web suite passes (33) with `tsc --noEmit` and the Vite build.
+
+Browser checks were run in headless Chromium against the **real** Colab API (generated
+sample outputs, no GPU) behind the **real** gateway: 44 photos in Drive/local roots and
+nested folders, 4 WebM videos. 19 behaviour checks passed: search, empty state, clear
+filters, source filter, sort by name, valid ZIP of selected files (verified with Python),
+keyboard navigation, zoom, double-click Fit/100 %, slideshow, full screen and Esc, video
+listing/badges/playback, and auto-refresh picking up and dropping files on disk. A touch
+context verified the phone layout and swipe navigation. This testing found and fixed a
+bug: a parent callback re-created every render re-ran the loader, so changing a view,
+size or sort cleared the selection and reloaded the list; a regression check confirms
+those changes now cause no new listing requests and keep the selection. Screenshots are
+in `docs/screenshots/`.
+
+Not verified: Safari/iOS and Firefox (Chromium only; full screen falls back to a CSS
+overlay where the Fullscreen API is missing), a real Colab/Drive with thousands of
+files or large originals over Tailscale/mobile data, pinch-to-zoom (double-click and
+buttons only), and H.264 video (headless Chromium has no H.264 codec, so playback was
+checked with WebM).
+
+### Outputs activity log
+
+Pure message builders (`describeLoad`, `describeChange`) are unit-tested (singular/plural,
+name truncation, silence when nothing changed). In the browser run, 9 checks confirmed
+the log entries for: first load, a new file found by auto-refresh, a manual refresh with
+no change, a removed file, selected-ZIP start and finish, backend ZIP, retained archive,
+single-file download and an undecodable image; and, separately, that a slideshow skips a
+broken file with one log line, and that a backend outage is logged once (not per poll)
+followed by one recovery line. This testing caught two bugs in the viewer, both fixed: a
+failure or image URL from the previous file was attributed to the next file for one
+render (a skipped file was logged twice and its successor was reported undecodable).
+Per-file state is now keyed by file id.
+
+
+### Gallery speed and Fit
+
+Benchmark in headless Chromium through the real gateway, throttled to 20 Mbit/s with 60 ms
+latency, 40 photos of about 1.5 MB: first screen of thumbnails 22.5 s / 53.5 MB with
+browser-made thumbnails, 0.85 s / 0.6 MB with server thumbnails (about 26x faster, 90x
+less data). A 31 MB PNG opens in the viewer in 0.84 s / 0.24 MB (1600 px preview); the
+upgrade to the original after zooming took 13 s on that link. `tests/test_output_thumbs.py`
+(11) covers sizing, caching, video posters, path confinement and errors; web tests cover the
+server-thumb client, URL encoding, adaptive concurrency and the preview fetcher
+(`outputs.test.ts`, 15) and the gateway route. Fit now fills the viewer (about 700 px tall in
+a 900 px window versus about 370 before) for square, portrait and landscape images. With the
+API's thumb route missing, photos fall back to browser thumbnails, videos to a `<video>`
+frame and the viewer to the original. Manual browser runs, not CI; Safari/Firefox and a
+real Drive at scale remain unverified.

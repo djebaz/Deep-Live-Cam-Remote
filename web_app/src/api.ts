@@ -116,6 +116,12 @@ export class Api {
     u.searchParams.set("ticket", ticket);
     return u.toString();
   }
+  /** URL of a cached server-side thumbnail/preview; `v` ties it to the file's modified time. */
+  thumbUrl(item: { download_path: string; modified: number }, size: number) {
+    const path = item.download_path.replace("/file/", "/thumb/");
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    return this.url(`${encoded}?size=${size}&v=${Math.round(item.modified * 1000)}`);
+  }
   upload<T>(
     path: string,
     body: FormData,

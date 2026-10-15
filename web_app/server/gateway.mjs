@@ -6,6 +6,11 @@ import { resolve, dirname, extname, relative, isAbsolute, sep } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { relayWebSockets } from "./relay.mjs";
+// Reuse connections to the backend: each new one costs several round trips over Tailscale.
+const keepAlive = {
+  http: new http.Agent({ keepAlive: true, maxSockets: 32 }),
+  https: new https.Agent({ keepAlive: true, maxSockets: 32 }),
+};
 const HERE = dirname(fileURLToPath(import.meta.url));
 export function createGateway({
   backends,
@@ -72,7 +77,7 @@ export function createGateway({
       method === "GET" &&
       (/^\/health$/.test(path) ||
         /^\/jobs\/[a-zA-Z0-9-]+$/.test(path) ||
-        /^\/outputs\/(photos|videos)(\/zip|\/file\/(local|drive)\/.+)?$/.test(
+        /^\/outputs\/(photos|videos)(\/zip|\/file\/(local|drive)\/.+|\/thumb\/(local|drive)\/.+)?$/.test(
           path,
         ) ||
         /^\/download-archive\/[a-zA-Z0-9-]+$/.test(path))
@@ -136,7 +141,7 @@ export function createGateway({
       );
       res.setHeader(
         "Access-Control-Expose-Headers",
-        "Content-Length, Content-Range, Content-Disposition",
+        "Content-Length, Content-Range, Content-Disposition, X-Source-Width, X-Source-Height, X-Source-Duration",
       );
       if (req.headers["access-control-request-private-network"] === "true")
         res.setHeader("Access-Control-Allow-Private-Network", "true");
@@ -223,6 +228,7 @@ export function createGateway({
             method: req.method,
             headers,
             timeout: 600000,
+            agent: target.protocol === "https:" ? keepAlive.https : keepAlive.http,
           },
           (reply) => {
             // Do not follow redirects; Location could bypass the destination restriction.
@@ -239,9 +245,21 @@ export function createGateway({
               "content-disposition",
               "etag",
               "last-modified",
+              "x-source-width",
+              "x-source-height",
+              "x-source-duration",
             ])
               if (reply.headers[k]) res.setHeader(k, reply.headers[k]);
-            res.setHeader("Cache-Control", "no-store");
+            // Everything is no-store except cacheable thumbnails, which the backend
+            // marks private and keys by file modification time in the URL.
+            const thumb = /^\/outputs\/(photos|videos)\/thumb\//.test(path);
+            const cache = reply.headers["cache-control"];
+            res.setHeader(
+              "Cache-Control",
+              thumb && reply.statusCode === 200 && /^private\b/.test(cache || "")
+                ? cache
+                : "no-store",
+            );
             res.writeHead(reply.statusCode || 502);
             reply.pipe(res);
           },

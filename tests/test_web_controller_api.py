@@ -15,6 +15,8 @@ def client(tmp_path, monkeypatch):
                  'LOCAL_OUTPUT_PHOTOS_DIR', 'LOCAL_OUTPUT_VIDEOS_DIR', 'DRIVE_ROOT',
                  'SOURCE_DIR', 'PHOTOS_DIR', 'VIDEOS_DIR', 'OUTPUT_PHOTOS_DIR', 'OUTPUT_VIDEOS_DIR'):
         monkeypatch.setattr(api, name, tmp_path / name.lower())
+    monkeypatch.setattr(api, 'OUTPUT_LIST_TTL', 0)
+    monkeypatch.setattr(api, 'THUMB_DIR', tmp_path / 'thumbs')
     return TestClient(api.app)
 
 def test_relative_upload_and_exact_preflight(client, tmp_path):

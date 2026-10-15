@@ -533,12 +533,12 @@ except Exception:
 """CELL: Batch configuration"""
 # @title Batch configuration
 DRIVE_ROOT = "/content/drive/MyDrive/DeepLiveCamRemote"
-SOURCE_FACE = DRIVE_ROOT + "/source/source.png"
-INPUT_DIR = DRIVE_ROOT + "/videos"
-PHOTO_INPUT_DIR = DRIVE_ROOT + "/photos"
-OUTPUT_DIR = DRIVE_ROOT + "/outputs/videos"
-PHOTO_OUTPUT_DIR = DRIVE_ROOT + "/outputs/photos"
-ZIP_PATH = DRIVE_ROOT + "/outputs/face_swapped_outputs.zip"
+SOURCE_FACE = "/content/inputs/source/source.png"
+INPUT_DIR = "/content/inputs/videos"
+PHOTO_INPUT_DIR = "/content/inputs/photos"
+OUTPUT_DIR = "/content/outputs/videos"  # Colab disk (fast); Drive is slow
+PHOTO_OUTPUT_DIR = "/content/outputs/photos"
+ZIP_PATH = "/content/outputs/face_swapped_outputs.zip"
 SS = 0.0
 DURATION = None  # None processes the remainder
 MAX_FPS = 30.0
@@ -646,8 +646,20 @@ if daemon_running():
     print("✓ Tailscale daemon already running")
 else:
     print("Starting Tailscale daemon...")
+    # Kernel TUN is much faster than userspace networking; use it when the VM offers it.
     daemon_cmd = "sudo tailscaled --tun=userspace-networking --socks5-server=localhost:1055 > /dev/null 2>&1 &"
-    subprocess.Popen(daemon_cmd, shell=True)
+    if os.path.exists("/dev/net/tun"):
+        subprocess.Popen("sudo tailscaled --socks5-server=localhost:1055 > /dev/null 2>&1 &", shell=True)
+        time.sleep(3)
+        if daemon_running():
+            print("✓ Using kernel TUN networking (fast path)")
+            daemon_cmd = None
+        else:
+            print("Kernel TUN unavailable; falling back to userspace networking")
+            subprocess.run(["sudo", "pkill", "tailscaled"], capture_output=True)
+            time.sleep(1)
+    if daemon_cmd:
+        subprocess.Popen(daemon_cmd, shell=True)
     time.sleep(2)
     if daemon_running():
         print("✓ Tailscale daemon started")
@@ -767,7 +779,18 @@ def run_server():
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
-print("✓ API server starting on http://0.0.0.0:7860")
+import time
+import urllib.request
+
+for _ in range(60):
+    try:
+        urllib.request.urlopen("http://127.0.0.1:7860/health", timeout=2).close()
+        print("✓ API server is online on http://0.0.0.0:7860")
+        break
+    except Exception:
+        time.sleep(0.5)
+else:
+    print("⚠️ API server did not answer /health within 30 s; check the output above")
 print("✓ The server is running in the background")
 print("✓ Connect your Tailscale network and use the Tailscale IP with the Windows app")
 print("\nPress Ctrl+C or stop the cell to terminate the server.")
