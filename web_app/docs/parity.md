@@ -166,8 +166,9 @@ GET /outputs/{kind} returns files sorted by modified descending, then name desce
 | POST /upload/file?kind=source | multipart `file`; returns path,size,ok,kind |
 | POST /upload/source | multipart `file`; returns path,size,ok |
 | POST /upload/photos or /upload/videos?batch_id=UUID | multipart repeated `files`; returns count,files,input_dir,output_dir,batch_id,ok |
-| POST /jobs/photos or /jobs/videos | JobRequest JSON; returns job_id,status |
-| GET /jobs/{job_id} | job_id,kind,status,started_at,finished_at,exit_code,error,latest 300 logs; unknown job is error JSON |
+| POST /sources/check | {path}; returns {path, exists}; advertised as `web_capabilities.source_check`; clients call it before uploading inputs so a missing remote source fails early |
+| POST /jobs/photos or /jobs/videos | JobRequest JSON; returns job_id,status; 400 when an explicitly given `source_face` is not a file on Colab |
+| GET /jobs/{job_id} | job_id,kind,status (`queued` while waiting for the single engine, then `running`),started_at,finished_at,exit_code,error,latest 300 logs,`progress` (item/items/name/state,frames,total,fps,file_percent,overall_percent,eta_seconds,updated_at),`stage`,`cancel_requested`,`server_time`; unknown job is error JSON |
 | POST /jobs/cancel | {job_id}; returns cancel_requested and current status |
 | WS /ws/jobs/{job_id} | Initial snapshot, then status/log objects; closes on terminal |
 | WS /ws/live | Initial config text, config updates, diagnostic/drop text, DLCR binary frames |
