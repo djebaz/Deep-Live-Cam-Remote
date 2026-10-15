@@ -120,7 +120,8 @@ def _require_isolated_input_dir(kind: str, batch_id: str, response: dict[str, An
 def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]:
     client = ApiClient(settings)
     logs: list[str] = ["checking Colab API before starting batch"]
-    client.request_json("GET", "/health", timeout=5.0)
+    health = client.request_json("GET", "/health", timeout=5.0)
+    can_check_source = bool((health.get("web_capabilities") or {}).get("source_check"))
 
     source_face = settings.source_face
     if is_local_path(source_face):
@@ -134,13 +135,11 @@ def _prepare_and_start_batch(settings: AppSettings, kind: str) -> dict[str, Any]
         response = client.upload_file("/upload/file?kind=source", upload_path, timeout=30.0)
         source_face = str(response.get("path") or source_face)
         logs.append(f"source uploaded to: {source_face}")
-    elif source_face:
+    elif source_face and can_check_source:
         # Fail before uploading any inputs when the remote source image does not exist.
-        try:
-            found = client.request_json("POST", "/sources/check", {"path": source_face}, timeout=10.0)
-        except RuntimeError:
-            found = {"exists": True}  # an older Colab API has no check; the job reports it instead
-        if not found.get("exists", True):
+        # Only APIs that advertise the check are asked; any error from it is a real error.
+        found = client.request_json("POST", "/sources/check", {"path": source_face}, timeout=10.0)
+        if not found.get("exists", False):
             raise FileNotFoundError(
                 f"Source face not found on Colab: {source_face}. Select a local source image or fix the remote path."
             )
